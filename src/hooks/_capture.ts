@@ -12,6 +12,7 @@ import {
   type SendOutcome,
   type SentMark,
   type SpoolRecord,
+  type DrainResult,
 } from "../capture/spool.js";
 
 export const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
@@ -22,6 +23,13 @@ const DRAIN_DEADLINE_MS = 20_000;
 const DRAIN_REQUEST_TIMEOUT_MS = 5000;
 
 export type CaptureOutcome = "delivered" | "duplicate" | "rejected" | "spooled" | "dropped";
+export type CaptureHandoffOutcome = CaptureOutcome | "pending";
+
+interface CaptureTarget {
+  url: string;
+  headers: Record<string, string>;
+  dir?: string;
+}
 
 export interface ObserveBody {
   hookType: string;
@@ -58,10 +66,10 @@ function classify(status: number): SendOutcome {
   return "rejected";
 }
 
-async function post(body: Record<string, unknown>, timeoutMs: number): Promise<{ outcome: SendOutcome; mark: SentMark | null }> {
-  const res = await fetch(`${REST_URL}/agentmemory/observe`, {
+async function post(body: Record<string, unknown>, timeoutMs: number, target?: CaptureTarget): Promise<{ outcome: SendOutcome; mark: SentMark | null; acknowledged?: boolean }> {
+  const res = await fetch(`${target?.url ?? REST_URL}/agentmemory/observe`, {
     method: "POST",
-    headers: authHeaders(),
+    headers: target?.headers ?? authHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -69,16 +77,41 @@ async function post(body: Record<string, unknown>, timeoutMs: number): Promise<{
   const outcome = classify(res.status);
   if (outcome !== "delivered" && outcome !== "duplicate") return { outcome, mark: null };
   try {
-    return { outcome, mark: parseSentMark(JSON.parse(text)) };
+    const result = JSON.parse(text) as Record<string, unknown> | null;
+    return { outcome, mark: parseSentMark(result), acknowledged: Boolean(result && typeof result.observationId === "string" && result.observationId && result.success !== false && !result.error) };
   } catch {
     return { outcome, mark: null };
   }
 }
 
-function keepUntilDurable(eventId: string, body: Record<string, unknown>, mark: SentMark): number {
-  const { requeued } = reconcileSent(REST_URL, mark.bootId);
-  retainSent(REST_URL, eventId, body, mark);
-  return requeued;
+function keepUntilDurable(eventId: string, body: Record<string, unknown>, mark: SentMark, target?: CaptureTarget): { requeued: number; retained: boolean } {
+  const url = target?.url ?? REST_URL;
+  const { requeued } = reconcileSent(url, mark.bootId, { dir: target?.dir });
+  return { requeued, retained: retainSent(url, eventId, body, mark, { dir: target?.dir }) };
+}
+
+// Legacy outbox ownership changes only after a fsynced managed record exists.
+export async function handoffObservation(body: ObserveBody, timeoutMs: number, target: CaptureTarget): Promise<CaptureHandoffOutcome> {
+  const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
+  const payload = { ...body, eventId } as unknown as Record<string, unknown>;
+  let reason = "server-error";
+  try {
+    const { outcome, mark, acknowledged } = await post(payload, timeoutMs, target);
+    if (outcome === "delivered" || outcome === "duplicate") {
+      if (!mark || !acknowledged) return "pending";
+      const { requeued } = reconcileSent(target.url, mark.bootId, { dir: target.dir });
+      if (!retainSent(target.url, eventId, payload, mark, { dir: target.dir, preserveImages: true, requireReceipt: true })) return "pending";
+      if (requeued > 0 && target.url === REST_URL) startDrainChild();
+      return outcome;
+    }
+    if (outcome === "rejected") return "rejected";
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
+  }
+  if (!appendSpool(target.url, eventId, payload, reason, { dir: target.dir, preserveImages: true, requireReceipt: true }).spooled) return "dropped";
+  if (target.url === REST_URL) startDrainChild();
+  return "spooled";
 }
 
 function startDrainChild(): void {
@@ -103,11 +136,13 @@ export async function captureObservation(body: ObserveBody, timeoutMs: number): 
   try {
     const { outcome, mark } = await post(payload, timeoutMs);
     if (outcome !== "retry") {
-      const requeued = mark ? keepUntilDurable(eventId, payload, mark) : 0;
-      if (requeued > 0 || spoolHasRecords(REST_URL)) startDrainChild();
-      return outcome;
+      const kept = mark ? keepUntilDurable(eventId, payload, mark) : { requeued: 0, retained: true };
+      if (kept.requeued > 0 || spoolHasRecords(REST_URL)) startDrainChild();
+      if (kept.retained) return outcome;
+      reason = "sent-retention-failed";
+    } else {
+      reason = "server-error";
     }
-    reason = "server-error";
   } catch (err) {
     const name = err instanceof Error ? err.name : "";
     reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
@@ -119,14 +154,15 @@ export function isDrainChild(): boolean {
   return process.env[DRAIN_CHILD_ENV] === "1";
 }
 
-export async function runDrainChild(): Promise<void> {
-  await drainSpool(
+export async function runDrainChild(): Promise<DrainResult> {
+  return drainSpool(
     REST_URL,
     async (record: SpoolRecord) => {
-      const { outcome, mark } = await post({ ...record.body, eventId: record.eventId }, DRAIN_REQUEST_TIMEOUT_MS);
-      if (mark) retainSent(REST_URL, record.eventId, record.body, mark);
+      const { outcome, mark, acknowledged } = await post({ ...record.body, eventId: record.eventId }, DRAIN_REQUEST_TIMEOUT_MS);
+      if (record.requireReceipt && (outcome === "delivered" || outcome === "duplicate") && (!mark || !acknowledged)) return "retry";
+      if (mark && !retainSent(REST_URL, record.eventId, record.body, mark, { requireReceipt: record.requireReceipt, preserveImages: record.requireReceipt })) return "retry";
       return outcome;
     },
     { maxRecords: DRAIN_MAX_RECORDS, deadlineMs: DRAIN_DEADLINE_MS },
-  ).catch(() => undefined);
+  ).then(result => result.skipped === "locked" ? { ...result, remaining: Math.max(1, result.remaining) } : result).catch(() => ({ claimed: 0, delivered: 0, duplicates: 0, rejected: 0, expired: 0, corrupt: 0, remaining: 1, error: "capture_drain_failed" }));
 }

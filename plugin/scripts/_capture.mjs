@@ -328,6 +328,15 @@ function ensureDir(dir) {
 		chmodSync(dir, 448);
 	} catch {}
 }
+function syncDirectory(dir) {
+	if (process.platform === "win32") return;
+	const fd = openSync(dir, "r");
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
 function sleepSync(ms) {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -429,6 +438,7 @@ function parseLines(text) {
 	};
 }
 function isExpired(rec, policy, now) {
+	if (rec.requireReceipt) return false;
 	const at = Date.parse(rec.spooledAt);
 	return Number.isFinite(at) && now - at > policy.maxAgeMs;
 }
@@ -482,10 +492,11 @@ function appendSpool(url, eventId, body, reason, options = {}) {
 			spooledAt: (/* @__PURE__ */ new Date()).toISOString(),
 			reason,
 			attempts: options.attempts ?? 0,
-			body: sanitizeBody(body)
+			body: sanitizeBody(body),
+			...options.requireReceipt ? { requireReceipt: true } : {}
 		};
 		let line = JSON.stringify(record) + "\n";
-		if (Buffer.byteLength(line) > policy.maxRecordBytes) {
+		if (Buffer.byteLength(line) > policy.maxRecordBytes && !options.preserveImages) {
 			record.body = withoutImage(record.body);
 			line = JSON.stringify(record) + "\n";
 		}
@@ -507,6 +518,8 @@ function appendSpool(url, eventId, body, reason, options = {}) {
 			} finally {
 				closeSync(fd);
 			}
+			syncDirectory(paths.dir);
+			syncDirectory(join(paths.dir, ".."));
 			writeStats(paths, (s) => {
 				s.spooled++;
 				s.expired += expired;
@@ -553,6 +566,8 @@ function evictSent(paths, need) {
 	for (const seg of listSent(paths).sort((a, b) => a.dueAt - b.dueAt)) {
 		if (freed >= need) return;
 		try {
+			const parsed = parseLines(readFileSync(seg.file, "utf-8"));
+			if (parsed.corrupt || parsed.records.some((record) => record.requireReceipt)) continue;
 			unlinkSync(seg.file);
 			freed += seg.bytes;
 		} catch {}
@@ -583,10 +598,11 @@ function retainSent(url, eventId, body, mark, options = {}) {
 			reason: "sent",
 			attempts: 0,
 			body: sanitizeBody(body),
-			bootId: mark.bootId
+			bootId: mark.bootId,
+			...options.requireReceipt ? { requireReceipt: true } : {}
 		};
 		let line = JSON.stringify(record) + "\n";
-		if (Buffer.byteLength(line) > policy.maxRecordBytes) {
+		if (Buffer.byteLength(line) > policy.maxRecordBytes && !options.preserveImages) {
 			record.body = withoutImage(record.body);
 			line = JSON.stringify(record) + "\n";
 		}
@@ -599,9 +615,12 @@ function retainSent(url, eventId, body, mark, options = {}) {
 			const fd = openSync(file, "a", 384);
 			try {
 				writeSync(fd, line);
+				fsyncSync(fd);
 			} finally {
 				closeSync(fd);
 			}
+			syncDirectory(paths.dir);
+			syncDirectory(join(paths.dir, ".."));
 			return true;
 		});
 	} catch {
@@ -761,6 +780,7 @@ async function drainSpool(url, send, options = {}) {
 				outcome = "retry";
 				result.error = err instanceof Error ? err.message : String(err);
 			}
+			if (rec.requireReceipt && outcome === "rejected") outcome = "retry";
 			if (outcome === "delivered") result.delivered++;
 			else if (outcome === "duplicate") result.duplicates++;
 			else if (outcome === "rejected") result.rejected++;
@@ -774,6 +794,7 @@ async function drainSpool(url, send, options = {}) {
 		}
 		result.remaining = leftover.length;
 		withLock(paths.lock, (locked) => locked ? requeueLocked(paths, leftover) : requeueUnlocked(paths, leftover), 2e3);
+		if (leftover.some((record) => record.requireReceipt)) syncDirectory(paths.dir);
 		for (const file of files) try {
 			unlinkSync(file);
 		} catch {}
@@ -823,10 +844,10 @@ function classify(status) {
 	if (status === 408 || status === 429 || status >= 500) return "retry";
 	return "rejected";
 }
-async function post(body, timeoutMs) {
-	const res = await fetch(`${REST_URL}/agentmemory/observe`, {
+async function post(body, timeoutMs, target) {
+	const res = await fetch(`${target?.url ?? REST_URL}/agentmemory/observe`, {
 		method: "POST",
-		headers: authHeaders(),
+		headers: target?.headers ?? authHeaders(),
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(timeoutMs)
 	});
@@ -837,9 +858,11 @@ async function post(body, timeoutMs) {
 		mark: null
 	};
 	try {
+		const result = JSON.parse(text);
 		return {
 			outcome,
-			mark: parseSentMark(JSON.parse(text))
+			mark: parseSentMark(result),
+			acknowledged: Boolean(result && typeof result.observationId === "string" && result.observationId && result.success !== false && !result.error)
 		};
 	} catch {
 		return {
@@ -848,10 +871,46 @@ async function post(body, timeoutMs) {
 		};
 	}
 }
-function keepUntilDurable(eventId, body, mark) {
-	const { requeued } = reconcileSent(REST_URL, mark.bootId);
-	retainSent(REST_URL, eventId, body, mark);
-	return requeued;
+function keepUntilDurable(eventId, body, mark, target) {
+	const url = target?.url ?? REST_URL;
+	const { requeued } = reconcileSent(url, mark.bootId, { dir: target?.dir });
+	return {
+		requeued,
+		retained: retainSent(url, eventId, body, mark, { dir: target?.dir })
+	};
+}
+async function handoffObservation(body, timeoutMs, target) {
+	const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
+	const payload = {
+		...body,
+		eventId
+	};
+	let reason = "server-error";
+	try {
+		const { outcome, mark, acknowledged } = await post(payload, timeoutMs, target);
+		if (outcome === "delivered" || outcome === "duplicate") {
+			if (!mark || !acknowledged) return "pending";
+			const { requeued } = reconcileSent(target.url, mark.bootId, { dir: target.dir });
+			if (!retainSent(target.url, eventId, payload, mark, {
+				dir: target.dir,
+				preserveImages: true,
+				requireReceipt: true
+			})) return "pending";
+			if (requeued > 0 && target.url === REST_URL) startDrainChild();
+			return outcome;
+		}
+		if (outcome === "rejected") return "rejected";
+	} catch (err) {
+		const name = err instanceof Error ? err.name : "";
+		reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
+	}
+	if (!appendSpool(target.url, eventId, payload, reason, {
+		dir: target.dir,
+		preserveImages: true,
+		requireReceipt: true
+	}).spooled) return "dropped";
+	if (target.url === REST_URL) startDrainChild();
+	return "spooled";
 }
 function startDrainChild() {
 	if (process.env[DRAIN_CHILD_ENV] === "1") return;
@@ -880,10 +939,14 @@ async function captureObservation(body, timeoutMs) {
 	try {
 		const { outcome, mark } = await post(payload, timeoutMs);
 		if (outcome !== "retry") {
-			if ((mark ? keepUntilDurable(eventId, payload, mark) : 0) > 0 || spoolHasRecords(REST_URL)) startDrainChild();
-			return outcome;
-		}
-		reason = "server-error";
+			const kept = mark ? keepUntilDurable(eventId, payload, mark) : {
+				requeued: 0,
+				retained: true
+			};
+			if (kept.requeued > 0 || spoolHasRecords(REST_URL)) startDrainChild();
+			if (kept.retained) return outcome;
+			reason = "sent-retention-failed";
+		} else reason = "server-error";
 	} catch (err) {
 		const name = err instanceof Error ? err.name : "";
 		reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
@@ -894,19 +957,35 @@ function isDrainChild() {
 	return process.env[DRAIN_CHILD_ENV] === "1";
 }
 async function runDrainChild() {
-	await drainSpool(REST_URL, async (record) => {
-		const { outcome, mark } = await post({
+	return drainSpool(REST_URL, async (record) => {
+		const { outcome, mark, acknowledged } = await post({
 			...record.body,
 			eventId: record.eventId
 		}, DRAIN_REQUEST_TIMEOUT_MS);
-		if (mark) retainSent(REST_URL, record.eventId, record.body, mark);
+		if (record.requireReceipt && (outcome === "delivered" || outcome === "duplicate") && (!mark || !acknowledged)) return "retry";
+		if (mark && !retainSent(REST_URL, record.eventId, record.body, mark, {
+			requireReceipt: record.requireReceipt,
+			preserveImages: record.requireReceipt
+		})) return "retry";
 		return outcome;
 	}, {
 		maxRecords: DRAIN_MAX_RECORDS,
 		deadlineMs: DRAIN_DEADLINE_MS
-	}).catch(() => void 0);
+	}).then((result) => result.skipped === "locked" ? {
+		...result,
+		remaining: Math.max(1, result.remaining)
+	} : result).catch(() => ({
+		claimed: 0,
+		delivered: 0,
+		duplicates: 0,
+		rejected: 0,
+		expired: 0,
+		corrupt: 0,
+		remaining: 1,
+		error: "capture_drain_failed"
+	}));
 }
 //#endregion
-export { REST_URL, authHeaders, captureObservation, isDrainChild, runDrainChild, withEventId };
+export { REST_URL, authHeaders, captureObservation, handoffObservation, isDrainChild, runDrainChild, withEventId };
 
 //# sourceMappingURL=_capture.mjs.map

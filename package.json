@@ -37,7 +37,8 @@
     "bench:load": "node --import tsx benchmark/load-100k.ts",
     "bench:capture-costs": "node --import tsx benchmark/capture-costs.ts",
     "eval:longmemeval": "tsx eval/runner/longmemeval.ts",
-    "eval:coding-life": "tsx eval/runner/coding-life.ts"
+    "eval:coding-life": "tsx eval/runner/coding-life.ts",
+    "build:codex-compat": "node scripts/build-codex-compat.mjs"
   },
   "keywords": [
     "ai",

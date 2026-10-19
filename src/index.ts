@@ -1,3 +1,6 @@
+import { operationalState } from "./ops/context.js";
+import { createOllamaReadiness, type OllamaReadiness } from "./ops/provider-readiness.mjs";
+import type { MemoryProvider } from "./types.js";
 import { verifiedShutdown } from "./ops/verified-shutdown.js";
 import { createShutdownIngress } from "./ops/shutdown-ingress.mjs";
 import { createBackgroundLifecycle, registerBackgroundInterval } from "./ops/background-lifecycle.mjs";
@@ -308,6 +311,19 @@ async function main() {
   function trackBoot<T>(promise: Promise<T>) { lifecycle.track({ drain: () => promise }); return promise; }
   try {
   const metricsStore = new MetricsStore(kv);
+  if (getEnvVar("AGENTMEMORY_OLLAMA_NATIVE_CHAT")?.toLowerCase() === "true" && fallbackConfig.providers.length > 0)
+    throw new Error("ollama_native_fallback_unsupported");
+  if (config.provider.provider === "openai" && fallbackConfig.providers.length === 0 && getEnvVar("AGENTMEMORY_OLLAMA_NATIVE_CHAT")?.toLowerCase() === "true") {
+    const baseUrl = config.provider.baseURL || getEnvVar("OPENAI_BASE_URL");
+    if (!baseUrl) throw new Error("ollama_native_base_url_required");
+    const readiness = lifecycle.track(createOllamaReadiness({
+      baseUrl,
+      models: [config.provider.model],
+    }));
+    operationalState.providerReadiness = readiness;
+    (provider as MemoryProvider & { readiness?: OllamaReadiness }).readiness = readiness;
+    readiness.start();
+  }
   const dedupMap = lifecycle.track(new DedupMap());
 
   const vectorIndex = embeddingProvider ? new VectorIndex() : null;

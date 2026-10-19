@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — PORT-04 client capture handoff and provider readiness (not deployed)
+
+- Preserve legacy Codex outbox ownership until official capture retains a validated receipt or fsynced managed spool; protect receipt-managed records against expiry and space eviction. Add nine explicit compatibility wrappers without replacing stock top-level hooks, and generate per-file SHA256 manifests with `build:codex-compat`.
+- Add opt-in native Ollama chat with current incremental-summary JSON grammar, safe truncation/offline diagnostics and lifecycle-managed metadata readiness; preserve current XML consumers and the native-disabled OpenAI path.
+- Add per-environment client README and AI PREPARE/APPLY prompt with fixed-revision/manifest verification, target-only hook merge, server-release approval gate, private backups and code-only rollback preserving latest outbox/spool.
+- Fix independent-review findings: retain managed HTTP400/401 records across all hook/CLI/server consumers, require successful protected retention, sync retry directory entries before removing originals, keep remote retry workers alive for managed pending, and reject the unsupported native+fallback combination explicitly. Full suite: 2,770 passed / 0 failed / 4 existing opt-in skips; build and official checks pass; TypeScript retains 28 baseline diagnostics, no new diagnostics. Base: d9cef86.
+- This is an intermediate source port. Async embedding ACK/publication, capture/Viewer progress, full pause/pressure wiring and real III/Ollama/Codex/Windows integration gates remain separate. No operational rollout or long-term-memory write. Verification and review results are recorded in docs/customizations/PORT-04.md.
+
 ### Personal fork — Serena analysis configuration (not deployed)
 
 - Add an editor-only JavaScript project for ops modules so runtime .mjs imports/calls are discoverable without changing the product TypeScript build or enabling JS type checking. Preserve .d.mts consumer boundaries.

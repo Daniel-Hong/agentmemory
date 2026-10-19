@@ -52,10 +52,14 @@ export async function runCaptureCommand(options: CaptureCommandOptions): Promise
       const outcome = classify(res.status);
       if (outcome === "delivered" || outcome === "duplicate") {
         let mark = null;
+        let acknowledged = false;
         try {
-          mark = parseSentMark(JSON.parse(text));
+          const result = JSON.parse(text);
+          mark = parseSentMark(result);
+          acknowledged = typeof result?.observationId === "string" && !!result.observationId && result.success !== false && !result.error;
         } catch {}
-        if (mark) retainSent(options.base, record.eventId, record.body, mark);
+        if (record.requireReceipt && (!mark || !acknowledged)) return "retry";
+        if (mark && !retainSent(options.base, record.eventId, record.body, mark, { requireReceipt: record.requireReceipt, preserveImages: record.requireReceipt })) return "retry";
       }
       return outcome;
     });

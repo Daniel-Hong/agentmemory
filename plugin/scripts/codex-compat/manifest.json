@@ -1,0 +1,35 @@
+{
+  "revision": "codex-custom-compat-v1",
+  "canonicalArtifact": "outputs/audit-page-fix/hook-client.mjs",
+  "canonicalSha256": "c73b82fe13910bb8106516c6af402235285a0d3dc6411f4c326d6e619ec91d42",
+  "files": {
+    "long-session-hook-client.mjs": "ed10e44ea594b912f28ca36a97b8ce48dbb214219e2b2bac50668ea42a2936b1",
+    "session-start.mjs": "c86384b950fe5cdaa804733685e1b1b4a2fe13c010d0ae0d7c6ccf98efbd9697",
+    "prompt-submit.mjs": "55d4cd5d07ee4eae7a67db49cb8de1c6a6837ac62ab66a7887dd1337755f3e67",
+    "post-tool-use.mjs": "cc3a00848a4008eec9195c1d82b23cae8d77c965c41e3440354dc8786997f1fa",
+    "post-tool-failure.mjs": "bf5c9ce1c8f467953c387739cf3de69f109796900a945c3cdff0891f182d1e40",
+    "pre-compact.mjs": "4c271250062d13151839118ca257bebd3faeaa5a33c0665217219b83ec5e6053",
+    "stop.mjs": "b5e2c9ccb7f3769bac3efbc01c4444140ee66e62f94618adc8c406f7066bc80c",
+    "session-end.mjs": "ba9e678025bf009565abcb1f747478b1d07b17e4a7cb18c30ffd25714f3c27c9",
+    "subagent-start.mjs": "24a02be53008721379cbf115884a7739baa2884f8d5f3e12a967b9ae8b0c2869",
+    "subagent-stop.mjs": "8fc6929af24afd799cbaec3a3ca210971c9f51f139f6666fe0025fdfdc62dba8",
+    "provenance.json": "8b4a508db982eee17b1faf550d54b0ae536cd7516ab95e4550e65571551ce65f",
+    "_capture.mjs": "3510c047a005df48f187a1d7cbc2b0ea0d7006d9e38d114a22d4091617569524"
+  },
+  "deploymentMapping": {
+    "plugin/scripts/long-session-hook-client.mjs": "plugin/scripts/codex-compat/long-session-hook-client.mjs",
+    "plugin/scripts/session-start.mjs": "plugin/scripts/codex-compat/session-start.mjs",
+    "plugin/scripts/prompt-submit.mjs": "plugin/scripts/codex-compat/prompt-submit.mjs",
+    "plugin/scripts/post-tool-use.mjs": "plugin/scripts/codex-compat/post-tool-use.mjs",
+    "plugin/scripts/post-tool-failure.mjs": "plugin/scripts/codex-compat/post-tool-failure.mjs",
+    "plugin/scripts/pre-compact.mjs": "plugin/scripts/codex-compat/pre-compact.mjs",
+    "plugin/scripts/stop.mjs": "plugin/scripts/codex-compat/stop.mjs",
+    "plugin/scripts/session-end.mjs": "plugin/scripts/codex-compat/session-end.mjs",
+    "plugin/scripts/subagent-start.mjs": "plugin/scripts/codex-compat/subagent-start.mjs",
+    "plugin/scripts/subagent-stop.mjs": "plugin/scripts/codex-compat/subagent-stop.mjs"
+  },
+  "sharedCaptureMapping": {
+    "plugin/scripts/_capture.mjs": "plugin/scripts/codex-compat/_capture.mjs"
+  },
+  "requiredSharedCapture": "plugin/scripts/codex-compat/_capture.mjs"
+}

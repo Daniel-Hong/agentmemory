@@ -26,6 +26,7 @@ export interface SpoolRecord {
   attempts: number;
   body: Record<string, unknown>;
   bootId?: string;
+  requireReceipt?: boolean;
 }
 
 export interface SentMark {
@@ -173,6 +174,12 @@ function ensureDir(dir: string): void {
   } catch {}
 }
 
+function syncDirectory(dir: string): void {
+  if (process.platform === "win32") return;
+  const fd = openSync(dir, "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -272,6 +279,7 @@ function parseLines(text: string): { records: SpoolRecord[]; corrupt: number } {
 }
 
 function isExpired(rec: SpoolRecord, policy: SpoolPolicy, now: number): boolean {
+  if (rec.requireReceipt) return false;
   const at = Date.parse(rec.spooledAt);
   return Number.isFinite(at) && now - at > policy.maxAgeMs;
 }
@@ -312,7 +320,7 @@ export function appendSpool(
   eventId: string,
   body: Record<string, unknown>,
   reason: string,
-  options: { policy?: SpoolPolicy; dir?: string; attempts?: number } = {},
+  options: { policy?: SpoolPolicy; dir?: string; attempts?: number; preserveImages?: boolean; requireReceipt?: boolean } = {},
 ): AppendResult {
   const policy = options.policy ?? spoolPolicy();
   if (!policy.enabled) return { spooled: false, dropped: "disabled" };
@@ -335,9 +343,10 @@ export function appendSpool(
       reason,
       attempts: options.attempts ?? 0,
       body: sanitizeBody(body),
+      ...(options.requireReceipt ? { requireReceipt: true } : {}),
     };
     let line = JSON.stringify(record) + "\n";
-    if (Buffer.byteLength(line) > policy.maxRecordBytes) {
+    if (Buffer.byteLength(line) > policy.maxRecordBytes && !options.preserveImages) {
       record.body = withoutImage(record.body);
       line = JSON.stringify(record) + "\n";
     }
@@ -359,6 +368,8 @@ export function appendSpool(
       } finally {
         closeSync(fd);
       }
+      syncDirectory(paths.dir);
+      syncDirectory(join(paths.dir, ".."));
       writeStats(paths, (s) => {
         s.spooled++;
         s.expired += expired;
@@ -407,6 +418,8 @@ function evictSent(paths: SpoolPaths, need: number): void {
   for (const seg of listSent(paths).sort((a, b) => a.dueAt - b.dueAt)) {
     if (freed >= need) return;
     try {
+      const parsed = parseLines(readFileSync(seg.file, "utf-8"));
+      if (parsed.corrupt || parsed.records.some(record => record.requireReceipt)) continue;
       unlinkSync(seg.file);
       freed += seg.bytes;
     } catch {}
@@ -427,7 +440,7 @@ export function retainSent(
   eventId: string,
   body: Record<string, unknown>,
   mark: SentMark,
-  options: { policy?: SpoolPolicy; dir?: string; now?: number } = {},
+  options: { policy?: SpoolPolicy; dir?: string; now?: number; preserveImages?: boolean; requireReceipt?: boolean } = {},
 ): boolean {
   const policy = options.policy ?? spoolPolicy();
   if (!policy.enabled || !BOOT_ID_RE.test(mark.bootId)) return false;
@@ -443,9 +456,10 @@ export function retainSent(
       attempts: 0,
       body: sanitizeBody(body),
       bootId: mark.bootId,
+      ...(options.requireReceipt ? { requireReceipt: true } : {}),
     };
     let line = JSON.stringify(record) + "\n";
-    if (Buffer.byteLength(line) > policy.maxRecordBytes) {
+    if (Buffer.byteLength(line) > policy.maxRecordBytes && !options.preserveImages) {
       record.body = withoutImage(record.body);
       line = JSON.stringify(record) + "\n";
     }
@@ -458,9 +472,12 @@ export function retainSent(
       const fd = openSync(file, "a", 0o600);
       try {
         writeSync(fd, line);
+        fsyncSync(fd);
       } finally {
         closeSync(fd);
       }
+      syncDirectory(paths.dir);
+      syncDirectory(join(paths.dir, ".."));
       return true;
     });
   } catch {
@@ -615,6 +632,7 @@ export async function drainSpool(
         outcome = "retry";
         result.error = err instanceof Error ? err.message : String(err);
       }
+      if (rec.requireReceipt && outcome === "rejected") outcome = "retry";
       if (outcome === "delivered") result.delivered++;
       else if (outcome === "duplicate") result.duplicates++;
       else if (outcome === "rejected") result.rejected++;
@@ -625,6 +643,7 @@ export async function drainSpool(
     }
     result.remaining = leftover.length;
     withLock(paths.lock, (locked) => (locked ? requeueLocked(paths, leftover) : requeueUnlocked(paths, leftover)), 2000);
+    if (leftover.some(record => record.requireReceipt)) syncDirectory(paths.dir);
     for (const file of files) {
       try {
         unlinkSync(file);

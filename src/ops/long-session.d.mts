@@ -27,3 +27,6 @@ export function registerLongSessionSummarizer(
 ): SummaryWorker;
 
 export function closeLongSessionInferenceAdmission(): void;
+
+export const INCREMENTAL_SUMMARY_SYSTEM: string;
+export const INCREMENTAL_SUMMARY_FORMAT: Record<string, unknown>;

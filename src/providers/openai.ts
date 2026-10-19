@@ -1,3 +1,6 @@
+import { operationalState } from "../ops/context.js";
+import { INCREMENTAL_SUMMARY_SYSTEM, INCREMENTAL_SUMMARY_FORMAT } from "../ops/long-session.mjs";
+import { providerDeferredError, readOllamaContent } from "../ops/provider-readiness.mjs";
 import type { MemoryProvider } from "../types.js";
 import { getEnvVar } from "../config.js";
 import { fetchWithTimeout } from "./_fetch.js";
@@ -76,6 +79,36 @@ export class OpenAIProvider implements MemoryProvider {
   }
 
   private async call(systemPrompt: string, userPrompt: string): Promise<string> {
+    if (getEnvVar("AGENTMEMORY_OLLAMA_NATIVE_CHAT")?.toLowerCase() === "true") {
+      const readiness = operationalState.providerReadiness;
+      if (readiness && !await readiness.ensureReady()) throw providerDeferredError(readiness);
+      const origin = new URL(this.baseUrl).origin;
+      const body: Record<string, any> = {
+        model: this.model, stream: false,
+        messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+        options: { num_predict: systemPrompt === INCREMENTAL_SUMMARY_SYSTEM ? 768 : this.maxTokens },
+      };
+      if (systemPrompt === INCREMENTAL_SUMMARY_SYSTEM) body.format = INCREMENTAL_SUMMARY_FORMAT;
+      let response: Response;
+      try {
+        response = await fetchWithTimeout(`${origin}/api/chat`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        }, this.timeoutMs);
+      } catch (err) {
+        if (readiness) { readiness.markUnavailable(err); throw providerDeferredError(readiness, err); }
+        throw err;
+      }
+      if (!response.ok) {
+        if (readiness && (response.status >= 500 || response.status === 404)) {
+          readiness.markUnavailable({ code: "OLLAMA_HTTP_" + response.status });
+          throw providerDeferredError(readiness);
+        }
+        throw new Error(`Ollama native chat error (${response.status})`);
+      }
+      const requestKind = systemPrompt === INCREMENTAL_SUMMARY_SYSTEM ? "summary" : "other";
+      return readOllamaContent(await response.json(), readiness, requestKind);
+    }
+
     const url = buildChatUrl(this.baseUrl, this.isAzure, this.azureApiVersion);
     const body: Record<string, unknown> = {
       model: this.model,

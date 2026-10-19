@@ -459,7 +459,8 @@ export function registerCaptureFunctions(
       if (!payload) return "rejected";
       const outcome = await capture({ payload, eventId: record.eventId });
       if (outcome.status === "rejected") return outcome.retryable ? "retry" : "rejected";
-      retainSent(url, record.eventId, body, mark, { dir });
+      if (record.requireReceipt && !outcome.observationId) return "retry";
+      if (!retainSent(url, record.eventId, body, mark, { dir, requireReceipt: record.requireReceipt, preserveImages: record.requireReceipt })) return "retry";
       return outcome.status === "duplicate" ? "duplicate" : "delivered";
     };
   }

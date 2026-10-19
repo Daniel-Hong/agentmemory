@@ -1,0 +1,22 @@
+{
+  "revision": "codex-custom-compat-v1",
+  "canonicalArtifact": "outputs/audit-page-fix/hook-client.mjs",
+  "canonicalSha256": "c73b82fe13910bb8106516c6af402235285a0d3dc6411f4c326d6e619ec91d42",
+  "canonicalOrigin": "Approved first-party long-session-v1 client with precompact-output-v1 correction; not installed npm code",
+  "portedChanges": [
+    "Observe outbox handed to official capture with validated durable receipt or fsynced managed spool before unlink",
+    "Official capture drain is reused; legacy session/context and supported hook output remain",
+    "Wrapper errors avoid logging payload or response bodies"
+  ],
+  "events": {
+    "session-start": "SessionStart",
+    "prompt-submit": "UserPromptSubmit",
+    "post-tool-use": "PostToolUse",
+    "post-tool-failure": "PostToolUseFailure",
+    "pre-compact": "PreCompact",
+    "stop": "Stop",
+    "session-end": "SessionEnd",
+    "subagent-start": "SubagentStart",
+    "subagent-stop": "SubagentStop"
+  }
+}
