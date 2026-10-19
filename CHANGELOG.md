@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.2] — 2026-10-19
+
+### Personal search latency fix (prepared, not deployed)
+
+- Preserve graph search results while avoiding oversized SDK list responses on the file backend. Reuse the existing validated namespace reader with acknowledged mutation overlays and fail-closed handling. Redis is unchanged; no dependency or data migration.
+- Build adjacency once per search instead of once per matching node. Read-only evaluation against the current graph: 50,278ms to 5,021ms; this is not final live API acceptance. Independent randomized comparisons preserve results, order and graph context.
+- Recheck Ubuntu: nine deployed compatibility hooks and all protected files match daniel.1; no drift or repair needed. Windows remains unverified. Existing bundles and live data are preserved.
+- Verification and deployment status: `docs/customizations/SEARCH-LATENCY-DANIEL2.md` and the separate `outputs/search-latency-daniel2-2026-10-19/` dossier. Long-term-memory recording awaits separate manual review.
+
 ## [0.9.30-daniel.1] — 2026-10-19
 
 ### Personal distribution version (not deployed)
@@ -341,6 +350,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.2]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.1...v0.9.30-daniel.2
 [0.9.30-daniel.1]: https://github.com/Daniel-Hong/agentmemory/compare/v0.9.30...v0.9.30-daniel.1
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/rohitg00/agentmemory/compare/v0.9.28...v0.9.29

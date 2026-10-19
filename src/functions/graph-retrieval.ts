@@ -60,14 +60,14 @@ export class GraphRetrieval {
 
     if (matchingNodes.length === 0) return [];
 
+    const traversalIndex = this.buildTraversalIndex(allNodes, allEdges);
     const results: GraphRetrievalResult[] = [];
     const visitedObs = new Set<string>();
 
     for (const startNode of matchingNodes) {
       const paths = this.dijkstraTraversal(
         startNode,
-        allNodes,
-        allEdges,
+        traversalIndex,
         maxDepth,
       );
 
@@ -126,11 +126,12 @@ export class GraphRetrieval {
       n.sourceObservationIds.some((id) => obsIds.includes(id)),
     );
 
+    const traversalIndex = this.buildTraversalIndex(allNodes, allEdges);
     const results: GraphRetrievalResult[] = [];
     const visitedObs = new Set<string>(obsIds);
 
     for (const node of linkedNodes) {
-      const paths = this.dijkstraTraversal(node, allNodes, allEdges, maxDepth);
+      const paths = this.dijkstraTraversal(node, traversalIndex, maxDepth);
       for (const path of paths) {
         const lastNode = path[path.length - 1].node;
         for (const obsId of lastNode.sourceObservationIds) {
@@ -227,12 +228,7 @@ export class GraphRetrieval {
     return latest;
   }
 
-  private dijkstraTraversal(
-    startNode: GraphNode,
-    allNodes: GraphNode[],
-    allEdges: GraphEdge[],
-    maxDepth: number,
-  ): Array<Array<{ node: GraphNode; edge?: GraphEdge }>> {
+  private buildTraversalIndex(allNodes: GraphNode[], allEdges: GraphEdge[]) {
     const nodeIndex = new Map<string, GraphNode>();
     for (const n of allNodes) nodeIndex.set(n.id, n);
 
@@ -246,6 +242,14 @@ export class GraphRetrieval {
       adjacency.get(b)!.push({ neighborId: a, edge });
     }
 
+    return { nodeIndex, adjacency };
+  }
+
+  private dijkstraTraversal(
+    startNode: GraphNode,
+    { nodeIndex, adjacency }: ReturnType<GraphRetrieval["buildTraversalIndex"]>,
+    maxDepth: number,
+  ): Array<Array<{ node: GraphNode; edge?: GraphEdge }>> {
     const dist = new Map<string, number>();
     const pathTo = new Map<string, Array<{ node: GraphNode; edge?: GraphEdge }>>();
     dist.set(startNode.id, 0);

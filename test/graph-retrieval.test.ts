@@ -284,3 +284,12 @@ describe("GraphRetrieval", () => {
     expect(results.find((r) => r.obsId === "obs_4")).toBeUndefined();
   });
 });
+
+it('builds adjacency once per search even when many nodes match the entity',async()=>{
+ const nodes=Array.from({length:30},(_,i)=>makeNode('n'+i,'AgentMemory '+i,'concept',['obs_'+i]));
+ let endpointReads=0;
+ const edges=Array.from({length:29},(_,i)=>{const edge=makeEdge('e'+i,'n'+i,'n'+(i+1));Object.defineProperty(edge,'sourceNodeId',{get(){endpointReads++;return 'n'+i;}});return edge;});
+ const results=await new GraphRetrieval(mockKV(nodes,edges) as never).searchByEntities(['AgentMemory'],2,40);
+ expect(results).toHaveLength(30);
+ expect(endpointReads).toBeLessThanOrEqual(58);
+});

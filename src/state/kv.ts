@@ -4,6 +4,7 @@ import { getEnvVar } from '../config.js'
 import { createStateDurabilityFence } from '../ops/state-durability.mjs'
 import { createObservationReader } from '../ops/observation-pages.mjs'
 import { createAuditReader } from '../ops/audit-reader.mjs'
+import { createGraphFileList } from '../ops/graph-file-list.mjs'
 
 export type StateBackend = 'file' | 'redis'
 
@@ -110,6 +111,7 @@ export class StateKV {
   readonly backend: StateBackend
   readonly durability: ReturnType<typeof createStateDurabilityFence> | null
   readonly observationReader: ReturnType<typeof createObservationReader> | null
+  readonly graphFileList: ReturnType<typeof createGraphFileList> | null
   readonly auditReader: ReturnType<typeof createAuditReader> | null
 
   constructor(
@@ -122,12 +124,14 @@ export class StateKV {
       ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath }) : null)
       : null
     this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this }) : null
+    this.graphFileList = this.backend === 'file' && storePath ? createGraphFileList({ storePath }) : null
     this.auditReader = this.backend === 'file' && storePath ? createAuditReader({ storePath, kv: this }) : null
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
     return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
       this.observationReader?.invalidateCaptureSummary(scope)
+      this.graphFileList?.invalidate(scope)
       throw error
     })
   }
@@ -136,6 +140,7 @@ export class StateKV {
     try { this.observationReader?.record(scope, key, value, deletedExisting) }
     catch (error) { this.observationReader?.invalidateCaptureSummary(scope); throw error }
     this.auditReader?.record(scope, key, value)
+    this.graphFileList?.record(scope, key, value)
   }
 
   async get<T = unknown>(scope: string, key: string): Promise<T | null> {
@@ -182,6 +187,7 @@ export class StateKV {
   }
 
   async list<T = unknown>(scope: string): Promise<T[]> {
+    if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope)
     if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope)
     const values = await this.sdk.trigger<{ scope: string }, T[]>({
       function_id: 'state::list',
