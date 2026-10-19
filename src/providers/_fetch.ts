@@ -42,19 +42,6 @@ function parseRetryAfter(header: string | null): number | undefined {
   return undefined;
 }
 
-async function fetchOnce(
-  url: string,
-  init: RequestInit,
-  ms: number,
-): Promise<Response> {
-  const ctl = new AbortController();
-  const signal = init.signal
-    ? AbortSignal.any([init.signal, ctl.signal])
-    : ctl.signal;
-  const t = setTimeout(() => ctl.abort(), ms);
-  return fetch(url, { ...init, signal }).finally(() => clearTimeout(t));
-}
-
 export async function fetchWithTimeout(
   url: string,
   init: RequestInit,
@@ -70,37 +57,36 @@ export async function fetchWithTimeout(
   const budgetMs = Math.min(ms, HARD_BUDGET_CAP_MS);
   const start = Date.now();
 
-  // The first attempt must honor the capped budget too — passing raw `ms`
-  // here would let a large caller timeout hang past HARD_BUDGET_CAP_MS (and
-  // the iii 180s invocation timeout) before any retry logic runs.
-  let response: Response = await fetchOnce(url, init, budgetMs);
-  for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
-    if (!RETRY_STATUS.has(response.status)) return response;
+  const ctl = new AbortController();
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, ctl.signal])
+    : ctl.signal;
+  const timer = setTimeout(() => ctl.abort(), budgetMs);
+  try {
+    let response = await fetch(url, { ...init, signal });
+    for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
+      if (!RETRY_STATUS.has(response.status)) break;
 
-    const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
-    // Exponential backoff fallback when no Retry-After: 500ms, 1000ms, ...
-    const backoff = 500 * 2 ** (attempt - 1);
-    const delay = Math.min(retryAfter ?? backoff, MAX_RETRY_DELAY_MS);
+      const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
+      const backoff = 500 * 2 ** (attempt - 1);
+      const delay = Math.min(retryAfter ?? backoff, MAX_RETRY_DELAY_MS);
+      const remaining = budgetMs - (Date.now() - start);
+      if (delay + MIN_ATTEMPT_FLOOR_MS > remaining) break;
 
-    // Stop retrying if the sleep plus a minimal attempt would overrun the total
-    // budget — a hostile Retry-After that alone exceeds the remaining budget
-    // returns the last response instead of stalling the caller.
-    const elapsed = Date.now() - start;
-    const remaining = budgetMs - elapsed;
-    if (delay + MIN_ATTEMPT_FLOOR_MS > remaining) return response;
+      // Release discarded responses without waiting for their body to finish.
+      await response.body?.cancel().catch(() => {});
+      await sleep(delay);
+      response = await fetch(url, { ...init, signal });
+    }
 
-    // This response is being discarded for a retry; release its body so the
-    // underlying connection is returned to the pool instead of leaking.
-    await response.body?.cancel().catch(() => {});
-    await sleep(delay);
-
-    // Cap the per-attempt timeout to whatever budget is left so a late attempt
-    // can't push total elapsed past the deadline.
-    const attemptMs = Math.max(
-      MIN_ATTEMPT_FLOOR_MS,
-      Math.min(ms, budgetMs - (Date.now() - start)),
-    );
-    response = await fetchOnce(url, init, attemptMs);
+    // Every caller consumes non-streaming JSON/text; headers alone are not completion.
+    const body = response.body === null ? null : await response.arrayBuffer();
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } finally {
+    clearTimeout(timer);
   }
-  return response;
 }

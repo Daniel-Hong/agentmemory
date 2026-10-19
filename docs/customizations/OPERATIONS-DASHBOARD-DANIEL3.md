@@ -27,3 +27,11 @@ UUID는 요청 전 localStorage에 보존한다. POST 응답 유실 시 같은 I
 운영 적용은 별도 고정 후보와 새 배포 묶음으로 진행한다. 원문/sourceRaw/커서/완료 ID/retry/격리/제보/Lesson/metrics/outbox를 보존하고 예전 백업으로 최신 데이터를 덮어쓰지 않는다. 기존 Windows daniel.2 클라이언트 wrapper 해시는 동일성 확인 후 재적용 불필요로 안내하며 미관측 이벤트는 별도로 남긴다. 적용 후 공급자·저장 인증·capture completion 증가·임베딩 committed 증가·잔여 감소·session/index timeout 재발 여부를 관측한 뒤 복구를 판정한다. 운영 검증을 위해 임의 추론/consolidate/전체 queue replay를 실행하지 않는다.
 
 장기기억에는 이번 원인/재발 방지와 이 문서 참조만 별도 수동 검토 후 기록한다. 현재 자동 저장·통합·덮어쓰기는 하지 않았고 기억 반영은 보류다. upstream 동등 구현이 생기면 동일 수락 시험과 데이터 호환성을 확인하여 대응 custom 코드를 제거하며 이력은 남긴다.
+
+## 인계 전 발견한 공급자 본문 deadline 결함
+
+정상 maintenance pause 뒤 운영 active가13→11에서5분 이상 남아 사전 인수를 보류했다. 현재 공급자는 ready이고 최근 저장 인증도 verified였으며, 운영 서비스의 configured-provider TCP 연결은 관측되지 않았다. 따라서 pending11의 직접 원인은 미확정이다. 강제 종료·현재 코드의 즉석 교체·본문/원문 삭제는 하지 않았다.
+
+별도 실제 localhost 시험에서 fetchWithTimeout은 headers만 받으면 timer를 지워 미완료 JSON/text body를 무기한 기다릴 수 있음을 재현했다. 공유 helper의 실제 소비자는 모두 비스트리밍 JSON/text이므로 기존 전체 budget과 명시 AbortSignal을 최종 body 수신까지 유지하고 buffered Response를 반환한다. 중간429/503 body는 취소하고 기존 retry 규칙을 유지한다. timeout값·의존성은 변경하지 않는다. 현재 소비자가 사용하지 않는 Response url/redirected 메타데이터는 재생성하지 않는다.
+
+본문정체/느린chunk/명시취소/정상metadata/retry후본문정체 실제HTTP6개 RED→GREEN, 기존재시도28개 포함34/0, 전체2,993 pass/0 fail/기존4 skip 및 build성공. 타입기존24 진단은 별도정규화대조한다. 첫 daniel.3 후보와 배포 묶음은 보존하고 새 v2 내부 후보를 만들며 운영 적용은 여전히 미완료다.
