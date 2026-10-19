@@ -546,3 +546,10 @@ describe('capture stall warning',()=>{
   expect(report.problems.find(p=>p.code==='graph-compaction-failed')?.fix).toContain('2026-10-15T01:00:00Z');
  });
 });
+
+it('keeps legacy audit evidence instead of recommending destructive removal',()=>{
+ for(const stateBackend of ['file','redis'] as const){const report=evaluateStatus(inputs({stateBackend,auditLegacy:{status:'too-large',sizeBytes:368217224}}));const advice=report.problems.find(p=>p.code==='audit-legacy-frozen')?.fix||'';expect(advice).toContain('Preserve');expect(advice).not.toMatch(/delete|redis-cli|\bDEL\b/);}
+});
+it('describes queued recovery without prescribing a restart or claiming all capped work is queued',()=>{
+ for(const [state,text] of [['queued','durable'],['limited','batch limit']] as const){const report=evaluateStatus(inputs({index:{...inputs().index,pendingVectorBackfill:5,vectorBackfillState:state}}));const advice=report.problems.find(p=>p.code==='index-vector-backfill-pending')?.fix||'';expect(advice).toContain(text);expect(advice).not.toContain('Check the embedding provider key');}
+});

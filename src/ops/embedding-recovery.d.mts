@@ -8,13 +8,14 @@ export const EMBEDDING_COMMITTED_NAMESPACE: "mem:embedding-committed:v1";
 export interface EmbeddingRecovery {
  add(item: EmbeddingIntent): Promise<boolean>;
  enqueue(item: EmbeddingIntent): Promise<boolean>;
+ initialize(): Promise<void>;
  pump(): Promise<void>;
  reconcile(): Promise<void>;
  start(): void;
  stop(): void;
  drain(): Promise<void>;
  defer(item: EmbeddingIntent, error: unknown, attempted?: boolean): Promise<unknown>;
- snapshot(): {pendingCount: number; lastError: string | null; lastSuccessAt: string | null};
+ snapshot(): {pendingCount: number; initialized: boolean; lastError: string | null; lastSuccessAt: string | null};
 }
 export function registerEmbeddingRecovery(options: {
  kv: StateKV; KV: typeof import("../state/schema.js").KV;

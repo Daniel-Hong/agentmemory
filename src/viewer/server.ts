@@ -482,6 +482,8 @@ async function proxyToRestApi(
     ? "x-agentmemory-inspection"
     : upstreamPath.startsWith("/agentmemory/feedback/")
       ? "x-agentmemory-feedback"
+    : upstreamPath === "/agentmemory/updates/jobs"
+      ? "x-agentmemory-update"
     : upstreamPath === "/agentmemory/background/control"
       ? "x-agentmemory-background"
       : null;

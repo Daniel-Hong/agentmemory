@@ -214,3 +214,16 @@ describe("consolidation status wiring", () => {
     expect(viewer).not.toMatch(/consolidation-row/);
   });
 });
+
+it('keeps the failed attempt while distinguishing a provider that is ready again',()=>{
+ const lastRun={at:'2026-09-25T02:00:00.000Z',tier:'all',results:{semantic:{error:'provider_unavailable'}}};
+ const status=describeConsolidation(input({summaries:8,semanticFacts:34,lastRun,providerReady:true}));
+ expect(tier(status,'semantic').state).toBe('retry_pending');
+ expect(tier(status,'semantic').detail).toContain('provider_unavailable');
+ expect(tier(status,'semantic').detail).toContain('successful retry');
+ expect(status.lastRun).toEqual(lastRun);expect(tier(status,'semantic').count).toBe(34);
+});
+it('does not claim provider recovery for an unknown or still waiting provider',()=>{
+ const lastRun={at:'2026-09-25T02:00:00.000Z',tier:'all',results:{semantic:{error:'provider_unavailable'}}};
+ expect(tier(describeConsolidation(input({lastRun,providerReady:false})),'semantic').state).toBe('error');
+});

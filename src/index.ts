@@ -3,6 +3,7 @@ import { createMemoryPressureGuard } from "./ops/memory-pressure.mjs";
 import { serializeLongSessionProvider } from "./ops/long-session.mjs";
 import { registerEnrichmentWorker } from "./ops/background-enrichment.mjs";
 import { createFeatureLifecycle, registerScopedSlotFunctions } from "./ops/feature-lifecycle.mjs";
+import { createDashboardUpdates, registerDashboardUpdateApi } from "./ops/dashboard-updates.mjs";
 import { registerFeedbackRuntime } from "./feedback/feedback-runtime.mjs";
 import { registerCodexInspection, collectInspectionContext, codexInspectionArgs } from "./ops/codex-inspection.mjs";
 import { rawFromObservationSource } from "./functions/observation-source.js";
@@ -75,6 +76,7 @@ import {
   setHybridRanker,
   setPendingVectorBackfillCount,
   setVectorBackfillState,
+  getPendingVectorBackfillCount,
 } from "./functions/search.js";
 import { registerContextFunction } from "./functions/context.js";
 import { registerSessionIndexMaintenanceFunction } from "./functions/session-index-maintenance.js";
@@ -529,6 +531,7 @@ async function main() {
 
   markKeywordRebuildPending();
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);
+  registerDashboardUpdateApi(sdk, secret, createDashboardUpdates({requestRoot: runtimeMetadataPath("update-requests"), version: VERSION}));
   if (persistentBackground) registerBackgroundControlApi(sdk, secret, control);
   if (getEnvVar("AGENTMEMORY_FEEDBACK_DIR")) {
   const feedback = lifecycle.track(registerFeedbackRuntime(sdk, secret, {
@@ -635,6 +638,7 @@ async function main() {
       kv, KV, index: vectorIndex, provider: embeddingProvider, readiness, withKeyedLock, logger,
       schedule: false, persistIndex: (publication?: VectorPublication) => indexPersistence.saveVerified(publication),
     }));
+    await operationalState.embeddingRecovery.initialize();
   }
   setEmbeddingRecovery(operationalState.embeddingRecovery ?? null);
 
@@ -685,9 +689,9 @@ async function main() {
       void trackBoot(backfillVectorBacklog(keyword.vectorJobs)
         .then(async (result) => {
           if (result.complete && backlogScanComplete) await indexPersistence.clearBackfillMarker().catch(() => {});
-          setVectorBackfillState(result.complete ? "idle" : "paused");
+          setVectorBackfillState(result.queued ? "queued" : result.complete ? "idle" : "paused");
           if (result.added > 0) bootLog(`Vector index backfilled: ${result.added} entries`);
-          if (!result.complete) {
+          if (!result.complete && !result.queued) {
             bootWarn(
               `Vector backfill stopped with ${result.remaining} documents still missing a vector. They are retried on the next start.`,
             );
@@ -700,10 +704,11 @@ async function main() {
     } else if (keyword.vectorJobs.length > 0) {
       setVectorBackfillState("running");
       bootLog(`Backfilling ${keyword.vectorJobs.length} missing vectors in the background`);
+      const limitedBackfill = getPendingVectorBackfillCount() > keyword.vectorJobs.length;
       void trackBoot(backfillVectors(keyword.vectorJobs)
         .then((count) => {
           setPendingVectorBackfillCount(keyword.fullBackfillPending);
-          setVectorBackfillState(keyword.fullBackfillPending > 0 ? "waiting-for-opt-in" : "idle");
+          setVectorBackfillState(keyword.fullBackfillPending > 0 ? "waiting-for-opt-in" : limitedBackfill ? "limited" : getPendingVectorBackfillCount() > 0 ? "queued" : "idle");
           if (count > 0) bootLog(`Vector index backfilled: ${count} entries`);
         })
         .catch((err) => {

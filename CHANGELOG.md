@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.3] — 2026-10-19
+
+### Personal storage recovery and dashboard updates (verified candidate, not deployed)
+
+- Certify a file namespace with one complete validated scan, file/directory fsync and a final unchanged inode/content signature. Preserve strict read-back and dirty-generation checks while removing the duplicate full scan that repeatedly lost the publication window on a hot large namespace. Bound reads with AbortSignal; no timeout increase, data migration, forced stop or queue reset.
+- Load durable embedding retries before showing pending counts, reconcile committed rows in bounded batches, and hand selected vector backfill jobs to the existing persistent worker. Pause preserves intent; resume continues it. Retain the backfill marker and explicitly label any cap-limited remainder. Existing vectors, source text and retries remain intact.
+- Preserve past consolidation failures but distinguish a ready provider awaiting a successful retry. Replace legacy Audit deletion advice with preservation guidance. Historical failures are not marked recovered without a later success.
+- Add an authenticated update dialog, candidate/history APIs, durable UUID requests and an independent systemd runner. Accept only administrator-reviewed root-owned candidate snapshots; browser input cannot select a command, path or URL. Preserve queued retries, restart reconnection, interrupted-job inspection and safe phase history. An exit-zero deployment remains pending final acceptance.
+- Include a one-time administrator installer and root ownership/symlink/hash checks. No production candidate is automatically approved or enrolled; build/download/enrollment remain administrator operations. Client compatibility hooks are unchanged from daniel.2; server updates do not update other systems implicitly.
+- Verification: 2,987 unit tests passed, zero failed, four existing opt-in skips; feedback40/0; Python runner/installer22/0; isolated real CLI/iii8/0 including exact raw export and normal shutdown/restart. Build, compat, docs and skills checks passed. TypeScript retains baseline diagnostics; details and final artifact hashes are in the separate post-deployment-followups-v3 dossier.
+- Operational application, actual root/systemd installation and live queue recovery remain unverified. No live data, legacy Audit file or memory was deleted/replaced. Long-term-memory recording awaits separate manual review. See docs/customizations/OPERATIONS-DASHBOARD-DANIEL3.md.
+
 ## [0.9.30-daniel.2] — 2026-10-19
 
 ### Personal search latency fix (prepared, not deployed)
@@ -350,6 +362,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.3]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.2...v0.9.30-daniel.3
 [0.9.30-daniel.2]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.1...v0.9.30-daniel.2
 [0.9.30-daniel.1]: https://github.com/Daniel-Hong/agentmemory/compare/v0.9.30...v0.9.30-daniel.1
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30

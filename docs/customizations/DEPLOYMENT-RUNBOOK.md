@@ -27,3 +27,7 @@
 코드 CHANGELOG와 제보 이벤트는 접수/분석/검증/적용/실패/rollback을 분리해 자동 보존한다. 장기기억은 기존 기억·중복·remember 자동 갱신 영향을 별도 검토한 뒤 구체적인 저장 지시로만 반영한다. 준비 결과는 저장 완료로 표시하지 않는다.
 
 업스트림 검토는 source/docs/customizations와 같은 수락 시험, 기존 데이터 읽기 호환성으로 판정한다. 최신 순정 기능을 조사하지 않은 상태는 미검증이다. 동등한 기능만 순정으로 대체하며 제보 파일과 과거 이력은 남긴다. 고정·전달한 배포 묶음을 수정하지 말고 다음 revision을 새로 만든다.
+
+## daniel.3 대시보드 업데이트 경계
+
+개인 배포 daniel.3의 최초 helper/unit/sudoers 설치는 관리자 terminal 적용 거래에 포함한다. 이후 대시보드는 root가 사전에 검토·등록한 self-contained 후보만 적용한다. 서버 자체나 웹 입력을 root로 신뢰하지 않는다. 후보 제작/등록 및 interrupted 확인은 scripts/personal-release/DASHBOARD-UPDATES.md를 따른다. 설치됐어도 승인 목록이 비면 적용할 후보가 없다고 표시한다. daniel.2 compatibility client wrapper가 동일하면 다른 머신에 동일 ZIP을 다시 적용하지 않는다. 새 고정 후보/운영 묶음과 실제 인수 영수증으로 최종 적용 여부를 확인한다.

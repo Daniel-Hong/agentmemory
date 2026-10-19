@@ -351,10 +351,11 @@ describe("status on the redis backend", () => {
     expect(problem?.fix).not.toContain("Redis");
   });
 
-  it("tells redis users how to drop a frozen legacy audit hash", () => {
+  it("retains a frozen legacy audit hash without destructive advice", () => {
     const report = evaluateStatus(inputs({ auditLegacy: { status: "too-large", sizeBytes: 1 } }));
     const problem = report.problems.find((p) => p.code === "audit-legacy-frozen");
-    expect(problem?.fix).toContain("DEL state:mem:audit");
+    expect(problem?.fix).toContain("Preserve");
+    expect(problem?.fix).not.toContain("DEL state:mem:audit");
   });
 });
 

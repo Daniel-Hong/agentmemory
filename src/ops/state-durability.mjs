@@ -1,4 +1,4 @@
-import {open} from 'node:fs/promises';
+import {open,stat} from 'node:fs/promises';
 import {isAbsolute,join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {readNamespaceEntries} from './namespace-reader.mjs';
@@ -57,7 +57,10 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));
     async function check(){
       const absent=[],signatures=new Map();
-      for(const file of files){let rows;try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys())});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}
+      for(const file of files){let rows;const controller=new AbortController(),remaining=timeoutMs-(clock()-began);
+        if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
+        const timer=setTimeout(()=>controller.abort(),remaining);
+        try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys()),signal:controller.signal});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
         for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want))throw Error('state_namespace_not_committed');
       }
       return {absent,signatures};
@@ -78,10 +81,13 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
         stage='fsync';
         for(const file of files){if(absent.includes(file.path))continue;const handle=await open(file.path,'r');handles.push(handle);if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path))throw Error('state_namespace_changed');await handle.sync();if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path))throw Error('state_namespace_changed');}
         const directory=await open(storePath,'r');handles.push(directory);await directory.sync();
-        // A concurrent atomic namespace replacement must still match after sync.
+        // The validated bytes remain current only if the synced file's full signature still matches.
         stage='verify';
-        const verified=await check();
-        for(const file of files)if(verified.signatures.get(file.path)!==signatures.get(file.path))throw Error('state_namespace_changed');
+        for(const file of files){
+          let current;try{current=signature(await stat(file.path,{bigint:true}));}catch(error){if(error.code!=='ENOENT')throw error;}
+          if(current!==signatures.get(file.path))throw Error('state_namespace_changed');
+        }
+        if(clock()-began>=timeoutMs)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         forgetKeys(selectedRevisions);
         lastVerification={status:'verified',at:clock(),...details(),errorCode:null};
         return {keys:[...expected.values()].reduce((n,map)=>n+map.size,0),scopes:expected.size,synced:true,waitMs:clock()-began,mutationFailures};

@@ -222,6 +222,8 @@ function describeBackfillState(state: VectorBackfillState): string {
 }
 
 function vectorBackfillFix(state: VectorBackfillState | undefined): string {
+  if (state === "queued") return "The selected missing vectors are retained in the durable recovery queue. They continue when background work is running and the provider is ready; inspect recovery progress and storage diagnostics if they do not complete.";
+  if (state === "limited") return "Only the selected batch was queued under the configured per-start batch limit. Additional missing vectors remain outside that batch; review the remaining work before authorizing another batch. Do not reset the queue.";
   if (state === "waiting-for-opt-in") {
     return "Backfill is paused. Set AGENTMEMORY_VECTOR_BACKFILL=all and restart to opt in. This calls the embedding provider and is capped per boot by AGENTMEMORY_VECTOR_BACKFILL_MAX.";
   }
@@ -439,10 +441,7 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       level: "info",
       code: "audit-legacy-frozen",
       message: `An older audit log${sizeText} was left in place instead of being migrated into monthly scopes, so it is no longer rewritten but its rows do not show up in audit queries.`,
-      fix:
-        input.stateBackend === "redis"
-          ? "Safe to ignore. To remove it, run redis-cli -u \"$AGENTMEMORY_REDIS_URL\" DEL state:mem:audit, then restart agentmemory."
-          : "Safe to ignore. To remove it, stop agentmemory, delete mem%3Aaudit.bin from the state store directory, then start it again.",
+      fix: "Preserve the original audit log as history. It is retained outside the monthly index; do not remove it to clear this notice. A separate reviewed, read-only history export or compatible migration is required to include it in monthly queries.",
     });
   }
 

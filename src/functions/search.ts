@@ -82,10 +82,10 @@ export function isKeywordRebuildInProgress(): boolean {
 
 let pendingVectorBackfill = 0
 let pendingVectorBackfillIds: Set<string> | null = null
-export type VectorBackfillState = "idle" | "running" | "paused" | "waiting-for-opt-in"
+export type VectorBackfillState = "idle" | "running" | "paused" | "queued" | "limited" | "waiting-for-opt-in"
 let vectorBackfillState: VectorBackfillState = "idle"
 export function getVectorBackfillState(): VectorBackfillState {
-  return vectorBackfillState
+  return (vectorBackfillState === "queued" || vectorBackfillState === "limited") && getPendingVectorBackfillCount() === 0 ? "idle" : vectorBackfillState
 }
 export function setVectorBackfillState(state: VectorBackfillState): void {
   vectorBackfillState = state
@@ -669,15 +669,33 @@ async function embedBackfillJobs(
 }
 
 export async function backfillVectors(jobs: VectorBackfillJob[]): Promise<number> {
+  if (embeddingRecovery) { await enqueueBackfill(jobs); return 0 }
   return (await embedBackfillJobs(jobs, 0)).ok
 }
 
-export type VectorBacklogResult = { added: number; failed: number; remaining: number; complete: boolean }
+async function enqueueBackfill(jobs: VectorBackfillJob[]): Promise<number> {
+  const recovery = embeddingRecovery!
+  const missing = jobs.filter(job => !vectorIndex?.has(job.id))
+  let firstFailure: PromiseRejectedResult | undefined
+  for (let offset = 0; offset < missing.length; offset += 5) {
+    const results = await Promise.allSettled(missing.slice(offset, offset + 5).map(job => recovery.enqueue({ id: job.id, sessionId: job.sessionId, kind: job.context.kind })))
+    const failure = results.find(result => result.status === "rejected")
+    if (failure?.status === "rejected" && !firstFailure) firstFailure = failure
+  }
+  if (firstFailure) throw firstFailure.reason
+  return missing.length
+}
+
+export type VectorBacklogResult = { added: number; failed: number; remaining: number; complete: boolean; queued?: boolean }
 
 export async function backfillVectorBacklog(
   jobs: VectorBackfillJob[],
   options: { batchSize?: number; pauseMs?: number } = {},
 ): Promise<VectorBacklogResult> {
+  if (embeddingRecovery) {
+    const remaining = await enqueueBackfill(jobs)
+    return { added: 0, failed: 0, remaining, complete: remaining === 0, queued: remaining > 0 }
+  }
   const batchSize = options.batchSize && options.batchSize > 0 ? options.batchSize : getVectorBackfillMax()
   const pauseMs = options.pauseMs ?? VECTOR_BACKLOG_PAUSE_MS
   let added = 0

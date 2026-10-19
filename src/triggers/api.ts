@@ -493,6 +493,8 @@ export function createConsolidationStatusReader(kv: StateKV) {
       llmConfigured: detectLlmProviderKind() === "llm",
       ...current,
       lastRun: lastRun ?? null,
+      providerReady: operationalState.providerReadiness?.snapshot().status === "ready",
+      backgroundPaused: operationalState.backgroundControl?.snapshot().pausedRequested,
       schedule: {
         intervalMs: getConsolidationIntervalMs(),
         cooldownMs: getConsolidationCooldownMs(),

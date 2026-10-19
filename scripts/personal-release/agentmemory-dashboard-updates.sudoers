@@ -1,0 +1,5 @@
+# Install root:root 0440 with visudo validation. The helper accepts one canonical
+# UUID only; it cannot enroll kits, accept paths, or execute caller commands.
+Defaults!/usr/local/libexec/agentmemory-update-request env_reset
+Defaults!/usr/local/libexec/agentmemory-update-request !setenv
+daniel ALL=(root) NOPASSWD: /usr/local/libexec/agentmemory-update-request *

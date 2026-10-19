@@ -66,3 +66,12 @@ it('streams a namespace larger than its subprocess heap budget while keeping onl
   await promisify(execFile)(process.execPath,['--max-old-space-size=64','--input-type=module','-e',script,path,path+'.result'],{timeout:20000});
   const result=JSON.parse(await readFile(path+'.result','utf8'));expect(result.records).toBe(1600);expect(result.bytes).toBeGreaterThan(100*1024*1024);expect(result.maxEntryChars).toBeLessThan(70*1024);expect(result.maxRssKiB).toBeLessThan(150*1024);
 },25000);
+
+it('validates long string runs and dense escaped delimiters across stream chunks',async()=>{
+  const text='가😀'.repeat(20000)+'\\"'.repeat(30000)+'tail';
+  const {path}=await fixture(Buffer.concat([Buffer.from(JSON.stringify({kept:{sourceRaw:text}})),Buffer.from([255,0])]));
+  const result=await readNamespaceEntries(path,{keys:new Set(['kept']),chunkSize:1024});
+  expect(result.values.get('kept')).toEqual({sourceRaw:text});
+  await writeFile(path,'{"kept":"'+ 'x'.repeat(128*1024)+'\u0001"}');
+  await expect(readNamespaceEntries(path,{chunkSize:1024})).rejects.toThrow('state_namespace_corrupt');
+});

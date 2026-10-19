@@ -4,7 +4,7 @@ export const PROCEDURAL_MIN_PATTERNS = 2;
 export const PROCEDURAL_MIN_SESSIONS_PER_PATTERN = 2;
 export const CONSOLIDATION_COUNTS_REUSE_MS = 30_000;
 
-export type TierState = "off" | "waiting" | "ready" | "ran" | "error";
+export type TierState = "off" | "waiting" | "ready" | "ran" | "error" | "retry_pending";
 
 export interface ConsolidationRunRecord {
   at: string;
@@ -23,6 +23,8 @@ export interface ConsolidationStatusInput {
   relations: number;
   lastRun: ConsolidationRunRecord | null;
   schedule?: ConsolidationSchedule;
+  providerReady?: boolean;
+  backgroundPaused?: boolean;
 }
 
 export interface ConsolidationSchedule {
@@ -70,7 +72,12 @@ function fromLastRun(
   const result = input.lastRun?.results?.[tier];
   if (!input.lastRun || !result) return null;
   const when = ago(input.now, input.lastRun.at);
-  if (result.error) return { state: "error", detail: `Last run ${when} failed: ${result.error}` };
+  if (result.error) {
+    const recovered = result.error === "provider_unavailable" && input.providerReady === true;
+    const current = recovered ? ". Provider is ready now; awaiting a successful retry." : "";
+    const paused = input.backgroundPaused ? " Background work is paused." : "";
+    return { state: recovered ? "retry_pending" : "error", detail: `Last run ${when} failed: ${result.error}${current}${paused}` };
+  }
   if (result.skipped) return null;
   const made =
     tier === "semantic"

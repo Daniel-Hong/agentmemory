@@ -14,6 +14,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
   let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0;
   async function consume(text){
+    const delimiter=/["\\]/g;
     if(state==='value')valueStart=0;
     async function finish(end){
       if(valueStart!==null)valueParts.push(text.slice(valueStart,end));
@@ -24,6 +25,9 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       entries++;valueParts=[];valueStart=null;state='after';
     }
     for(let i=0;i<text.length;i++){
+      if(state==='value'&&valueQuoted&&!valueEscape){
+        delimiter.lastIndex=i;if(!delimiter.test(text))break;i=delimiter.lastIndex-1;
+      }
       const char=text[i];let again=true;
       while(again){again=false;
         if(state==='start'){if(white(char))continue;if(char!=='{')throw fail('state_namespace_shape');state='key_or_end';}
@@ -57,10 +61,15 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
   }
   try{
     const before=signature(await handle.stat({bigint:true}));
+    signal?.throwIfAborted();
     stream=handle.createReadStream({autoClose:false,highWaterMark:chunkSize,signal});
     for await(const chunk of stream){
+      const rawText=chunk.toString('latin1'),delimiter=/["\\]/g;
       let end=chunk.length;
       for(let i=0;i<chunk.length;i++){
+        if(rawQuoted&&!rawEscape){
+          delimiter.lastIndex=i;if(!delimiter.test(rawText))break;i=delimiter.lastIndex-1;
+        }
         const byte=chunk[i];
         if(!rawStarted){if([9,10,13,32].includes(byte))continue;if(byte!==123)throw fail('state_namespace_shape');rawStarted=true;rawDepth=1;continue;}
         if(rawQuoted){if(rawEscape)rawEscape=false;else if(byte===92)rawEscape=true;else if(byte===34)rawQuoted=false;}

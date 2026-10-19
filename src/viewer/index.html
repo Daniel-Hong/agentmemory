@@ -2750,8 +2750,8 @@
       return { percent: full > 0 ? Math.round((saved / full) * 100) : 0, saved: saved };
     }
 
-    var LAYER_STATE_BADGES = { off: 'badge-muted', waiting: 'badge-yellow', ready: 'badge-blue', ran: 'badge-green', error: 'badge-red' };
-    var LAYER_STATE_LABELS = { off: 'off', waiting: 'waiting', ready: 'ready', ran: 'active', error: 'failed' };
+    var LAYER_STATE_BADGES = { off: 'badge-muted', waiting: 'badge-yellow', ready: 'badge-blue', ran: 'badge-green', error: 'badge-red', retry_pending: 'badge-yellow' };
+    var LAYER_STATE_LABELS = { off: 'off', waiting: 'waiting', ready: 'ready', ran: 'active', error: 'failed', retry_pending: 'retry pending' };
 
     function layerPreview(tierId, semFacts, procItems) {
       var items = [];
@@ -2771,7 +2771,7 @@
     function renderMemoryLayers(status, semFacts, procItems) {
       var html = '<div class="card" style="margin-top:0;"><div class="card-title">Memory layers ' + help('consolidation');
       if (status && status.lastRunAt) {
-        html += '<span style="float:right;font-size:10px;color:var(--ink-faint);font-family:var(--font-mono);text-transform:none;letter-spacing:0;">consolidated ' + esc(formatTime(status.lastRunAt)) + '</span>';
+        html += '<span style="float:right;font-size:10px;color:var(--ink-faint);font-family:var(--font-mono);text-transform:none;letter-spacing:0;">last attempt ' + esc(formatTime(status.lastRunAt)) + '</span>';
       }
       html += '</div>';
       if (!status || !status.tiers) {
@@ -7344,7 +7344,7 @@
       renderAudit();
     }
 
-    var HEALTH_LEVEL_BADGES = { ok: 'badge-green', info: 'badge-blue', warn: 'badge-yellow', error: 'badge-red' };
+    var HEALTH_LEVEL_BADGES = { ok: 'badge-green', info: 'badge-blue', warn: 'badge-yellow', error: 'badge-red', retry_pending: 'badge-yellow' };
 
     var statusReportRequest = null;
     function ensureStatusReport() {
@@ -9359,5 +9359,6 @@
     })();
   </script>
 <!-- AGENTMEMORY_FEEDBACK_VIEWER -->
+<!-- AGENTMEMORY_UPDATE_VIEWER -->
 </body>
 </html>

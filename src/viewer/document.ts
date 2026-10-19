@@ -21,7 +21,9 @@ function loadViewerTemplate(): string | null {
     try {
       const template = readFileSync(path, "utf-8");
       const feedback = readFileSync(join(dirname(path), "feedback.js"), "utf-8");
-      return template.replace("<!-- AGENTMEMORY_FEEDBACK_VIEWER -->", `<script nonce="${VIEWER_NONCE_PLACEHOLDER}">${feedback}</script>`);
+      const updates = readFileSync(join(dirname(path), "update-viewer.js"), "utf-8");
+      return template.replace("<!-- AGENTMEMORY_FEEDBACK_VIEWER -->", `<script nonce="${VIEWER_NONCE_PLACEHOLDER}">${feedback}</script>`)
+        .replace("<!-- AGENTMEMORY_UPDATE_VIEWER -->", `<script nonce="${VIEWER_NONCE_PLACEHOLDER}">${updates}</script>`);
     } catch {}
   }
   return null;

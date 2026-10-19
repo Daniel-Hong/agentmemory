@@ -1,0 +1,18 @@
+[Unit]
+Description=Inspect interrupted AgentMemory update transactions
+After=local-fs.target
+Before=agentmemory.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/agentmemory-update-runner --recover-incomplete
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

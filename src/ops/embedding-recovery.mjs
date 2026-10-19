@@ -5,19 +5,29 @@ export const EMBEDDING_RETRY_NAMESPACE='mem:embedding-retry:v1';
 export const EMBEDDING_COMMITTED_NAMESPACE='mem:embedding-committed:v1';
 const digest=text=>createHash('sha256').update(text).digest('hex');
 export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKeyedLock=async(k,fn)=>fn(),logger,clock=Date.now,schedule=true,onIndexChanged,persistIndex}) {
-  const state={pendingCount:0,lastError:null,lastSuccessAt:null};
-  let pumping=false,reconciled=false,stopped=false,interval=null;
-  const active=new Set(),publications=new Map(),accepted=new Map();
+  const state={pendingCount:0,initialized:false,lastError:null,lastSuccessAt:null};
+  let pumping=false,reconciled=false,stopped=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
+  const active=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
   const key=id=>'agentmemory:vector:'+id;
   const intentKey=id=>'agentmemory:vector-intent:'+id;
   function track(promise){active.add(promise);promise.then(()=>active.delete(promise),()=>active.delete(promise));return promise;}
+  function initialize(){
+    if(!initialization)initialization=(async()=>{
+      for(const item of await kv.list(EMBEDDING_RETRY_NAMESPACE))pendingIds.add(item.id);
+      state.pendingCount=pendingIds.size;state.initialized=true;
+    })().catch(error=>{initialization=null;throw error;});
+    return initialization;
+  }
+  function pending(item){pendingIds.add(item.id);state.pendingCount=pendingIds.size;}
+  function completed(item){pendingIds.delete(item.id);state.pendingCount=pendingIds.size;}
   async function retainUnlocked(item,error,attempted) {
+    await initialize();
     const old=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
     const attempts=(old?.attempts??0)+(attempted?1:0);
     await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...old,id:item.id,sessionId:item.sessionId,kind:item.kind,attempts,
       retryAt:attempted?clock()+Math.min(1800000,30000*2**Math.min(attempts-1,6)):(old?.retryAt??0),errorCode:networkErrorCode(error)});
     state.lastError=networkErrorCode(error);
-    if(!old)state.pendingCount++;
+    pending(item);
   }
   function retain(item,error,attempted){return withKeyedLock(intentKey(item.id),()=>retainUnlocked(item,error,attempted));}
   async function fence(keys){
@@ -32,6 +42,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   function enqueue(item){
     if(stopped)return Promise.reject(Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'}));
     return track(withKeyedLock(intentKey(item.id),async()=>{
+      await initialize();
       const old=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
       if(!old)await retainUnlocked(item,{code:'CAPTURE_PENDING_EMBEDDING'},false);
       await certifyIntent(item);return !old;
@@ -52,7 +63,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       await kv.delete(EMBEDDING_COMMITTED_NAMESPACE,item.id);
       await kv.delete(EMBEDDING_RETRY_NAMESPACE,item.id);
       if(await current(item)!==null){await retainUnlocked(item,{code:'EMBEDDING_CANONICAL_RESTORED'},false);await certifyIntent(item);return false;}
-      state.pendingCount=Math.max(0,state.pendingCount-1);return true;
+      completed(item);return true;
     }catch(error){await retainUnlocked(item,error,true);throw error;}
   }
   function publish(item,version,fingerprint){
@@ -75,7 +86,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
           if(latest===null){await discardUnlocked(item);return;}
           if(digest(latest)!==fingerprint){await retainUnlocked(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);await certifyIntent(item);return;}
           state.lastSuccessAt=new Date(clock()).toISOString();state.lastError=null;
-          state.pendingCount=Math.max(0,state.pendingCount-1);
+          completed(item);
         });
       }catch(error){
         await withKeyedLock(intentKey(item.id),async()=>{
@@ -89,6 +100,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     promise.then(()=>{if(publications.get(item.id)===promise)publications.delete(item.id)},()=>{if(publications.get(item.id)===promise)publications.delete(item.id)});
   }
   async function perform(item,text) {
+    await initialize();
     if(text===null){await withKeyedLock(intentKey(item.id),()=>discardUnlocked(item));return false;}
     const fingerprint=digest(text);
     const inMemory=accepted.get(item.id)===fingerprint&&index.vectors?.has(item.id);
@@ -99,7 +111,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     await withKeyedLock(intentKey(item.id),async()=>{
       const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
       await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...queued,id:item.id,sessionId:item.sessionId,kind:item.kind,attempts:queued?.attempts??0,retryAt:queued?.retryAt??0,generation,fingerprint,phase:inMemory?'embedded':'queued'});
-      if(!queued)state.pendingCount++;
+      pending(item);
       await certifyIntent(item);
     });
     try {
@@ -121,9 +133,13 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     }
   }
   function add(item){if(stopped)return Promise.resolve(false);return track(withKeyedLock(key(item.id),async()=>{if(stopped)return false;if(backgroundPaused()){await retain(item,{code:'BACKGROUND_PAUSED'},false);return false;}return backgroundTask(async()=>perform(item,await current(item)))();}));}
-  async function reconcile(){
+  async function reconcile(limit=Infinity){
+    await initialize();
     if(stopped||!index.vectors?.has)return;
-    for(const item of await kv.list(EMBEDDING_COMMITTED_NAMESPACE)){
+    if(!committedRows)committedRows=await kv.list(EMBEDDING_COMMITTED_NAMESPACE);
+    const end=Math.min(committedRows.length,committedOffset+limit);
+    while(committedOffset<end){
+      const item=committedRows[committedOffset];
       if(stopped)return;
       await withKeyedLock(key(item.id),async()=>{
         if(await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id))return;
@@ -131,14 +147,16 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
         if(text!==null&&index.vectors.has(item.id)&&item.fingerprint===digest(text))return;
         await retain(item,{code:text===null?'EMBEDDING_CANONICAL_DELETED':'EMBEDDING_INDEX_GAP'},false);
       });
+      committedOffset++;
     }
-    reconciled=true;
+    reconciled=committedOffset===committedRows.length;
+    if(reconciled){committedRows=null;committedOffset=0;}
   }
   async function runPump(){
     if(stopped||backgroundPaused()||pumping)return;pumping=true;
     try{
-      if(!reconciled)await reconcile();
-      const rows=await kv.list(EMBEDDING_RETRY_NAMESPACE);state.pendingCount=rows.length;
+      if(!reconciled)await reconcile(50);
+      const rows=await kv.list(EMBEDDING_RETRY_NAMESPACE);
       let attempted=0;
       for(const item of rows){
         if(stopped||backgroundPaused())break;
@@ -151,14 +169,13 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
         });
         if(readiness?.snapshot?.().status==='waiting')break;
       }
-      state.pendingCount=(await kv.list(EMBEDDING_RETRY_NAMESPACE)).length;
     }catch(error){state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery scan deferred',{errorCode:state.lastError});}
     finally{pumping=false;}
   }
-  function pump(){if(stopped)return Promise.resolve();return track(backgroundTask(runPump)());}
+  function pump(){if(stopped)return Promise.resolve();return track(initialize().then(()=>backgroundTask(runPump)()));}
   function stop(){stopped=true;if(interval){clearInterval(interval);interval=null;}}
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
-  function start(){if(stopped||interval)return;interval=setInterval(()=>void pump(),15000);interval.unref();}
+  function start(){if(stopped||interval)return;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});interval=setInterval(()=>void pump().catch(error=>{state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});}),15000);interval.unref();}
   if(schedule)start();
-  return {add,enqueue,pump,start,reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
+  return {add,enqueue,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
 }
