@@ -34,7 +34,7 @@ setTimeout(async()=>{try {
  conn.state='reconnecting';renderConnection();report.httpStatus=document.getElementById('ws-status').textContent;report.httpBanner=document.getElementById('offline-banner').textContent;
  store.snapshotError=true;renderConnection();report.failedHttpStatus=document.getElementById('ws-status').textContent;
  store.snapshotError=false;conn.state='live';renderConnection();
- report.getOnly=requests.every(r=>r.method==='GET');report.sessionListsSafe=requests.filter(r=>r.path.includes('/sessions?') && !r.path.includes('&q=')).every(r=>r.path.includes('includeSummary=false'));report.initial=document.getElementById('view-health').textContent;
+ report.getOnly=requests.every(r=>r.method==='GET');report.sessionListsSafe=requests.filter(r=>r.path.includes('/sessions?') && !r.path.includes('&q=')).every(r=>r.path.includes('includeSummary=false'));report.initial=document.getElementById('view-health').textContent;report.initialHistoryRequests=requests.filter(r=>r.path.includes('/codex-inspection')).length;report.stageRows=document.querySelectorAll('#health-operations .operations-progress tbody tr').length;report.summaryCards=document.querySelectorAll('#health-operations .operations-summary>div').length;
  var details=document.getElementById('operations-details');details.focus();details.open=true;details.dispatchEvent(new Event('toggle'));report.detailsFocusable=details.querySelector('summary').tabIndex===0;report.noModal=!document.getElementById('modal-overlay').classList.contains('open');
  report.horizontalOverflow=document.documentElement.scrollWidth>window.innerWidth;
  var select=document.getElementById('auto-refresh-interval');select.value='60';select.dispatchEvent(new Event('change'));report.interval=autoRefresh.seconds;
@@ -45,8 +45,9 @@ setTimeout(async()=>{try {
  fixtureControl={status:'paused'};await checkBackgroundControl();report.resume=document.querySelector('[data-action="resume-background"]').disabled===false;
  document.querySelector('[data-action="resume-background"]').focus();document.querySelector('[data-action="resume-background"]').click();report.resuming=document.getElementById('health-operations').textContent.includes('재개 중');document.querySelector('[data-action="resume-background"]').click();await new Promise(r=>setTimeout(r,100));report.resumeCount=resumes;report.resumed=operations.control.status==='running';
  fixtureControl={status:'error'};await checkBackgroundControl();report.noResume=!document.querySelector('[data-action="resume-background"]');
- document.querySelector('[data-action="submit-codex-inspection"]').click();document.querySelector('[data-action="submit-codex-inspection"]').click();await new Promise(r=>setTimeout(r,40));report.analysisRequests=requests.filter(r=>r.path.includes('/codex-inspection')&&r.method==='POST');
- fixtureJob={id:'fixture-job',status:'completed',result:'<img src=x>safe result'};await checkCodexInspection();report.final=document.getElementById('view-health').textContent;report.executedUnsafeHtml=!!document.querySelector('#health-operations img');
+ report.noAnalysisActions=!document.querySelector('[data-action="submit-codex-inspection"], [data-action="copy-inspection-request"]');
+ fixtureJob={id:'fixture-job',status:'completed',result:'<img src=x onerror="window.fixtureUnsafe=true">safe result'};var historyBefore=requests.filter(r=>r.path.includes('/codex-inspection')).length;document.querySelector('[data-action="refresh-codex-inspection"]').click();await new Promise(r=>setTimeout(r,40));report.historyRequests=requests.filter(r=>r.path.includes('/codex-inspection')).slice(historyBefore);report.analysisRequests=requests.filter(r=>r.path.includes('/codex-inspection')&&r.method==='POST');report.final=document.getElementById('view-health').textContent;report.executedUnsafeHtml=!!document.querySelector('#health-operations img')||!!window.fixtureUnsafe;
+ await loadOperations();report.historyPreserved=document.getElementById('view-health').textContent.includes('safe result');
  report.detailsKept=document.getElementById('operations-details').open;
  document.getElementById('health-operations').scrollIntoView({block:'start'});
  document.getElementById('result').textContent=JSON.stringify(report);
@@ -63,14 +64,14 @@ describe.skipIf(spawnSync('google-chrome',['--version'],{encoding:'utf8',timeout
     const match=run.stdout.match(/<pre id="result"[^>]*>([\s\S]*?)<\/pre>/);expect(match).not.toBeNull();
     const result=JSON.parse(match![1].replaceAll('&quot;','"').replaceAll('&amp;','&').replaceAll('&lt;','<').replaceAll('&gt;','>'));
     writeFileSync(join(dir,'browser-evidence.json'),JSON.stringify({directory:dir,...result},null,2));
-    expect(result.error).toBeUndefined();expect(result.errors).toEqual([]);expect(result.getOnly).toBe(true);expect(result.sessionListsSafe).toBe(true);
+    expect(result.error).toBeUndefined();expect(result.errors).toEqual([]);expect(result.getOnly).toBe(true);expect(result.sessionListsSafe).toBe(true);expect(result.initialHistoryRequests).toBe(0);expect(result.stageRows).toBe(6);expect(result.summaryCards).toBe(3);
     expect(result.httpStatus).toContain('HTTP');expect(result.httpBanner).toContain('실시간 스트림 미연결');expect(result.failedHttpStatus).not.toContain('HTTP');
     expect(result.initial).toContain('활성 격리: 1건');expect(result.initial).toContain('title');expect(result.initial).toContain('부분 내보내기');expect(result.initial).toContain('품질 표본 3건');expect(result.initial).toContain('사용 가능 16코어');
     expect(result.initial).toContain('확인된 최소 7건');expect(result.initial).toContain('미확인 세션 1개 / 단계 3개');expect(result.initial).toContain('처리 중');expect(result.initial).toContain('상태 오래됨');expect(result.initial).toContain('다음 확인');
     expect(result.initial).not.toContain('PRIVATE_SECRET');expect(result.noModal).toBe(true);expect(result.detailsFocusable).toBe(true);expect(result.horizontalOverflow).toBe(false);
-    expect(result.interval).toBe(60);expect(result.off).toBe(true);expect(result.saved).toEqual({enabled:false,seconds:60});expect(result.banner).toContain('OFF');expect(result.offRequests).toBe(0);expect(result.manualRequests).toBe(4);
+    expect(result.interval).toBe(60);expect(result.off).toBe(true);expect(result.saved).toEqual({enabled:false,seconds:60});expect(result.banner).toContain('OFF');expect(result.offRequests).toBe(0);expect(result.manualRequests).toBe(3);
     expect(result.pauseCount).toBe(1);expect(result.focusAfterPause).toBe(true);expect(result.pausing).toContain('일시정지 중');expect(result.resume).toBe(true);expect(result.resuming).toBe(true);expect(result.resumeCount).toBe(1);expect(result.resumed).toBe(true);expect(result.noResume).toBe(true);
-    expect(result.analysisRequests).toHaveLength(1);expect(Object.keys(JSON.parse(result.analysisRequests[0].body))).toEqual(['requestId']);expect(result.executedUnsafeHtml).toBe(false);expect(result.detailsKept).toBe(true);
+    expect(result.noAnalysisActions).toBe(true);expect(result.analysisRequests).toHaveLength(0);expect(result.historyRequests).toHaveLength(1);expect(result.historyRequests[0].method).toBe('GET');expect(result.final).toContain('<img src=x');expect(result.historyPreserved).toBe(true);expect(result.executedUnsafeHtml).toBe(false);expect(result.detailsKept).toBe(true);
     console.log('Browser evidence '+dir);
   },30000);
   it('uses native Enter and Tab for the details without a focus-trapping popup',async()=> {

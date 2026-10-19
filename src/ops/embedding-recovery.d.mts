@@ -16,7 +16,7 @@ export interface EmbeddingRecovery {
  stop(): void;
  drain(): Promise<void>;
  defer(item: EmbeddingIntent, error: unknown, attempted?: boolean): Promise<unknown>;
- snapshot(): {pendingCount: number; initialized: boolean; lastError: string | null; lastSuccessAt: string | null};
+ snapshot(): {pendingCount: number; completedCount: number; counterEpoch: string; initialized: boolean; lastError: string | null; lastSuccessAt: string | null};
 }
 export function registerEmbeddingRecovery(options: {
  kv: StateKV; KV: typeof import("../state/schema.js").KV;

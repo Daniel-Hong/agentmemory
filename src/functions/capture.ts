@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +74,8 @@ export interface CapturePolicy {
 }
 
 export interface CaptureProgress {
+  completedCount: number;
+  counterEpoch: string;
   pending: number | null;
   lastCompletedAt: string | null;
   lastSweepAt: string | null;
@@ -207,6 +209,7 @@ export function registerCaptureFunctions(
   options: { restPort?: number; durableAfterMs?: number } = {},
 ): CaptureController {
   const policy = capturePolicy();
+  const counterEpoch = randomUUID();
   const mark: SentMark = {
     bootId: randomBytes(12).toString("hex"),
     durableAfterMs: options.durableAfterMs ?? serverDurableAfterMs(),
@@ -226,7 +229,7 @@ export function registerCaptureFunctions(
   let pendingSince: number | null = null;
   const stallAfterMs = Math.max(300000, policy.retryIntervalMs * 30);
   function progress(): CaptureProgress {
-    return {pending:inboxSize,lastCompletedAt,lastSweepAt,sweepRunning:!!sweeping,stallAfterMs,
+    return {completedCount:counters.completed,counterEpoch,pending:inboxSize,lastCompletedAt,lastSweepAt,sweepRunning:!!sweeping,stallAfterMs,
       stalled:inboxSize!==null && inboxSize>0 && pendingSince!==null && Date.now()-Math.max(pendingSince,lastCompletedAt?Date.parse(lastCompletedAt):0)>stallAfterMs};
   }
   let lastPruneAt: string | null = null;

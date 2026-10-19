@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.6] — 2026-10-20
+
+### Operations progress and reviewed dashboard release kits (not deployed)
+
+- Present status summaries, a six-stage progress table and folded error/provider/session details. Show remaining work, observed completions, throughput and a qualified per-stage ETA; do not sum overlapping stages into a unique-memory count or promise an overall completion time.
+- Expose existing certified capture completions and count embedding completions only after strict publication/fingerprint verification. Worker epochs reset browser samples; missing, stale, held, restarting, retrying and inflow-dominated states suppress unsupported estimates. Keep at least two samples across a five-minute poll plus request latency.
+- Remove the Health Codex-analysis launch controls and automatic analysis-history lookup. Preserve server compatibility and past results behind an explicit history read. Existing pause/resume, storage diagnostics and quarantine history remain available.
+- Prepare self-contained, explicitly reviewed release kits for the existing root-owned dashboard runner. Unapproved drafts cannot enroll themselves; browser inputs cannot select executables. Retain normal shutdown, latest private backup, strict guards, archive read-back and code-only recovery without restoring old data. Final transaction validation and administrator enrollment remain separate gates.
+- Include the un-applied daniel.5 SDK nullish-result contract fix. Compare against the actual installed baseline; identical compatibility hooks do not require another client rollout. See docs/customizations/OPERATIONS-OVERVIEW-DANIEL6.md and the separate operations-overview-daniel6-2026-10-20 dossier for validation and application status.
+- Final source checks: 3,047 unit tests passed / four existing opt-in skips; Python42 passed, build/compat/docs/skills and feedback40 passed. TypeScript retains exactly24 baseline diagnostics, no additions. Desktop/mobile/keyboard and measured-rate regressions passed; isolated packaged-runtime and root installation are separate gates.
+- Operational application and live queue recovery are not yet verified. Long-term-memory recording remains pending separate manual review.
+
+## [0.9.30-daniel.6] — 2026-10-19
 ## [0.9.30-daniel.5] — 2026-10-20
 
 ### Missing-value contract for verified embedding publication (not deployed)
@@ -384,6 +397,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.6]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.5...v0.9.30-daniel.6
 [0.9.30-daniel.5]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.4...v0.9.30-daniel.5
 [0.9.30-daniel.4]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.3...v0.9.30-daniel.4
 [0.9.30-daniel.3]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.2...v0.9.30-daniel.3

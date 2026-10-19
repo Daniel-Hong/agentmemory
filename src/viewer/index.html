@@ -1444,6 +1444,19 @@
     .refresh-controls label { display: flex; align-items: center; gap: 4px; }
     .refresh-controls select { width: auto; padding: 3px; color: var(--ink); background: var(--bg); border: 1px solid var(--border); }
     .operations-card { margin-top: 16px; min-width: 0; overflow-wrap: anywhere; }
+    .operations-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:16px 0; }
+    .operations-summary>div { border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; }
+    .operations-summary span,.operations-summary small { display:block; color:var(--ink-muted); line-height:1.6; font-family:var(--font-ui); }
+    .operations-summary strong { font-family:var(--font-ui); color:var(--ink); display:block; font-size:1.25rem; line-height:1.5; margin:4px 0; }
+    .operations-progress { margin:16px 0; font-family:var(--font-ui); color:var(--ink); }
+    .operations-progress table { font-size:13px; }
+    .operations-progress th { font-size:12px; text-transform:none; letter-spacing:0; }
+    .operations-progress tbody th { border-bottom:1px solid var(--border-light); font-size:13px; color:var(--ink); }
+    .operations-progress caption { text-align:left; padding:8px 0; font-weight:600; }
+    .operations-progress th,.operations-progress td { padding:12px 10px; vertical-align:top; }
+    .operations-progress .hnote { color:var(--ink-muted); max-width:220px; font-size:12px; margin:4px 0; }
+    .operations-notice { border-left:3px solid var(--yellow); padding:10px 14px; }
+    @media(max-width:600px) { .operations-summary { grid-template-columns:1fr; gap:8px; } .operations-progress { overflow-x:auto; } }
     .operations-card summary { cursor: pointer; padding: 8px 0; }
     .operations-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; font-size: 12px; }
     .operations-card th, .operations-card td { white-space: normal; min-width: 110px; }
@@ -2488,7 +2501,7 @@
       });
       if (!available) unknownSessionsCount = null;
       var embedding = health.embeddingRecovery, feature = health.featureLifecycle;
-      if (embedding && Number.isSafeInteger(embedding.pendingCount) && embedding.pendingCount >= 0) totals.embedding = embedding.pendingCount;
+      if (embedding && embedding.initialized !== false && Number.isSafeInteger(embedding.pendingCount) && embedding.pendingCount >= 0) totals.embedding = embedding.pendingCount;
       if (feature && feature.enabled === false) totals.features = 0;
       else if (feature && feature.enabled === true && Number.isSafeInteger(feature.pendingCount) && feature.pendingCount >= 0) totals.features = feature.pendingCount;
       knownTotals.embedding = totals.embedding; knownTotals.features = totals.features;
@@ -2549,6 +2562,78 @@
       var cause = typeof diagnostics.causeCode === 'string' && /^[A-Z0-9_]{1,80}$/.test(diagnostics.causeCode) ? diagnostics.causeCode : null;
       return stage || code ? '<p class="hnote" role="status">'+esc(stage || '진행 단계 미확인')+esc(elapsed)+(code ? ' · 오류 코드 '+esc(code) : '')+(cause ? ' / '+esc(cause) : '')+'</p>' : '';
     }
+    function progressDuration(seconds) {
+      if (!Number.isFinite(seconds) || seconds < 0) return '계산 불가';
+      if (seconds < 60) return '1분 미만';
+      var minutes = Math.ceil(seconds/60);
+      return minutes < 60 ? '약 '+minutes+'분' : minutes < 1440 ? '약 '+Math.floor(minutes/60)+'시간 '+minutes%60+'분' : '약 '+Math.ceil(minutes/1440)+'일';
+    }
+    function operationsStages(work, sessions, health, available) {
+      var capture = health.captureProgress || {}, embedding = health.embeddingRecovery || {};
+      var stages = [{key:'capture',label:'수집 저장',background:false,pending:Number.isSafeInteger(capture.pending) && capture.pending >= 0?capture.pending:null,completed:capture.completedCount,epoch:capture.counterEpoch,lastCompletedAt:capture.lastCompletedAt,running:capture.sweepRunning,error:capture.stalled?'CAPTURE_STALLED':null,counters:{worker:capture.completedCount}}];
+      [['summary','요약'],['compress','압축'],['graph','그래프']].forEach(function(pair) {
+        var counters = Object.create(null), statuses = [], complete = available, blocked = 0;
+        (sessions || []).forEach(function(s) {
+          var p = pair[0] === 'summary' ? s.summaryProgress : (s.enrichmentProgress || {})[pair[0]];
+          if (p && p.enabled === false || s.observationCount === 0 || s.observations === 0) return;
+          if (!p || !Number.isSafeInteger(p.processedCount) || p.processedCount < 0 || typeof s.id !== 'string') { complete = false; return; }
+          counters[s.id] = p.processedCount; statuses.push(p.status);
+          blocked += Object.values(p.blockedObservations || {}).filter(function(r) { return r && r.status === 'blocked'; }).length;
+        });
+        stages.push({key:pair[0],label:pair[1],background:true,pending:work.totals[pair[0]],completed:complete?Object.values(counters).reduce(function(a,b){return a+b;},0):null,epoch:JSON.stringify(Object.keys(counters).sort()),counters:counters,running:statuses.includes('running'),waiting:statuses.includes('waiting_provider'),blocked:blocked,error:statuses.some(function(s){return /retry|error|failed/.test(s || '');})?'STAGE_RETRY':null});
+      });
+      stages.push({key:'embedding',label:'임베딩',background:true,pending:embedding.initialized === false?null:work.totals.embedding,completed:embedding.completedCount,epoch:embedding.counterEpoch,lastCompletedAt:embedding.lastSuccessAt,counters:{worker:embedding.completedCount},error:embedding.lastError === 'CAPTURE_PENDING_EMBEDDING'?null:embedding.lastError});
+      stages.push({key:'features',label:'기억 정리',background:true,pending:work.totals.features,completed:null,epoch:null,counters:{}});
+      return stages;
+    }
+    function recordOperationsProgress(stages, at, control) {
+      var epoch = JSON.stringify(stages.filter(function(s){return s.key === 'capture' || s.key === 'embedding';}).map(function(s){return s.epoch || null;}));
+      if (operations.progressEpoch !== epoch) { operations.progressSamples = {}; operations.progressEpoch = epoch; }
+      operations.progressSamples = operations.progressSamples || {};
+      stages.forEach(function(s) {
+        var valid = Number.isSafeInteger(s.completed) && s.completed >= 0 && s.pending !== null && s.epoch && (!s.background || control.status === 'running' && !control.pausedRequested);
+        var samples = operations.progressSamples[s.key] || [], previous = samples[samples.length-1];
+        if (!valid) { operations.progressSamples[s.key] = []; return; }
+        var reset = previous && (at <= previous.at || at-previous.at > Math.max(90000,autoRefresh.seconds*2500) || previous.epoch !== s.epoch || s.completed < previous.completed || Object.keys(previous.counters).some(function(id) { return !Number.isSafeInteger(s.counters[id]) || s.counters[id] < previous.counters[id]; }));
+        if (reset) samples = [];
+        samples.push({at:at,completed:s.completed,pending:s.pending,epoch:s.epoch,counters:s.counters});
+        operations.progressSamples[s.key] = samples.filter(function(sample){return at-sample.at <= Math.max(300000,autoRefresh.seconds*2500);}).slice(-60);
+      });
+    }
+    function stageProgress(stage, now, control, fresh) {
+      var result = {status:'측정 중',recent:null,rate:null,etaSeconds:null,observedSeconds:null,reason:'처리 표본 수집 중'};
+      if (!fresh) { result.status='조회 실패 · 최신 상태 미확인';result.reason='마지막 조회 결과를 확인하세요';return result; }
+      if (stage.pending === null || stage.pending === undefined) { result.status='잔여량 미확인';result.reason='조회 가능한 처리량 근거 없음';return result; }
+      if (stage.pending === 0) { result.status=stage.running?'마무리 진행 중':'대기 없음';result.reason=stage.running?'진행 작업 확인 중':'현재 대기분 없음';return result; }
+      if (stage.background && operations.controlBusy) { result.status=operations.controlAction === 'resume'?'재개 요청 중':'일시정지 요청 중';result.reason='서버의 요청 결과 확인 중';return result; }
+      if (stage.background && (control.status !== 'running' || control.pausedRequested)) { result.status=({pausing:'일시정지 중',paused:'일시정지 됨',resuming:'재개 중',error:'저장 확인 필요'})[control.status] || '상태 미확인';result.reason='실행 상태에서 예상 시간을 측정합니다';return result; }
+      if (stage.blocked >= stage.pending) { result.status='점검 필요';result.reason='격리된 작업은 자동 처리하지 않습니다';return result; }
+      if (stage.error === 'CAPTURE_STALLED') { result.status='수집 정체 · 점검 필요';result.reason='서버가 장시간 완료 없음으로 판정했습니다';return result; }
+      if (stage.waiting) { result.status='공급자 대기';result.reason='공급자 연결 후 다시 측정';return result; }
+      if (!Number.isSafeInteger(stage.completed) || !stage.epoch) { result.status=stage.running?'진행 중':'속도 집계 미지원';result.reason='완료량 측정 근거 없음';return result; }
+      var samples = (operations.progressSamples || {})[stage.key] || [], first = samples[0], last = samples[samples.length-1];
+      if (!last || now-last.at > Math.max(90000,autoRefresh.seconds*2500)) { result.reason='새 표본 필요';return result; }
+      result.status=stage.running?'진행 중 · 완료 측정 중':'측정 중';
+      if (samples.length < 2 || last.at-first.at < 60000) return result;
+      result.observedSeconds=(last.at-first.at)/1000;
+      result.recent=last.completed-first.completed;
+      if (result.recent <= 0) { result.status=stage.running?'진행 중 · 최근 완료 없음':stage.error?'재시도 대기':'최근 완료 없음';result.reason=stage.error?'오류를 확인하세요':'현재 처리 단위가 끝나지 않았을 수 있습니다';return result; }
+      result.rate=result.recent*60000/(last.at-first.at);result.status='처리 중';
+      if (stage.error) { result.status='처리 중 · 최근 재시도';result.reason='최근 오류가 있어 예상 시간 보류';return result; }
+      if (last.pending > first.pending) { result.status='처리 중 · 유입 우세';result.reason='새 작업 유입으로 완료 시점 계산 불가';return result; }
+      if (stage.blocked > 0) { result.status='처리 중 · 일부 점검 필요';result.reason='격리 작업이 있어 전체 완료 시점 계산 불가';return result; }
+      result.etaSeconds=stage.pending/result.rate*60;result.reason='최근 완료 속도 · 현재 대기분 기준';return result;
+    }
+    function operationsProgressHtml(work, health, control) {
+      var stages = operationsStages(work,operations.sessions,health,operations.available), now = Date.now();
+      var fresh = !!operations.checkedAt && !operations.error && !operations.controlError && now-operations.checkedAt <= Math.max(90000,autoRefresh.seconds*2500);
+      var html = '<div class="table-wrap operations-progress"><table class="metric-table"><caption>단계별 처리 현황 · 최근 완료 표본 기준</caption><thead><tr><th>단계</th><th>남음</th><th>최근 완료</th><th>분당 완료</th><th>예상 시간</th><th>진행 상태</th></tr></thead><tbody>';
+      stages.forEach(function(s) {
+        var r = stageProgress(s,now,control,fresh && (s.key !== 'summary' && s.key !== 'compress' && s.key !== 'graph' || operations.available));
+        html += '<tr><th scope="row">'+esc(s.label)+'</th><td>'+(s.pending === null || s.pending === undefined?'미확인':s.pending.toLocaleString()+'건')+'</td><td>'+(r.recent === null?'—':r.recent.toLocaleString()+'건<div class="hnote">'+Math.max(1,Math.round(r.observedSeconds/60))+'분 관측</div>')+'</td><td>'+(r.rate === null?'—':r.rate.toLocaleString(undefined,{maximumFractionDigits:1})+'건')+'</td><td>'+(r.etaSeconds === null?'—':esc(progressDuration(r.etaSeconds)))+'<div class="hnote">'+esc(r.reason)+'</div></td><td>'+esc(r.status)+(s.lastCompletedAt?'<div class="hnote">최근 완료 '+esc(new Date(s.lastCompletedAt).toLocaleTimeString())+'</div>':'')+'</td></tr>';
+      });
+      return html+'</tbody></table></div><p class="hnote">예상 시간은 현재 대기분 기준이며 새 유입·후속 단계·재시도에 따라 달라집니다. 단계별 건수는 중복될 수 있어 기록 수나 완료율로 합산하지 않습니다.</p>';
+    }
     function operationsPanelHtml() {
       var h = operations.health || {}, control = operations.control || {}, job = operations.job || {};
       var work = backgroundWorkSnapshot(operations.sessions,h,operations.available);
@@ -2560,26 +2645,27 @@
       var unknownStages = operations.available ? Object.values(work.unknownStageCounts).reduce(function(a,b) { return a+b; },0) : null;
       var resume = control.status === 'paused';
       var disabled = operations.controlBusy || !!operations.controlError || !['running','paused','error'].includes(control.status);
-      var jobLabels = {idle:'분석 요청 없음',queued:'점검 접수됨',running:'Codex 분석 중',completed:'점검 완료',failed:'점검 실패',interrupted:'점검 중단됨'};
-      var jobBusy = operations.submitting || ['queued','running'].includes(job.status);
       var controlLabel = operations.controlBusy ? operations.controlAction === 'resume' ? '재개 중' : '일시정지 요청 중' : labels[control.status] || '미확인';
-      var html = '<section class="card operations-card" id="health-operations" aria-labelledby="operations-title"><div class="card-title" id="operations-title">운영 상태와 점검</div>';
+      var html = '<section class="card operations-card" id="health-operations" aria-labelledby="operations-title"><div class="card-title" id="operations-title">운영 상태</div>';
+      if (h.status === 'critical' || h.memoryPressure && h.memoryPressure.level === 'critical') html += '<p role="alert" class="mem-note err">서버 점검 필요 · 아래 상태 보고서와 메모리 경고를 확인하세요.</p>';
       html += '<div class="operations-actions"><strong role="status">백그라운드: '+esc(operations.controlError ? '미확인 · 마지막 확인 '+controlLabel : controlLabel)+'</strong><button type="button" class="btn" data-action="'+(resume ? 'resume-background' : 'pause-background')+'"'+(disabled ? ' disabled' : '')+'>'+(operations.controlBusy ? controlLabel+'…' : resume ? '재개' : control.status === 'error' ? '저장 상태 다시 확인' : '일시정지')+'</button><button type="button" class="btn" data-action="refresh-operations"'+(operations.loading ? ' disabled' : '')+'>'+(operations.loading ? '조회 중…' : '현황 새로고침')+'</button></div>';
       html += operations.controlBusy && (control.transition || {}).action !== operations.controlAction ? '<p class="hnote" role="status">요청 전달 중 · 서버의 진행 단계를 확인하고 있습니다.</p>' : controlDiagnosticHtml(control);
       html += '<p class="hnote">일시정지는 신규 백그라운드 처리를 보류합니다. 진행 작업과 저장을 확인한 뒤 완료되며, 기록 수집·색인 저장은 계속됩니다. 재개는 직접 눌러야 합니다.</p>';
       if (control.status === 'error') html += '<p role="alert" class="mem-note err">처리는 보류 중입니다. 저장 확인이 끝나지 않아 재개할 수 없습니다.</p>';
       [operations.error,operations.controlError,operations.controlRequestError].filter(Boolean).forEach(function(error) { html += '<p role="alert" class="mem-note err">'+esc(error)+'</p>'; });
-      html += '<p class="hnote">남은 처리 단계: '+(total === null ? minimum === null ? '미확인' : '확인된 최소 '+minimum.toLocaleString()+'건 · 전체 잔여량 미확인' : total.toLocaleString()+'건')+' · 활성 격리: '+(operations.available ? work.quarantined+'건' : '미확인')+' · 마지막 조회 '+esc(operations.checkedAt ? new Date(operations.checkedAt).toLocaleString() : '미확인')+'</p>';
+      var pendingLabel = total === null ? minimum === null ? '미확인' : '확인된 최소 '+minimum.toLocaleString()+'건 · 전체 잔여량 미확인' : total.toLocaleString()+'건';
+      var active = Number.isSafeInteger(control.activeOperations) ? control.activeOperations.toLocaleString()+'개' : '미확인';
+      var recentAt = [h.captureProgress && h.captureProgress.lastCompletedAt,h.embeddingRecovery && h.embeddingRecovery.lastSuccessAt].filter(function(v){return v && Number.isFinite(Date.parse(v));}).sort().pop();
+      html += '<div class="operations-summary"><div><span>남은 처리 단계: </span><strong>'+esc(pendingLabel)+'</strong><small>요약·압축·그래프·임베딩·기억 정리</small></div><div><span>진행 중 작업</span><strong>'+esc(active)+'</strong><small>백그라운드에 승인된 작업</small></div><div><span>활성 격리: </span><strong>'+(operations.available ? work.quarantined+'건' : '미확인')+'</strong><small>사용자 점검이 필요한 기록</small></div></div>';
+      html += '<p class="hnote">마지막 조회 '+esc(operations.checkedAt ? new Date(operations.checkedAt).toLocaleString() : '미확인')+' · 최근 수집·임베딩 완료 '+esc(recentAt ? new Date(recentAt).toLocaleTimeString() : '미확인')+' · 과거 누적 실패와 현재 오류를 구분합니다.</p>';
       var unknownKinds = [['embedding','임베딩'],['features','기억 정리']].filter(function(pair) { return work.totals[pair[0]] === null; }).map(function(pair) { return pair[1]; });
       if (total === null) html += '<p class="hnote">'+(operations.available ? '미확인 세션 '+work.unknownSessionsCount+'개 / 단계 '+unknownStages+'개' : '미확인 세션 / 단계 수: 조회 실패로 확인 불가')+(unknownKinds.length ? ' · '+unknownKinds.join('·')+' 잔여량 미확인' : '')+'</p>';
       if (!operations.available) html += '<p role="status" class="hnote">세션 조회 실패 또는 조회 전 · 대기 작업 수 미확인</p>';
-      html += memoryPressureStatus(h.memoryPressure)+snapshotStatus(h.snapshotRecovery);
-      html += readinessStatusHtml(h.providerReadiness);
-      html += '<div class="operations-actions"><button type="button" class="btn" data-action="submit-codex-inspection"'+(jobBusy || !!operations.jobError || !jobLabels[job.status] ? ' disabled' : '')+'>'+(jobBusy ? 'Codex 점검 중…' : 'Codex로 읽기 전용 분석')+'</button><span class="hnote">수동 실행 · Codex 사용량 발생 · 데이터 변경 없이 메타데이터 분석</span></div>';
-      html += '<p role="status" aria-live="polite">'+esc(jobLabels[job.status] || 'Codex 연결 확인 불가')+(operations.jobError ? ' · '+esc(operations.jobError) : '')+(job.error ? ' · '+esc(inspectionErrorText(job.error)) : '')+'</p>';
-      if (operations.submitError) html += '<p role="alert" class="mem-note err">'+esc(operations.submitError)+'</p>';
-      html += '<details id="operations-details"'+(operations.detailsOpen ? ' open' : '')+'><summary>세션·격리·점검 결과 상세</summary><div class="hnote">같은 기록이 여러 처리 단계에 포함될 수 있습니다. 세션 종료와 요약 완료는 다릅니다. 격리 기록은 자동 재처리하지 않습니다.</div>';
-      [['summary','요약'],['compress','압축'],['graph','그래프'],['embedding','임베딩'],['features','기억 정리(Slots·반성)']].forEach(function(pair) { var n = work.totals[pair[0]], confirmed = work.knownTotals[pair[0]], missing = work.unknownStageCounts[pair[0]]; html += '<div class="hnote">'+pair[1]+': '+(n === null ? confirmed === null ? '미확인' : '확인된 최소 '+confirmed.toLocaleString()+'건' : n.toLocaleString()+'건')+(missing ? ' · 미확인 '+missing+'세션' : '')+'</div>'; });
+      html += operationsProgressHtml(work,h,control);
+      var embeddingCode = (h.embeddingRecovery || {}).lastError;
+      if (embeddingCode && embeddingCode !== 'CAPTURE_PENDING_EMBEDDING' && /^[A-Z0-9_]{1,80}$/.test(embeddingCode)) html += '<p class="operations-notice" role="status">임베딩: 최근 실패 또는 재시도 기록 · <code>'+esc(embeddingCode)+'</code> · 최근 완료량과 함께 확인하세요.</p>';
+      html += '<details id="operations-details"'+(operations.detailsOpen ? ' open' : '')+'><summary>오류·공급자·세션 상세</summary><div class="hnote">같은 기록이 여러 처리 단계에 포함될 수 있습니다. 세션 종료와 요약 완료는 다릅니다. 격리 기록은 자동 재처리하지 않습니다.</div>';
+      html += memoryPressureStatus(h.memoryPressure)+snapshotStatus(h.snapshotRecovery)+readinessStatusHtml(h.providerReadiness);
       if (work.rows.length) {
         html += '<div class="table-wrap"><table class="metric-table"><thead><tr><th>프로젝트 / 세션</th><th>상태 / 오류 필드</th><th>요약·압축·그래프</th></tr></thead><tbody>';
         work.rows.slice(0,100).forEach(function(row) {
@@ -2591,8 +2677,9 @@
       } else if (operations.available) html += '<p class="hnote">조회 가능한 요약·압축·그래프 대기 세션 없음</p>';
       if (typeof job.result === 'string') html += '<pre class="operations-result">'+esc(job.result.slice(0,24000))+'</pre>';
       if (job.threadId && /^[A-Za-z0-9_-]{1,100}$/.test(job.threadId)) html += '<p class="hnote">Codex 대화 ID: <code>'+esc(job.threadId)+'</code></p>';
-      html += '<div class="operations-actions"><button type="button" class="btn" data-action="refresh-codex-inspection">분석 상태 다시 조회</button><button type="button" class="btn" data-action="copy-inspection-request">다른 Codex에 전달할 요청 복사</button><span id="inspection-copy-status" role="status"></span></div>';
-      html += '<p class="hnote">점검을 시작한 후 이 화면을 닫아도 실행은 계속됩니다. 정상 종료 시 작업·저장 확인은 서버에서 수행합니다. 대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details></section>';
+      html += '<div class="operations-actions"><button type="button" class="btn" data-action="refresh-codex-inspection">과거 분석 기록 보기</button></div>';
+      if (operations.jobError) html += '<p role="status" class="hnote">과거 기록을 조회하지 못했습니다.</p>';
+      html += '<p class="hnote">분석 기록은 보존하며 여기서는 새 Codex 분석을 실행하지 않습니다. 대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details></section>';
       return html;
     }
 
@@ -2606,9 +2693,9 @@
       operations.loading = true; renderOperations();
       operations.request = (async function() {
         try {
-          var results = await Promise.all([apiGet('health'),apiGet('sessions?includeSummary=false'),apiGet('background/control'),apiGet('diagnostics/codex-inspection')]);
+          var results = await Promise.all([apiGet('health'),apiGet('sessions?includeSummary=false'),apiGet('background/control')]);
           if (generation !== operations.generation) return;
-          var h = results[0], sessions = results[1], control = results[2], job = results[3];
+          var h = results[0], sessions = results[1], control = results[2];
           operations.error = h ? '' : 'Health 조회 실패 · 이전 상태는 최신 상태가 아닐 수 있습니다.';
           if (h) {
             operations.metricPrevious = operations.metrics; operations.metrics = {};
@@ -2619,9 +2706,9 @@
           if (operations.available) operations.sessions = sessions.sessions;
           if (control && control.success && control.control) { operations.control = control.control; operations.controlError = ''; }
           else operations.controlError = '백그라운드 상태 조회 실패 · 조작 전 현황을 확인하세요.';
-          if (job && ['idle','queued','running','completed','failed','interrupted'].includes(job.status)) { operations.job = job; operations.jobError = ''; }
-          else operations.jobError = 'Codex 상태 조회 실패';
           operations.checkedAt = Date.now();
+          if (h && control && control.success) recordOperationsProgress(operationsStages(backgroundWorkSnapshot(operations.sessions,h,operations.available),operations.sessions,h,operations.available),operations.checkedAt,control.control);
+          else operations.progressSamples = {};
         } finally {
           operations.loading = false; operations.request = null; renderOperations();
         }
@@ -2875,7 +2962,7 @@
       html += '</div>';
 
       html += '<div class="section-head"><h2>Is it healthy</h2><span class="section-sub">' + (store.lastHealthAt ? 'checked ' + relTime(new Date(store.lastHealthAt).toISOString()) : '') + '</span></div>';
-      html += '<p class="hnote"><a class="empty-link" href="#health/operations">운영 상태 · 일시정지 · 읽기 전용 점검 &rarr;</a></p>';
+      html += '<p class="hnote"><a class="empty-link" href="#health/operations">작업 현황 · 일시정지 · 진행 속도 &rarr;</a></p>';
       html += '<div class="stats-grid">';
       var verdict = store.report ? store.report.status : healthStatus;
       var verdictDot = { ok: 'healthy', info: 'healthy', warn: 'degraded', error: 'critical' }[verdict] || healthDotClass(verdict);
@@ -7731,9 +7818,9 @@
       var snap = store.health || {};
       var idx = store.indexes || {};
       var c = store.counts || {};
-      var html = '<div class="inline-note"><strong>Health</strong> ' + help('health') + ' is the live version of the <a class="empty-link" href="' + esc(REST) + '/agentmemory/status" target="_blank" rel="noopener">/agentmemory/status</a> page: the same checks and verdict, pushed over the stream every 30 seconds. Every problem says what to do. Scroll down for how consolidation works.</div>';
-      html += healthVerdictHtml(r);
+      var html = '<div class="inline-note"><strong>운영 현황</strong> · 남은 작업과 실제 완료 추세를 확인하세요. <a class="empty-link" href="'+esc(REST)+'/agentmemory/status" target="_blank" rel="noopener">상태 보고서 전체 보기</a></div>';
       html += operationsPanelHtml();
+      html += healthVerdictHtml(r);
       html += '<div class="hgrid">' + engineCardHtml(r, snap) + indexCardHtml(r, idx, c) + captureCardHtml(r) + llmCardHtml(r) + flagsCardHtml(r) + processCardHtml(snap) + recordsCardHtml(c) + '</div>';
       html += consolidationPanelHtml(store.consolidationStatus, c);
       html += functionsCardHtml(r);
@@ -8828,9 +8915,7 @@
       if (action === 'pause-background') { changeBackgroundControl('pause'); return; }
       if (action === 'resume-background') { changeBackgroundControl('resume'); return; }
       if (action === 'refresh-operations') { loadOperations(); return; }
-      if (action === 'submit-codex-inspection') { submitCodexInspection(); return; }
       if (action === 'refresh-codex-inspection') { checkCodexInspection(); return; }
-      if (action === 'copy-inspection-request') { copyInspectionRequest(); return; }
 
       if (action === 'toggle-theme') {
         toggleTheme();

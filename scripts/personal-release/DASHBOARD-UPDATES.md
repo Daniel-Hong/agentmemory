@@ -66,3 +66,37 @@ job은 부팅 ID와 안전한 상태 전이 이력 `events:[{status,phase,at,err
 복구 unit은 프로그램 재실행·rollback·kill·데이터 복원을 하지 않는다. `interrupted` 상태도 새 작업을 차단한다. 관리자는 private 적용 로그/영수증과 현재 guard·데이터 보존·실행 중 process를 확인하고 필요한 기존 복구 절차를 마친 뒤에만 `sudo /usr/local/libexec/agentmemory-update-runner --acknowledge-recovery UUID`를 실행한다. 이 명시 확인은 `recoveryAcknowledged:true`와 시각을 기록하고 failed로 전환하여 새 요청을 허용한다. 기존 오류와 events는 보존하며 같은 UUID를 재실행하지 않는다.
 
 공개 catalog만 게시되지 않았거나 유실된 경우 root-only `--refresh-catalog` 또는 같은 exact kit의 `--enroll`로 private catalog에서 복구할 수 있다. 기존 ID의 다른 코드로 덮어쓰는 복구는 허용하지 않는다.
+
+## 닫힌 릴리스 kit 준비와 등록
+
+`prepare-dashboard-kit.py`는 일반 사용자로 실행하는 준비 도구다. 후보의 두 해시 표와 현재 적용 영수증/보호 파일을 읽고 `package.tgz`, JSON 기준표, `kit-runtime.py`, `kit-queues.py`, `kit-integrity.py`만 새 폴더에 묶는다. 과거 outputs Python을 import하지 않는다. 실행 예의 경로·메타데이터는 검토한 실제 값으로 대체한다.
+
+```sh
+python3 scripts/personal-release/prepare-dashboard-kit.py \
+  --candidate /ABS/NEW-CANDIDATE \
+  --baseline-config /ABS/CURRENT-ISSUED-BUNDLE/deployment.json \
+  --baseline-release /ABS/CURRENT-CANDIDATE/release.json \
+  --baseline-receipt /home/daniel/.agentmemory/personal-deployment-daniel4/activation.json \
+  --metadata /ABS/release-metadata.json --out /ABS/NEW-UNAPPROVED-DRAFT
+```
+
+메타데이터에는 `id`, `version`, `sourceCommit`, `packageSha256`, `changeSummary`, 실제 수행한 `tests`를 넣는다. 준비 결과의 `executionClosureReviewed`는 항상 false이며 `reviewedBy`는 빈 값이다. 관리자 검토는 런타임과 두 helper 전체, 고정 명령/경로, 이전 릴리스와 13개 compatibility 파일 동일성, root 자산 5개, 보존 archive, 정확한 후보 패키지/검증 증거까지 포함한다. `review-template.json`의 `draftManifestSha256`는 **검토한 kit.json 바이트**를 고정한다. 관리자가 별도 root-owned 검토 기록에만 `executionClosureReviewed:true`, 관리자/검토 참조를 담은 `reviewedBy`를 명시한다. 생성기는 승인값을 추론하거나 대신 작성하지 않는다.
+
+관리자는 `enroll-reviewed-kit.py` 자체도 먼저 검토하고, root-owned 실제 복사본을 그룹/다른 사용자 쓰기 없는 root 경로에 설치한다. 사용자 쓰기 가능한 source/outputs 파일을 `sudo python3`로 실행하지 않는다. 이 부트스트랩은 stdlib만 사용하며 root-owned 검토 기록과 일치하는 draft 파일 바이트를 root 전용 snapshot으로 동결한 뒤 고정된 기존 runner의 `--enroll`만 호출한다.
+
+```sh
+sudo /usr/bin/python3 -I -B /ROOT-OWNED/enroll-reviewed-kit.py \
+  --draft /ABS/NEW-UNAPPROVED-DRAFT --review /ROOT-OWNED/explicit-review.json
+```
+
+등록 전용 명령은 적용·일시정지·서비스 중지/시작을 하지 않는다. 같은 내용 재시도는 snapshot/public 복사본을 재검증하고 등록 게시를 복구한다. 같은 ID의 다른 바이트는 거부한다. 기존 runner/helper/unit/sudoers의 재설치나 sudo 권한 확장은 필요하지 않다. 등록 후 사용자는 기존 대시보드의 등록 후보를 선택해 업데이트한다. 일반 업데이트마다 terminal `apply.py`를 실행할 필요가 없다.
+
+다음 릴리스부터는 `--baseline-config/--baseline-release` 대신 `--baseline-kit /var/lib/agentmemory-updates/public/release-kits/CURRENT-ID`와 현재 `--baseline-receipt`를 사용한다. 이전 JSON/보호 해시와 모든 보존 archive를 이어받으며 이전 kit 코드를 동적으로 import하지 않는다.
+
+적용 시 root는 검토된 runtime/helper만 로드한다. 패키지 설치·사용자 wrapper 변경·보존 archive/영수증 작성은 fork 후 UID/GID1000, 보조 그룹 제거·환경 초기화·추가 FD 닫기로 수행한다. root는 고정 systemctl, 보호된 drop-in, 최신 private 백업만 담당한다. npm retained-package의 내부 상대 symlink는 링크 자체를 보존하고 외부 링크는 거부한다. data/env/runtime 백업의 symlink 거부는 유지한다. 새 패키지와 retained npm package.json의 dependencies/optionalDependencies/engines가 다르면 일시정지·서비스 중지 전에 거부한다. 13개 클라이언트 파일이 달라져도 적용을 거부하며 기존 Ubuntu hook 명령과 Windows 설치는 그대로 보존한다.
+
+현재 PID의 신선한 verified/synced/mutationFailures0 정상종료 영수증과 모든 기존 process 종료를 증명하기 전에는 backup/stage하지 않는다. 원문/queue/retained dependencies/보호 파일의 최신 백업은 root-private에 저장하고 디스크를 다시 읽어 검증한다. 새 package·guard·runtime·데이터·전체 코드 archive read-back까지 통과해야 새 영수증을 쓴다. 시작 직전에는 root가 게시한 제한된 phase 상태를 guard가 확인하고, 영수증 이후에는 영수증 및 archive를 확인한다. 완료는 계속 `verificationComplete:false`로 운영 인수를 남긴다.
+
+stage 실패는 이전 wrapper만 복구한다. 활성화 후 실패는 새 worker의 **새 정상종료 인증**과 데이터 보존 검사 성공 뒤에만 이전 drop-in/wrapper로 코드 복구한다. 종료 미인증이면 코드 전환도 차단한다. 모든 실패는 서비스 inspection 상태로 남기며 최신 데이터/queue를 복원하거나 package를 삭제하지 않는다. 프로세스 강제 종료·timeout 연장·인증 우회는 없다.
+
+격리 검증: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/personal-release -p test_dashboard_kit.py`. 합성 tgz/파일시스템·가짜 서비스·실제 fork를 사용한다. 실제 root UID0→1000 전환 및 실제 OS bootstrap/서비스 적용은 이 시험으로 인증하지 않으며 운영 설치 인수 항목이다.

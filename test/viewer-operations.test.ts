@@ -20,7 +20,7 @@ function context(names: string[], extra: Record<string, unknown> = {}) {
   return ctx;
 }
 function fixtures(extra: Record<string, unknown> = {}) {
-  return context(["esc", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsPanelHtml"], {
+  return context(["esc", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
     operations: { health: {}, sessions: [], control: null, job: null, available: false, loading: false, error: '', controlError: '', jobError: '', checking: false, submitting: false, controlBusy: false, detailsOpen: false },
     conn: { state: 'offline' }, autoRefresh: { enabled: true, seconds: 30 }, ...extra,
   });
@@ -42,7 +42,7 @@ describe("custom operations panel", () => {
     const html = c.operationsPanelHtml();
     expect(html).toContain('일시정지 중'); expect(html).toContain('입력 메타데이터 형식·크기 오류');
     expect(html).toContain('title'); expect(html).toContain('&lt;script&gt;');
-    expect(html).not.toContain('<script>x'); expect(html).toContain('사용량');
+    expect(html).not.toContain('<script>x'); expect(html).toContain('단계별 처리 현황');
     expect(html).toContain('<summary'); expect(html).toContain('role="status"');
   });
   it("does not count finished sessions or missing stage fields as completed work", () => {
@@ -85,11 +85,13 @@ describe("custom operations panel", () => {
     expect(c.memoryPressureStatus({ level:'high', availableBytes:123456 })).toContain('백그라운드 보류');
     expect(c.memoryPressureStatus(null)).toContain('미확인');
   });
-  it("shows failed jobs safely and offers agent copying only as a secondary action", () => {
+  it("shows preserved analysis safely without offering analysis execution or copying", () => {
     const c = fixtures(); c.operations.job = { status:'completed', result:'<script>result</script>' };
     const html = c.operationsPanelHtml();
     expect(html).toContain('&lt;script&gt;result'); expect(html).not.toContain('<script>result');
-    expect(html.indexOf('copy-inspection-request')).toBeGreaterThan(html.indexOf('<details'));
+    expect(html).not.toContain('copy-inspection-request'); expect(html).not.toContain('submit-codex-inspection');
+    expect(html.indexOf('refresh-codex-inspection')).toBeGreaterThan(html.indexOf('<details'));
+    expect(html).toContain('과거 분석 기록 보기');
     expect(c.inspectionErrorText('Bearer secret')).not.toContain('secret');
   });
   it("disables commands after their last status read failed", () => {
@@ -97,7 +99,7 @@ describe("custom operations panel", () => {
     c.operations.job={status:'idle'};c.operations.jobError='조회 실패';
     const html=c.operationsPanelHtml();
     expect(html).toMatch(/data-action="resume-background" disabled/);
-    expect(html).toMatch(/data-action="submit-codex-inspection" disabled/);
+    expect(html).not.toContain('submit-codex-inspection'); expect(html).toContain('과거 기록을 조회하지 못했습니다.');
   });
 });
 
@@ -124,6 +126,16 @@ describe("operational metadata", () => {
 });
 
 describe("manual operations commands", () => {
+  it("refreshes only current metadata and preserves previously loaded analysis", async () => {
+    const apiGet = vi.fn(async (path: string) => path === 'health' ? {} : path.startsWith('sessions?') ? {sessions:[]} : {success:true,control:{status:'running'}});
+    const job={id:'past-job',status:'completed',result:'preserved result'};
+    const c=fixtures({apiGet,renderOperations:vi.fn(),operations:{health:{},sessions:[],control:null,job,available:false,generation:0,progressSamples:{}}});
+    runInNewContext(source('loadOperations'),c);
+    await c.loadOperations();
+    expect(apiGet.mock.calls.map(call=>call[0])).toEqual(['health','sessions?includeSummary=false','background/control']);
+    expect(c.operations.job).toEqual(job);
+    expect(viewer).not.toMatch(/action === ['"](?:submit-codex-inspection|copy-inspection-request)['"]/);
+  });
   it("does not repeat a pause click while its request is outstanding and reads back uncertain outcome", async () => {
     let finish: (value: any) => void = () => {};
     const api = vi.fn(() => new Promise(resolve => { finish = resolve; }));

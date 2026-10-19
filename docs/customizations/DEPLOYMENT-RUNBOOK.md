@@ -35,3 +35,7 @@
 ## daniel.4 저장 인증 후속
 
 최신 후속은 STORAGE-PUBLICATION-DANIEL4.md와 별도 daniel4 후보/운영 묶음을 따른다. daniel.3 적용 성공과 최종 운영 복구 미완료를 구분한다. 호환13파일/root updater5자산이 기존 설치와 동일하면 재설치하지 않는다. 적용 후 저장 인증과 capture/embedding의 실제 완료를 확인하기 전 운영 검증 완료로 표시하지 않는다.
+
+## daniel.6 운영 화면과 업데이트 후보
+
+OPERATIONS-OVERVIEW-DANIEL6.md를 따른다. .5는 운영 미적용이므로 .6 baseline은 실제 .4 activation/preservation으로 확인한다. 과거 outputs Python을 root runner에 직접 등록하지 않는다. 검토된 closed kit를 root snapshot으로 등록한 뒤 기존 대시보드의 업데이트 후보를 선택한다. 최초 등록은 관리자 작업이며 서비스 적용과 구분한다. 단계별 처리량/ETA는 실제 완료 표본이 쌓인 뒤 표시되며 초기 측정 중은 오류가 아니다. 클라이언트 훅이 동일하면 별도 재적용하지 않는다.

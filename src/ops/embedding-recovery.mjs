@@ -5,7 +5,7 @@ export const EMBEDDING_RETRY_NAMESPACE='mem:embedding-retry:v1';
 export const EMBEDDING_COMMITTED_NAMESPACE='mem:embedding-committed:v1';
 const digest=text=>createHash('sha256').update(text).digest('hex');
 export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKeyedLock=async(k,fn)=>fn(),logger,clock=Date.now,schedule=true,onIndexChanged,persistIndex}) {
-  const state={pendingCount:0,initialized:false,lastError:null,lastSuccessAt:null};
+  const state={pendingCount:0,completedCount:0,counterEpoch:randomUUID(),initialized:false,lastError:null,lastSuccessAt:null};
   let pumping=false,reconciled=false,stopped=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
   const active=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
   const key=id=>'agentmemory:vector:'+id;
@@ -111,6 +111,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
           if(latest===null){await discardUnlocked(item);return;}
           if(digest(latest)!==fingerprint){await retainUnlocked(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);await certifyIntent(item);return;}
           state.lastSuccessAt=new Date(clock()).toISOString();state.lastError=null;
+          if(pendingIds.has(item.id))state.completedCount++;
           completed(item);
         });
       }catch(error){
