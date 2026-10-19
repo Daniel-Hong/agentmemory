@@ -180,19 +180,22 @@ export function registerObserveFunction(
       const promptRef = durable || typeof payload.eventId !== "string" ? obsId : payload.eventId;
 
       return withKeyedLock(`obs:${payload.sessionId}`, async () => {
-        const existing = await kv.list<CompressedObservation>(KV.observations(payload.sessionId));
-        const stored = durable ? existing.find((o) => o?.id === obsId) : undefined;
+        // A timed-out capture can already be stored; replay must not scan the session again.
+        const stored = durable ? await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId) : undefined;
         if (stored) {
           if (livePrompt) await recordLivePrompt(kv, payload.sessionId, livePrompt, promptRef);
           await restoreIndexEntries(stored);
           return { observationId: obsId, deduplicated: true, existing: true };
         }
+        const existing = kv.observationReader
+          ? await kv.observationReader.captureSummary(KV.observations(payload.sessionId), obsId)
+          : await kv.list<CompressedObservation>(KV.observations(payload.sessionId));
         if (backfillPrompt && (await claimBackfillPrompt(kv, payload.sessionId, backfillPrompt, promptRef))) {
           recordDedupSkip();
           return { deduplicated: true, sessionId: payload.sessionId };
         }
         if (maxObservationsPerSession && maxObservationsPerSession > 0) {
-          if (existing.length >= maxObservationsPerSession) {
+          if ((Array.isArray(existing) ? existing.length : existing.count) >= maxObservationsPerSession) {
             return {
               success: false,
               error: `Session observation limit reached (${maxObservationsPerSession})`,

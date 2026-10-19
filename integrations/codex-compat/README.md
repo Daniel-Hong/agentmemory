@@ -93,3 +93,9 @@ PowerShell 외부 command를 구성해야 한다면 호출 연산자와 LiteralP
 관리 spool은 400/401에도 자동 삭제하지 않으며 인증/입력 오류를 고친 뒤 재전송해야 한다. 그동안 pending이 쌓일 수 있다. compat 원격 retry worker는 마지막 이벤트가 managed pending에 남아 있으면 backoff하며 재시도한다. 프로세스/클라이언트가 종료되면 디스크 대기 자료는 보존되지만 재시도 worker의 상시 서비스 등록까지 제공하지는 않는다. 다음 훅 또는 승인된 수동 drainer 실행으로 재개한다.
 
 canonicalSha256은 승인된 원본 출처를 가리킨다. PORT-04의 retry worker 보완 후 현재 client 해시는 manifest.files에 따로 기록된다. 원본과 동일하다고 해석하지 않는다.
+
+### 시간초과 대응과 진단
+
+이 후보의 watchdog은 일반 이벤트4.5초/SessionEnd2초 뒤에도 file·directory fsync로 로컬 소유권이 확인된 경우에만 성공 종료한다. 이후 retry worker 시작 대기는 최대100ms이며, worker가 시작되지 않아도 최신 outbox를 삭제하지 않는다. 다음 훅 또는 승인된 drainer로 재시도한다. fsync 이전의 디스크/시스템 정체를 성공으로 숨기거나 호스트6초/3초 제한을 늘리지 않는다.
+
+마감 진단의 `event`, `phase`, `elapsedMs`, `durable`을 함께 확인한다. 공통 statusMessage의 ‘저장·리콜’ 표시는 실패 단계의 증거가 아니다. 리콜은 SessionStart/UserPromptSubmit/SubagentStart에만 실행된다. 기존 `AGENTMEMORY_HOOK_DIAGNOSTICS=1`을 사용하는 합성 시험에서는 단계별 시간을 stderr로 확인할 수 있다. 운영 진단 설정을 변경하려면 대상 클라이언트와 변경을 명시하며, 토큰·프롬프트·outbox 원문은 로그에 넣지 않는다. 과거 단계 로그가 없는 실패는 원인 미확정으로 남긴다.

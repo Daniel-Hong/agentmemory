@@ -126,11 +126,15 @@ export class StateKV {
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-    return this.durability ? this.durability.mutate(scope, key, fn) : fn()
+    return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
+      this.observationReader?.invalidateCaptureSummary(scope)
+      throw error
+    })
   }
 
   private record(scope: string, key: string, value: unknown, deletedExisting = false): void {
-    this.observationReader?.record(scope, key, value, deletedExisting)
+    try { this.observationReader?.record(scope, key, value, deletedExisting) }
+    catch (error) { this.observationReader?.invalidateCaptureSummary(scope); throw error }
     this.auditReader?.record(scope, key, value)
   }
 

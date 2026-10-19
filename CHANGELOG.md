@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — combined capture latency response v2 (2026-10-19, not deployed)
+
+- New file-backed captures reuse compact source-budget metadata after one streaming initialization, maintained by existing successful StateKV mutations. Preserve exact UTF-8/source/frame budgets, session limits, cold-load deltas, storage-key identity and durable replay. Ambiguous writes fail closed rather than authorize captures with stale metadata. No data migration or new storage/dependency.
+- Bound the durable hook watchdog's retry-worker startup wait to100ms, retaining outbox ownership and host deadlines; add event metadata without raw input. Cover an unresponsive real HTTP context endpoint and stalled retry startup. Existing wrappers/clients require the explicit versioned client update.
+- Validation: 2,950 unit tests passed / 0 failed / 4 existing opt-in skips; feedback40/0 and release-tools4/0; build/compat/skills/docs passed; TypeScript24 unchanged baseline diagnostics, new0. Real isolated CLI/iii6/0 includes concurrent captures, exact raw export before/after restart and verified shutdown. Synthetic145MB metadata benchmark cold2.1s/warm p95~0.52ms; this is not end-to-end throughput. Independent review found no Critical/Important defects. Initial failed fixture/sandbox runs remain in evidence.
+- Combine this and PORT-01..08 in a new v2 artifact with source/installed-tree hash guards and archive read-back. Frozen v1/investigation evidence remain unchanged. Final source/candidate hashes and archive checks are recorded in the new candidate receipt and docs/customizations/CAPTURE-LATENCY-V2.md.
+- Implementation and isolated verification only; production/client code, data, settings, pause and service remain unchanged. Exact historical hook phase/live Windows/model quality remain unverified. Operational baseline reconciliation/fresh preflight still apply. Memory record awaits separate manual review.
+
+### Personal fork — durable capture replay lookup (2026-10-19, not deployed)
+
+- A stored durable observation is now looked up by ID inside the existing session lock before loading its full namespace. Preserve duplicate ACK, prompt-ledger/index recovery, original data and new-observation limits/source budgets. Failed point lookups remain failures. This removes repeated full-session reads from stored replays; new captures still have a full-read bottleneck.
+- Investigation observed intermittent API stalls, capture invocation timeouts and a ~141MB open observation namespace. A synthetic ~138MB reader scan took 2.5 seconds; the exact reported 6-second hook event/phase remains unconfirmed. This is a bounded mitigation, not proof of operational recovery.
+- Validation: 147 related tests passed, build passed; TypeScript retains exactly 24 existing diagnostics, no new ones. Initial failed test runs are retained in the investigation evidence. Full suite/live Windows hooks were not rerun. See docs/customizations/HOOK-TIMEOUT-2026-10-19.md.
+- Base source: 443951c7d1f52d2195f52e3d9de1b7f0c638bbdf. Local change only, no operational version/application time or rollback; fixed deployment candidate v1 is unchanged and does not include this patch. Memory recording awaits separate manual review. The investigation report records modified-file hashes and remaining deployment gates.
+
 ### Personal fork PORT-06..08 — implementation and deployment preparation (2026-10-19)
 
 - Bounded observation/Audit readers and durable Audit copy certification replace full-namespace read-then-slice; Viewer adds actual operation progress, read-only live events and CPU capacity normalization.

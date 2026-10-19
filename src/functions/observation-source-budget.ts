@@ -4,10 +4,38 @@ import { normalizeObservationSource, OBSERVATION_SOURCE_MAX_BYTES, withoutObserv
 
 export const SESSION_SOURCE_MAX_BYTES = 8 * 1024 * 1024;
 
+export interface ObservationSourceBudget {
+  count: number;
+  summaryCount: number;
+  summaryBytes: number;
+  sourceBytes: number;
+}
+
+export function observationBudgetEntry(row: CompressedObservation) {
+  return { id: row.id, summaryBytes: payloadByteLength(withoutObservationSource(row)), sourceBytes: row.source ? payloadByteLength(row.source) + 10 : 0 };
+}
+
 export function budgetLiveObservationSource(
   observation: CompressedObservation,
-  existing: CompressedObservation[],
+  existing: CompressedObservation[] | ObservationSourceBudget,
 ): CompressedObservation {
+  if (!Array.isArray(existing)) {
+    const row = { ...observation, source: normalizeObservationSource(observation.source) };
+    const envelopeBytes = payloadByteLength({ message_type: "invocation_result", invocation_id: "00000000-0000-0000-0000-000000000000", result: [] })
+      + existing.summaryBytes + payloadByteLength(withoutObservationSource(row)) + existing.summaryCount;
+    if (envelopeBytes <= SAFE_PAYLOAD_BYTES) {
+      const available = Math.max(0, Math.min(SESSION_SOURCE_MAX_BYTES - existing.sourceBytes, SAFE_PAYLOAD_BYTES - envelopeBytes - 64 * 1024));
+      if (row.source) {
+        const perSource = payloadByteLength(row.source) + 10 <= available ? OBSERVATION_SOURCE_MAX_BYTES : Math.min(OBSERVATION_SOURCE_MAX_BYTES, available - 10);
+        const metadata = { hookType: row.source.hookType, originalBytes: row.source.originalBytes, truncated: true };
+        if (payloadByteLength(metadata) > perSource) delete row.source;
+        else row.source = normalizeObservationSource(row.source, perSource);
+      }
+      return row;
+    }
+    const { source: _source, ...retained } = observation;
+    return retained;
+  }
   const planned = budgetImportedObservationSources([observation], existing);
   if (planned.success) return planned.observations[0]!;
   const { source: _source, ...retained } = observation;

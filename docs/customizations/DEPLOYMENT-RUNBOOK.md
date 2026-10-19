@@ -4,6 +4,8 @@
 
 ## 서버 적용 전 확인
 
+통합 후보 v2는 PORT-01..08과 CAPTURE-LATENCY-V2의 신규 수집 메타데이터/재시도/훅 마감 수정을 함께 포함한다. v1 후보는 보존한다. 서버와 참여 클라이언트 코드를 같은 최종 검증 revision으로 준비하며, 클라이언트 미갱신 상태를 전체 적용 완료로 표시하지 않는다. 과거6초실패의 phase는 미확정이며 새 후보의 합성/실제격리시험과 구분한다.
+
 1. source `personal`의 검증된 commit/tree와 npm tarball SHA256을 고정한다. main은 순정 추적용이다. 이전 patch bundle/chunk를 새 source build에 덮어쓰지 않는다.
 2. `python3 release_tools.py check --root <후보>`로 동일한 두 해시 표와 전체 후보를 확인한다. `--baseline`은 기존 설치 코드·보호 스킬 해시도 확인하며 불일치하면 중단한다. 실제 설치 경로는 `--installed <설치 경로>`로 검증한다. 이 옵션은 새 코드가 설치된 뒤에만 사용한다.
 3. 현행 운영 가이드와 정상 종료 영수증/PID의 일치, admitted 작업 drain 및 디스크 read-back을 먼저 확인한다. 중지·업데이트 명령은 이번 준비 단계에 포함하지 않는다. 배경 작업은 기존 일시정지 상태를 유지한다.

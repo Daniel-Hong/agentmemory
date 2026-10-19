@@ -1,9 +1,9 @@
 {
-  "revision": "codex-custom-compat-v1",
+  "revision": "codex-custom-compat-v2",
   "canonicalArtifact": "outputs/audit-page-fix/hook-client.mjs",
   "canonicalSha256": "c73b82fe13910bb8106516c6af402235285a0d3dc6411f4c326d6e619ec91d42",
   "files": {
-    "long-session-hook-client.mjs": "ed10e44ea594b912f28ca36a97b8ce48dbb214219e2b2bac50668ea42a2936b1",
+    "long-session-hook-client.mjs": "2724e70d67b5455b4bcc7ffd4d3a640fddfa44b24e0aa2448151ad7431947694",
     "session-start.mjs": "c86384b950fe5cdaa804733685e1b1b4a2fe13c010d0ae0d7c6ccf98efbd9697",
     "prompt-submit.mjs": "55d4cd5d07ee4eae7a67db49cb8de1c6a6837ac62ab66a7887dd1337755f3e67",
     "post-tool-use.mjs": "cc3a00848a4008eec9195c1d82b23cae8d77c965c41e3440354dc8786997f1fa",
@@ -13,7 +13,7 @@
     "session-end.mjs": "ba9e678025bf009565abcb1f747478b1d07b17e4a7cb18c30ffd25714f3c27c9",
     "subagent-start.mjs": "24a02be53008721379cbf115884a7739baa2884f8d5f3e12a967b9ae8b0c2869",
     "subagent-stop.mjs": "8fc6929af24afd799cbaec3a3ca210971c9f51f139f6666fe0025fdfdc62dba8",
-    "provenance.json": "8b4a508db982eee17b1faf550d54b0ae536cd7516ab95e4550e65571551ce65f",
+    "provenance.json": "4d768394ad40a29be9d2721fccffd0a054ec97bcc6b868305a27e755eb9b1759",
     "_capture.mjs": "3510c047a005df48f187a1d7cbc2b0ea0d7006d9e38d114a22d4091617569524"
   },
   "deploymentMapping": {

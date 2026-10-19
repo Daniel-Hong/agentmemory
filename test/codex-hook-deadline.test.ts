@@ -46,8 +46,9 @@ describe("Codex foreground durable handoff", () => {
   it.each([
     ["UserPromptSubmit", "HookClient.prototype.context = async function () { this.onPhase?.('context'); await new Promise(() => setInterval(() => {}, 1000)); };", "context", 5500],
     ["PostToolUse", "setInterval(() => {}, 1000);", "complete", 5500],
+    ["PostToolUse", "HookClient.prototype.startDrain = async function () { await new Promise(() => setInterval(() => {}, 1000)); };", "drain", 5500, true],
     ["SessionEnd", "const enqueue=HookClient.prototype.enqueue; HookClient.prototype.enqueue = async function (...args) { await enqueue.apply(this,args); this.onPhase?.('retained'); await new Promise(() => setInterval(() => {}, 1000)); };", "retained", 2800],
-  ])("returns %s before its host deadline after durable handoff even when later work stalls", async (event, setup, phase, budget) => {
+  ])("returns %s before its host deadline after durable handoff even when later work stalls", async (event, setup, phase, budget, retained) => {
     const dir = fixture();
     writeFileSync(join(dir, "client.mjs"), `globalThis.fetch = async () => { throw Error('unexpected fixture HTTP'); };\n` + readFileSync(join(process.cwd(), "integrations/codex-compat/long-session-hook-client.mjs"), "utf8"));
     writeFileSync(join(dir, "entry.mjs"), `import { HookClient, hookMain } from './client.mjs'; ${setup} await hookMain('${event}');`);
@@ -64,7 +65,11 @@ describe("Codex foreground durable handoff", () => {
     expect(result).toEqual({ code: 0, signal: null });
     expect(Date.now() - started).toBeLessThan(budget);
     expect(readFileSync(errorPath, "utf8")).toMatch(new RegExp(`deadline phase=${phase} elapsedMs=\\d+ durable=true`));
-    await vi.waitFor(() => expect(readdirSync(join(dir, "hook-outbox")).filter(name => name.endsWith(".json"))).toHaveLength(0));
+    if (retained) {
+      const files = readdirSync(join(dir, "hook-outbox")).filter(name => name.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      expect(JSON.parse(readFileSync(join(dir, "hook-outbox", files[0]), "utf8")).body.data.tool_output).toBe(input.tool_output);
+    } else await vi.waitFor(() => expect(readdirSync(join(dir, "hook-outbox")).filter(name => name.endsWith(".json"))).toHaveLength(0));
   }, 8000);
 
   it("reports phase timings without copying the payload or session into diagnostics", async () => {
@@ -103,3 +108,23 @@ it('keeps a remote managed retry worker alive without another legacy event',asyn
  });
  expect(result).toBe(0);expect(readFileSync(join(dir,'calls'),'utf8').trim().split('\n')).toHaveLength(2);
 });
+
+it("returns within the host deadline when a real context HTTP endpoint never responds",async()=>{
+ const {createServer}=await import("node:http");const dir=fixture();let contextCalls=0;
+ writeFileSync(join(dir,"client.mjs"),readFileSync(join(process.cwd(),"integrations/codex-compat/long-session-hook-client.mjs"),"utf8"));
+ writeFileSync(join(dir,"entry.mjs"),"import {hookMain} from './client.mjs';await hookMain('UserPromptSubmit');");
+ writeFileSync(join(dir,"_capture.mjs"),"export const runDrainChild=async()=>({remaining:0});export const handoffObservation=async()=> 'delivered';");
+ writeFileSync(join(dir,"input.json"),JSON.stringify({...input,prompt:"synthetic prompt"}));
+ const server=createServer((_req,_res)=>{contextCalls++;});
+ await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+ const address=server.address();if(!address||typeof address==='string')throw Error("fixture port missing");
+ const inputFd=openSync(join(dir,"input.json"),"r"),errorFd=openSync(join(dir,"stderr"),"w");
+ try{
+  const started=Date.now();const result=await new Promise<{code:number|null;signal:string|null}>((resolve,reject)=>{
+   const child=spawn(process.execPath,[join(dir,"entry.mjs")],{env:{PATH:process.env.PATH,HOME:dir,AGENTMEMORY_HOME:dir,AGENTMEMORY_URL:`http://127.0.0.1:${address.port}`,AGENTMEMORY_PROJECT_NAME:"synthetic-project"},stdio:[inputFd,"ignore",errorFd]});
+   const safety=setTimeout(()=>child.kill('SIGKILL'),6500);child.on('error',reject);child.on('exit',(code,signal)=>{clearTimeout(safety);resolve({code,signal});});
+  });
+  expect(result).toEqual({code:0,signal:null});expect(Date.now()-started).toBeLessThan(5500);expect(contextCalls).toBe(1);
+  await vi.waitFor(()=>expect(readdirSync(join(dir,"hook-outbox")).filter(n=>n.endsWith('.json'))).toHaveLength(0));
+ }finally{closeSync(inputFd);closeSync(errorFd);server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+},8000);

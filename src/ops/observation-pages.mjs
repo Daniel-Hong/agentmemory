@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {readNamespaceEntries} from './namespace-reader.mjs';
 import {namespaceJson} from './state-durability.mjs';
 import {parseListQuery,matchesText} from '../state/list-query.js';
+import {observationBudgetEntry} from '../functions/observation-source-budget.js';
 
 // Timestamp/id cursor contract backported from upstream PR #1433 (0c4c56f).
 export const PAGE_BYTES=4*1024*1024;
@@ -19,7 +20,7 @@ function cursorPosition(cursor){
 function metadata(key,o){
  if(!o||typeof o!=='object'||Array.isArray(o))throw fail('invalid_observation_record');
  const serialized=JSON.stringify(o);
- return {key,id:typeof o.id==='string'?o.id:key,timestamp:o.timestamp??'',agentId:o.agentId,type:o.type||o.hookType||'other',importance:o.importance??0,searchFields:[o.title,o.subtitle,o.narrative,...(Array.isArray(o.facts)?o.facts:[]),...(Array.isArray(o.files)?o.files:[])].filter(value=>typeof value==='string'),tool:o.toolName||o.sourceRaw?.toolName||(o.origin?.channel==='tool'?o.origin.detail:null),files:Array.isArray(o.files)?o.files:[],firstPrompt:String(o.userPrompt||o.sourceRaw?.userPrompt||(o.type==='conversation'?o.narrative:'')||'').slice(0,600),bytes:Buffer.byteLength(serialized,'utf8'),fingerprint:createHash('sha256').update(serialized).digest('hex')};
+ return {key,...observationBudgetEntry(o),id:typeof o.id==='string'?o.id:key,timestamp:o.timestamp??'',agentId:o.agentId,type:o.type||o.hookType||'other',importance:o.importance??0,searchFields:[o.title,o.subtitle,o.narrative,...(Array.isArray(o.facts)?o.facts:[]),...(Array.isArray(o.files)?o.files:[])].filter(value=>typeof value==='string'),tool:o.toolName||o.sourceRaw?.toolName||(o.origin?.channel==='tool'?o.origin.detail:null),files:Array.isArray(o.files)?o.files:[],firstPrompt:String(o.userPrompt||o.sourceRaw?.userPrompt||(o.type==='conversation'?o.narrative:'')||'').slice(0,600),bytes:Buffer.byteLength(serialized,'utf8'),fingerprint:createHash('sha256').update(serialized).digest('hex')};
 }
 export function sessionStats(rows){
  const tools=new Map(),types=new Map(),files=new Set();let firstPrompt='';
@@ -29,7 +30,8 @@ export function sessionStats(rows){
 }
 export function createObservationReader({storePath,kv}){
  if(!isAbsolute(storePath))throw fail('absolute_state_store_path_required');
- const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map();
+ const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
+ function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function revision(scope){
   let file='absent';try{const value=await stat(join(storePath,encodeURIComponent(scope)+'.bin'),{bigint:true});file=[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');}catch(error){if(error.code!=='ENOENT')throw error;}
   return file+':'+(mutations.get(scope)??0);
@@ -39,7 +41,41 @@ export function createObservationReader({storePath,kv}){
   mutations.set(scope,(mutations.get(scope)??0)+1);
   if(value===null&&(deletedExisting||cache.get(scope)?.rows.has(key)||pending.get(scope)?.get(key))){if(!removed.has(scope))removed.set(scope,new Set());removed.get(scope).add(key);}
   if(value!==null)removed.get(scope)?.delete(key);
-  if(!pending.has(scope))pending.set(scope,new Map());pending.get(scope).set(key,value===null?null:metadata(key,value));
+  const info=value===null?null:metadata(key,value);
+  if(!pending.has(scope))pending.set(scope,new Map());pending.get(scope).set(key,info);
+  const budget=captureBudgets.get(scope);
+  if(budget){if(value===null&&budget.ready)budget.rows.delete(key);else budget.rows.set(key,info===null?null:{id:info.id,summaryBytes:info.summaryBytes,sourceBytes:info.sourceBytes});}
+ }
+ async function captureSummary(scope,excludeId){
+  if(uncertainScopes.has(scope))throw fail('observation_budget_mutation_uncertain');
+  let budget=captureBudgets.get(scope);
+  if(!budget){
+   budget={rows:new Map(),ready:false};captureBudgets.set(scope,budget);
+   // The file backend has one StateKV writer; record() maintains this metadata after the initial scan.
+   budget.loading=(async()=>{
+    try{
+     const initial=new Map();
+     for(let attempt=0;;attempt++){
+      initial.clear();
+      try{
+       await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{onEntry:(key,value)=>{
+        if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
+        if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
+        initial.set(key,observationBudgetEntry(value));
+       }});break;
+      }catch(error){if(error.code==='ENOENT')break;if(error.code==='state_namespace_changed'&&attempt<1)continue;throw error;}
+     }
+     for(const [key,value] of pending.get(scope)||[]){if(value===null)initial.delete(key);else initial.set(key,{id:value.id,summaryBytes:value.summaryBytes,sourceBytes:value.sourceBytes});}
+     for(const [key,value] of budget.rows){if(value===null)initial.delete(key);else initial.set(key,value);}
+     budget.rows=initial;budget.ready=true;
+    }catch(error){if(captureBudgets.get(scope)===budget)captureBudgets.delete(scope);throw error;}
+   })();
+  }
+  await budget.loading;
+  if(uncertainScopes.has(scope))throw fail('observation_budget_mutation_uncertain');
+  const result={count:budget.rows.size,summaryCount:0,summaryBytes:0,sourceBytes:0};
+  for(const row of budget.rows.values())if(excludeId===undefined||row.id!==excludeId){result.summaryCount++;result.summaryBytes+=row.summaryBytes;result.sourceBytes+=row.sourceBytes;}
+  return result;
  }
  async function snapshot(scope){
   const path=join(storePath,encodeURIComponent(scope)+'.bin');let signature='absent';
@@ -125,5 +161,5 @@ export function createObservationReader({storePath,kv}){
   if(bytes(body)>PAGE_BYTES)throw fail('observation_changed_exceeds_page_budget',413);
   return body;
  }
- return {record,snapshot,list,response,revision};
+ return {record,snapshot,list,response,revision,captureSummary,invalidateCaptureSummary};
 }

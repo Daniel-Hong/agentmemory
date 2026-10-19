@@ -196,9 +196,13 @@ export async function hookMain(event) {
   let client;
   // Never claim success before file and directory fsync confirm ownership.
   const deadline = setTimeout(async () => {
-    process.stderr.write(`[AgentMemory hook] deadline phase=${phase} elapsedMs=${Date.now() - started} durable=${client?.durableQueued === true}\n`);
+    process.stderr.write(`[AgentMemory hook] deadline phase=${phase} elapsedMs=${Date.now() - started} durable=${client?.durableQueued === true} event=${event}\n`);
     if (client?.durableQueued) {
-      try { await client.startDrain(); } catch { process.stderr.write('[AgentMemory hook] retry worker unavailable; durable outbox retained\n'); }
+      let drainTimer;
+      try {
+        await Promise.race([client.startDrain(), new Promise(resolve => { drainTimer = setTimeout(resolve, 100); })]);
+      } catch { process.stderr.write('[AgentMemory hook] retry worker unavailable; durable outbox retained\n'); }
+      finally { clearTimeout(drainTimer); }
       process.exit(0);
     }
   }, event === 'SessionEnd' ? 2000 : 4500);
