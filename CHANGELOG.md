@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — Serena analysis configuration (not deployed)
+
+- Add an editor-only JavaScript project for ops modules so runtime .mjs imports/calls are discoverable without changing the product TypeScript build or enabling JS type checking. Preserve .d.mts consumer boundaries.
+- Record local Serena workspace/memory setup, fresh-process verification and the existing MCP reconnect requirement in docs/customizations/SERENA-SETUP.md. Build passed; TypeScript retains 28 existing diagnostics, no new diagnostics. Product tests were not rerun for this analysis-only setting.
+- Confirm the next capture port has separate server and per-client hook/spool artifacts. Provider connectivity belongs to the AgentMemory worker; client updates apply only to participating capture environments. No fleet rollout, production change or AgentMemory long-term-memory write.
+
 ### Personal fork — storage durability and verified shutdown (not deployed)
 
 - Track file KV mutations through a disk read-back/fsync fence, retain dirty generations on failure, and verify the same namespace inode before and after synchronization. SDK acknowledgement alone does not certify persistence.
