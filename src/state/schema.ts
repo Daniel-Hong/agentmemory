@@ -12,6 +12,8 @@ export const KV = {
   embeddings: (obsId: string) => `mem:emb:${obsId}`,
   bm25Index: "mem:index:bm25",
   vectorPendingLog: "mem:index:vec-pending",
+  embeddingRetry: "mem:embedding-retry:v1",
+  embeddingCommitted: "mem:embedding-committed:v1",
   relations: "mem:relations",
   profiles: "mem:profiles",
   claudeBridge: "mem:claude-bridge",

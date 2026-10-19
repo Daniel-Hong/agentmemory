@@ -318,8 +318,9 @@ export function registerCaptureFunctions(
         }
         if (done) {
           const stored = await storedObservation(done);
+          if (stored === undefined && done.observationId) throw new Error("capture_existing_observation_unavailable");
           if (stored !== null) {
-            if (stored) await restoreIndexEntries(stored).catch(() => {});
+            if (stored) await restoreIndexEntries(stored);
             counters.duplicates++;
             return { status: "duplicate", state: "completed", eventId, observationId: done.observationId, deduplicated: true };
           }

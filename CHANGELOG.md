@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — PORT-05 async embedding and verified publication (not deployed)
+
+- Capture now retains synthetic/BM25 content and a recoverable embedding intent before acknowledging, without calling the embedding model. File-backed new/duplicate intents and canonical content require a disk fence; failed storage leaves the capture inbox/retry intact. Keep configured observation limits and the existing auto-compression Void dispatch.
+- Add lifecycle-managed embedding recovery after vector load/replay, with admission stop/drain, canonical text fingerprints, generation checks, exponential retry, post-publication change/deletion checks and completion-marker disk proof. Only same-origin OpenAI embeddings share chat readiness; preserve stock legacy backfill cutoff/explicit opt-in.
+- Certify vector publication by target ID and generation, retain removed bucket addresses across failed saves, keep metadata counts independent of later dirty entries, and verify legacy replacement in bounded 200-key fences plus final data/meta readback before cleanup.
+- Validation: 2,810 passed / 0 failed / 4 existing opt-in skips; build, compatibility artifacts and official checks pass; TypeScript retains 28 baseline diagnostics, no new diagnostics.
+- Independent review found three Important storage/race defects; reproduced and fixed without new dependencies or operational changes. Scope and validation: docs/customizations/PORT-05.md. Base: e4556cc. Existing sourceRaw/cursors/retry/history/memories remain preserved; long-term-memory recording awaits separate manual review.
+
 ### Personal fork — PORT-04 client capture handoff and provider readiness (not deployed)
 
 - Preserve legacy Codex outbox ownership until official capture retains a validated receipt or fsynced managed spool; protect receipt-managed records against expiry and space eviction. Add nine explicit compatibility wrappers without replacing stock top-level hooks, and generate per-file SHA256 manifests with `build:codex-compat`.

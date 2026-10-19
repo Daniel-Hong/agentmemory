@@ -1006,3 +1006,22 @@ export interface StateScope {
 }
 
 export type StateScopeKey = keyof StateScope;
+
+export interface EmbeddingIntent {
+  id: string;
+  sessionId: string;
+  kind: "memory" | "observation" | "synthetic";
+  attempts?: number;
+  retryAt?: number;
+  generation?: string;
+  fingerprint?: string;
+  phase?: "queued" | "embedded";
+  errorCode?: string;
+}
+export interface EmbeddingCommit {
+  id: string;
+  sessionId: string;
+  kind: EmbeddingIntent["kind"];
+  fingerprint: string;
+  committedAt: string;
+}

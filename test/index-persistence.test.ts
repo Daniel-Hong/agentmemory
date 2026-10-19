@@ -109,6 +109,82 @@ function expectSameVectors(actual: VectorIndex | null, expected: VectorIndex): v
   }
 }
 
+describe("IndexPersistence bounded disk publication", () => {
+  it("fences more than 200 vector keys in bounded batches and metadata last before legacy cleanup", async () => {
+    const kv = mockKV();
+    const expected = vectorWith(Array.from({ length: 451 }, (_, i) => [`obs_${i}`, [i, 1, 0]]));
+    await writeLegacyVectorSnapshot(kv, expected, { monolithic: true });
+    const calls: Array<Array<{ scope: string; key: string }>> = [];
+    Object.assign(kv, { backend: "file", durability: {
+      waitForKeys: async (_kv: unknown, keys: Array<{ scope: string; key: string }>) => {
+        if (keys.length > 200) throw new Error("synthetic_bounded_fence_limit");
+        expect(kv.store.get(INDEX_SCOPE)?.has("vectors")).toBe(true);
+        calls.push(keys);
+      },
+    } });
+    const live = new VectorIndex();
+    const persistence = new IndexPersistence(kv as any, live, { bucketSize: 100 });
+    try {
+      const loaded = await persistence.load();
+      expect(loaded.state).toBe("migrated");
+      expectSameVectors(loaded.vector, expected);
+      expect(calls.map(keys => keys.length)).toEqual([200, 200, 51, 1, 200, 200, 51, 1]);
+      expect(calls[3]).toEqual([{ scope: INDEX_SCOPE, key: META_KEY }]);
+      expect(calls.at(-1)).toEqual([{ scope: INDEX_SCOPE, key: META_KEY }]);
+      expect(await kv.get(INDEX_SCOPE, "vectors")).toBeNull();
+    } finally { persistence.stop(); }
+  });
+
+  it("keeps legacy vectors if a value changes between bounded publication batches", async () => {
+    const kv = mockKV();
+    const expected = vectorWith(Array.from({ length: 251 }, (_, i) => [`obs_${i}`, [i, 1, 0]]));
+    await writeLegacyVectorSnapshot(kv, expected, { monolithic: true });
+    let calls = 0;
+    Object.assign(kv, { backend: "file", durability: {
+      waitForKeys: async (_kv: unknown, keys: Array<{ scope: string; key: string }>) => {
+        if (keys.length > 200) throw new Error("synthetic_bounded_fence_limit");
+        if (++calls === 1) {
+          const first = keys[0];
+          const row = await kv.get<Record<string, unknown>>(first.scope, first.key);
+          await kv.set(first.scope, first.key, { ...row, e: Buffer.from(new Float32Array([99, 0, 0]).buffer).toString("base64") });
+        }
+      },
+    } });
+    const persistence = new IndexPersistence(kv as any, new VectorIndex());
+    try {
+      const loaded = await persistence.load();
+      expect(loaded.state).toBe("unavailable");
+      expectSameVectors(loaded.vector, expected);
+      expect(calls).toBeGreaterThan(1);
+      expect(await kv.get(INDEX_SCOPE, "vectors")).toBe(expected.serialize());
+      expect(kv.ops.some(op => op.op === "delete" && op.scope === INDEX_SCOPE && op.key === "vectors")).toBe(false);
+    } finally { persistence.stop(); }
+  });
+
+  it("retains the legacy snapshot if metadata changes at the final verification fence", async () => {
+    const kv = mockKV();
+    const expected = vectorWith([["obs_one", [1, 0, 0]]]);
+    await writeLegacyVectorSnapshot(kv, expected, { monolithic: true });
+    let metadataFences = 0;
+    Object.assign(kv, { backend: "file", durability: {
+      waitForKeys: async (_kv: unknown, keys: Array<{ scope: string; key: string }>) => {
+        if (keys.length === 1 && keys[0].key === META_KEY && ++metadataFences === 2) {
+          const meta = await kv.get<Record<string, unknown>>(INDEX_SCOPE, META_KEY);
+          await kv.set(INDEX_SCOPE, META_KEY, { ...meta, count: 2 });
+        }
+      },
+    } });
+    const persistence = new IndexPersistence(kv as any, new VectorIndex());
+    try {
+      const loaded = await persistence.load();
+      expect(loaded.state).toBe("unavailable");
+      expectSameVectors(loaded.vector, expected);
+      expect(metadataFences).toBe(2);
+      expect(await kv.get(INDEX_SCOPE, "vectors")).toBe(expected.serialize());
+    } finally { persistence.stop(); }
+  });
+});
+
 describe("IndexPersistence bucketed vector storage", () => {
   let kv: MockKV;
 
@@ -565,4 +641,97 @@ describe("index_persist audit gating", () => {
     expect(await kv.get(INDEX_SCOPE, "vectors:manifest")).toBeNull();
     expect(await indexPersistEntries()).toEqual([]);
   });
+});
+
+describe('verified publication for embedding recovery',()=>{
+ it('rejects swallowed save failures so a durable embedding intent is not falsely completed',async()=>{
+  const kv=mockKV();const vector=vectorWith([['synthetic-unwritten',[1,0]]]);
+  kv.set=async()=>{throw Error('synthetic write refusal')};
+  const persistence=new IndexPersistence(kv as never,vector);
+  try{await expect(persistence.saveVerified()).rejects.toMatchObject({code:'VECTOR_PUBLICATION_UNVERIFIED'});expect(vector.pendingChanges).toBeGreaterThan(0);}
+  finally{persistence.stop();}
+ });
+});
+
+describe('item-scoped embedding publication', () => {
+  it('certifies a saved item while a later unrelated vector stays dirty and restart metadata stays exact', async () => {
+    const kv = mockKV(), vector = new VectorIndex();
+    const persistence = new IndexPersistence(kv as never, vector);
+    persistence.stop();
+    vector.add('requested', 's', vec([1, 0]));
+    const entry = vector.get('requested')!;
+    const set = kv.set;
+    kv.set = async (scope, key, value) => {
+      const result = await set(scope, key, value);
+      if (scope === vectorBucketScope(0) && key === 'requested') vector.add('later', 's', vec([0, 1]));
+      return result;
+    };
+    await expect(persistence.saveVerified({ id: 'requested', entry })).resolves.toBeUndefined();
+    expect(vector.pendingChanges).toBe(1);
+    expect(await kv.get(INDEX_SCOPE, META_KEY)).toMatchObject({ count: 1 });
+    const reloaded = new IndexPersistence(kv as never, new VectorIndex());
+    try {
+      const loaded = await reloaded.load();
+      expect(loaded.vector?.has('requested')).toBe(true);
+      expect(loaded.expectedCount).toBe(1);
+    } finally { reloaded.stop(); }
+  });
+
+  it('does not certify a different generation of the same vector or swallow its disk fence failure', async () => {
+    const kv = mockKV(), vector = new VectorIndex();
+    const persistence = new IndexPersistence(kv as never, vector); persistence.stop();
+    vector.add('requested', 's', vec([1, 0]));
+    const requested = { id: 'requested', entry: vector.get('requested')! };
+    vector.add('requested', 's', vec([0, 1]));
+    await expect(persistence.saveVerified(requested)).rejects.toMatchObject({ code: 'VECTOR_PUBLICATION_UNVERIFIED' });
+    Object.assign(kv, { durability: { waitForKeys: async () => { throw Error('synthetic fence failure'); } } });
+    vector.add('requested', 's', vec([1, 0]));
+    await expect(persistence.saveVerified(requested)).rejects.toMatchObject({ code: 'VECTOR_PUBLICATION_UNVERIFIED' });
+  });
+
+  it('keeps the deleted bucket address across a failed fence and verifies the deletion on retry', async () => {
+    const kv = mockKV(), vector = new VectorIndex();
+    const persistence = new IndexPersistence(kv as never, vector); persistence.stop();
+    vector.add('deleted', 's', vec([1, 0])); await persistence.saveVerified();
+    vector.remove('deleted');
+    let fail = true;
+    const fenced: string[] = [];
+    Object.assign(kv, { durability: { waitForKeys: async (_kv: unknown, keys: Array<{scope:string;key:string}>) => {
+      for (const k of keys) if (k.key === 'deleted' && k.scope.startsWith(INDEX_SCOPE + ':vec:')) { fenced.push(k.scope); if (fail) throw Error('synthetic delete fence failure'); }
+    } } });
+    await expect(persistence.saveVerified({ id: 'deleted', entry: null })).rejects.toMatchObject({ code: 'VECTOR_PUBLICATION_UNVERIFIED' });
+    fail = false; fenced.length = 0;
+    await expect(persistence.saveVerified({ id: 'deleted', entry: null })).resolves.toBeUndefined();
+    expect(fenced).toContain(vectorBucketScope(0));
+    expect(await kv.get(vectorBucketScope(0), 'deleted')).toBeNull();
+    expect(await kv.get(INDEX_SCOPE, META_KEY)).toMatchObject({ count: 0 });
+  });
+});
+
+describe('failed removal followed by a new vector generation', () => {
+  it('reuses the uncertified deleted address rather than publishing a duplicate in another bucket', async () => {
+    const kv = mockKV(), vector = vectorWith([['removed', [1, 0]], ['other', [0, 1]]]);
+    const persistence = new IndexPersistence(kv as never, vector, { bucketSize: 1 }); persistence.stop();
+    await persistence.saveVerified();
+    let fail = true;
+    Object.assign(kv, { durability: { waitForKeys: async () => { if (fail) throw Error('synthetic fence failure'); } } });
+    vector.remove('removed');
+    await expect(persistence.saveVerified({ id: 'removed', entry: null })).rejects.toMatchObject({ code: 'VECTOR_PUBLICATION_UNVERIFIED' });
+    fail = false;
+    vector.add('removed', 'new-session', vec([0.5, 0.5]));
+    await persistence.saveVerified({ id: 'removed', entry: vector.get('removed')! });
+    expect(await kv.get(vectorBucketScope(0), 'removed')).toMatchObject({ s: 'new-session' });
+    expect(await kv.get(vectorBucketScope(2), 'removed')).toBeNull();
+    expect(await kv.get(INDEX_SCOPE, META_KEY)).toMatchObject({ count: 2 });
+  });
+});
+
+describe('legacy replacement final data readback',()=>{
+ it('keeps legacy when a bucket changes at the final metadata fence',async()=>{
+  const kv=mockKV();const expected=vectorWith([['fixture-final',[1,0,0]]]);await writeLegacyVectorSnapshot(kv,expected,{monolithic:true});let fences=0;
+  Object.assign(kv,{backend:'file',durability:{waitForKeys:async(_kv:unknown,keys:Array<{scope:string;key:string}>)=>{
+   if(keys.length===1&&keys[0].key===META_KEY&&++fences===2){const row=await kv.get<Record<string,unknown>>(vectorBucketScope(0),'fixture-final');await kv.set(vectorBucketScope(0),'fixture-final',{...row,e:Buffer.from(new Float32Array([0,1,0]).buffer).toString('base64')});}
+  }}});
+  const persistence=new IndexPersistence(kv as never,new VectorIndex());try{const result=await persistence.load();expect(result.state).toBe('unavailable');expect(await kv.get(INDEX_SCOPE,'vectors')).toBe(expected.serialize());}finally{persistence.stop();}
+ });
 });

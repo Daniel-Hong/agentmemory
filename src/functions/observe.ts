@@ -14,7 +14,7 @@ import { isAutoCompressEnabled } from "../config.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { isCaptureKey } from "../capture/event-record.js";
 import { claimBackfillPrompt, isBackfillPrompt, recordLivePrompt } from "../capture/prompt-ledger.js";
-import { getSearchIndex, getVectorIndex, scheduleIndexSave, vectorIndexAddGuarded } from "./search.js";
+import { getSearchIndex, getVectorIndex, scheduleIndexSave, enqueueObservationEmbedding } from "./search.js";
 import { getAgentId } from "../config.js";
 import { logger } from "../logger.js";
 import { saveImageToDisk } from "../utils/image-store.js";
@@ -53,10 +53,7 @@ export async function restoreIndexEntries(obs: CompressedObservation): Promise<v
   }
   const vectors = getVectorIndex();
   if (vectors && !vectors.has(obs.id)) {
-    await vectorIndexAddGuarded(obs.id, obs.sessionId, obs.title + " " + (obs.narrative || ""), {
-      kind: "synthetic",
-      logId: obs.id,
-    });
+    await enqueueObservationEmbedding(obs.id, obs.sessionId);
   }
 }
 
@@ -366,6 +363,11 @@ export function registerObserveFunction(
           });
         }
 
+        const synthetic = (await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId))!;
+        getSearchIndex().add(synthetic);
+        scheduleIndexSave();
+        await enqueueObservationEmbedding(synthetic.id, synthetic.sessionId);
+
         // Per-observation LLM compression is opt-in as of 0.8.8.
         // Default path: build a zero-LLM synthetic compression so recall
         // and BM25 search still work without burning the user's Claude
@@ -381,15 +383,6 @@ export function registerObserveFunction(
             action: TriggerAction.Void(),
           });
         } else {
-          const synthetic = (await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId))!;
-          getSearchIndex().add(synthetic);
-          scheduleIndexSave();
-          await vectorIndexAddGuarded(
-            synthetic.id,
-            synthetic.sessionId,
-            synthetic.title + " " + (synthetic.narrative || ""),
-            { kind: "synthetic", logId: synthetic.id },
-          );
           await sdk.trigger({
             function_id: "stream::set",
             payload: {

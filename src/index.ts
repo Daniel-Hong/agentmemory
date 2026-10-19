@@ -34,10 +34,13 @@ import {
   createEmbeddingProvider,
   createImageEmbeddingProvider,
 } from "./providers/index.js";
+import { KV } from "./state/schema.js";
+import { withKeyedLock } from "./state/keyed-mutex.js";
 import { StateKV } from "./state/kv.js";
 import { VectorIndex } from "./state/vector-index.js";
 import { HybridSearch } from "./state/hybrid-search.js";
-import { IndexPersistence } from "./state/index-persistence.js";
+import { registerEmbeddingRecovery } from "./ops/embedding-recovery.mjs";
+import { IndexPersistence, type VectorPublication } from "./state/index-persistence.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS, settleWithin } from "./shutdown.js";
 import { registerPrivacyFunction, withWriteScrubbing } from "./functions/privacy.js";
 import { registerObserveFunction } from "./functions/observe.js";
@@ -59,6 +62,7 @@ import {
   setVectorIndex,
   setEmbeddingProvider,
   setIndexPersistence,
+  setEmbeddingRecovery,
   setHybridRanker,
   setPendingVectorBackfillCount,
   setVectorBackfillState,
@@ -130,7 +134,7 @@ import { registerHealthMonitor } from "./health/monitor.js";
 import { createStreamRelayProbe } from "./health/stream-relay-probe.js";
 import { initMetrics, OTEL_CONFIG } from "./telemetry/setup.js";
 import { VERSION } from "./version.js";
-import { bootLog, bootWarn } from "./logger.js";
+import { logger, bootLog, bootWarn } from "./logger.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
 import { ensureServerSecret, explicitSecret, secretFilePath } from "./secret-store.js";
 import { mkdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
@@ -589,6 +593,18 @@ async function main() {
     }
   }
 
+  if (vectorIndex && embeddingProvider) {
+    const embeddingUrl = getEnvVar("OPENAI_EMBEDDING_BASE_URL") || getEnvVar("OPENAI_BASE_URL");
+    const chatUrl = config.provider.baseURL || getEnvVar("OPENAI_BASE_URL");
+    const readiness = operationalState.providerReadiness && embeddingProvider.name === "openai" && embeddingUrl && chatUrl && new URL(embeddingUrl).origin === new URL(chatUrl).origin
+      ? operationalState.providerReadiness : undefined;
+    operationalState.embeddingRecovery = lifecycle.track(registerEmbeddingRecovery({
+      kv, KV, index: vectorIndex, provider: embeddingProvider, readiness, withKeyedLock, logger,
+      schedule: false, persistIndex: (publication?: VectorPublication) => indexPersistence.saveVerified(publication),
+    }));
+  }
+  setEmbeddingRecovery(operationalState.embeddingRecovery ?? null);
+
   const auditMigration = trackBoot(startAuditMigration(kv).catch(() => {}));
 
   const vectorCountShortfall =
@@ -803,6 +819,7 @@ async function main() {
     bootLog(`Auto-consolidation: enabled (every ${consolidationIntervalMs / 60000}m)`);
   }
 
+  if (!shuttingDown) operationalState.embeddingRecovery?.start();
   if (kv.durability) registerBackgroundInterval(lifecycle, () => kv.durability!.flushStable(kv), 15000, false);
   } catch (error) { bootFailed = true; throw error; } finally { bootDone(); }
 }

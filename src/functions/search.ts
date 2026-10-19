@@ -5,7 +5,7 @@ import { KV } from '../state/schema.js'
 import { StateKV } from '../state/kv.js'
 import { SearchIndex } from '../state/search-index.js'
 import { VectorIndex } from '../state/vector-index.js'
-import type { EmbeddingProvider } from '../types.js'
+import type { EmbeddingProvider, EmbeddingIntent } from '../types.js'
 import { memoryToObservation } from '../state/memory-utils.js'
 import { recordAccessBatch } from './access-tracker.js'
 import { logger } from "../logger.js";
@@ -20,6 +20,17 @@ import {
 let index: SearchIndex | null = null
 let vectorIndex: VectorIndex | null = null
 let currentEmbeddingProvider: EmbeddingProvider | null = null
+
+let embeddingRecovery: {
+  add(item: EmbeddingIntent): Promise<boolean>;
+  enqueue(item: EmbeddingIntent): Promise<unknown>;
+} | null = null
+export function setEmbeddingRecovery(recovery: typeof embeddingRecovery): void { embeddingRecovery = recovery }
+export async function enqueueObservationEmbedding(id: string, sessionId: string): Promise<void> {
+  if (!vectorIndex || !currentEmbeddingProvider) return
+  if (!embeddingRecovery) throw new Error('embedding_recovery_not_ready')
+  await embeddingRecovery.enqueue({ id, sessionId, kind: 'synthetic' })
+}
 
 // Hybrid ranking hook for mem::search. Wired by index.ts once the
 // hybrid searcher exists (it is constructed after this module's
@@ -70,6 +81,7 @@ export function isKeywordRebuildInProgress(): boolean {
 }
 
 let pendingVectorBackfill = 0
+let pendingVectorBackfillIds: Set<string> | null = null
 export type VectorBackfillState = "idle" | "running" | "paused" | "waiting-for-opt-in"
 let vectorBackfillState: VectorBackfillState = "idle"
 export function getVectorBackfillState(): VectorBackfillState {
@@ -79,6 +91,7 @@ export function setVectorBackfillState(state: VectorBackfillState): void {
   vectorBackfillState = state
 }
 export function getPendingVectorBackfillCount(): number {
+  if (pendingVectorBackfillIds) return [...pendingVectorBackfillIds].filter(id => index?.has(id) && !vectorIndex?.has(id)).length
   return pendingVectorBackfill
 }
 export function setPendingVectorBackfillCount(n: number): void {
@@ -91,6 +104,7 @@ export function getSearchIndex(): SearchIndex {
 }
 
 export function setVectorIndex(idx: VectorIndex | null): void {
+  if (vectorIndex !== idx) pendingVectorBackfillIds = null
   vectorIndex = idx
 }
 
@@ -209,6 +223,7 @@ export async function vectorIndexAddGuarded(
   const vi = vectorIndex
   const ep = currentEmbeddingProvider
   if (!vi || !ep) return false
+  if (embeddingRecovery && !commit) return embeddingRecovery.add({ id, sessionId, kind: context.kind })
   let embedding: Float32Array
   try {
     embedding = await ep.embed(clipEmbedInput(text))
@@ -548,6 +563,7 @@ async function runKeywordRebuild(
   bm25RebuildIncomplete = false
   const vi = vectorIndex
   const backfillEligible = Boolean(vi && currentEmbeddingProvider) && vectorBackfillSince !== undefined
+  if (backfillEligible) pendingVectorBackfillIds = new Set()
   const wholeStoreBackfill = vectorBackfillSince === null
   const backfillGated = backfillEligible && wholeStoreBackfill && !isVectorBackfillAllEnabled()
   const backfillActive = backfillEligible && !backfillGated
@@ -564,6 +580,7 @@ async function runKeywordRebuild(
   ): void => {
     if (!backfillEligible || vi?.has(id)) return
     if (!Number.isNaN(cutoff) && !(Date.parse(timestamp ?? '') > cutoff)) return
+    pendingVectorBackfillIds?.add(id)
     if (backfillGated) {
       fullBackfillPending++
       return

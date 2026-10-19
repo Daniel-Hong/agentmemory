@@ -131,10 +131,16 @@ describe("durable capture", () => {
     const embed = vi.fn(async () => new Float32Array([1, 0, 0]));
     search.setVectorIndex(vectors);
     search.setEmbeddingProvider({ name: "test", dimensions: 3, embed, embedBatch: async (t: string[]) => t.map(() => new Float32Array([1, 0, 0])) } as never);
+    const { registerEmbeddingRecovery } = await import("../src/ops/embedding-recovery.mjs");
+    const { withKeyedLock } = await import("../src/state/keyed-mutex.js");
+    const recovery = registerEmbeddingRecovery({ kv: kv as never, KV, index: vectors, provider: search.getEmbeddingProvider()!, withKeyedLock, schedule: false, persistIndex: async () => {} });
+    search.setEmbeddingRecovery(recovery);
     try {
       const body = payload("lost-vector");
       const first = await capture(body, "evc_000000000023");
       const id = first.observationId as string;
+      expect(vectors.has(id)).toBe(false);
+      await recovery.pump(); await recovery.drain();
       expect(vectors.has(id)).toBe(true);
       vectors.remove(id);
       search.getSearchIndex().remove(id);
@@ -143,6 +149,8 @@ describe("durable capture", () => {
       }
       const resent = await capture(body, "evc_000000000023");
       expect(resent).toMatchObject({ status: "accepted", observationId: id });
+      expect(vectors.has(id)).toBe(false);
+      await recovery.pump(); await recovery.drain();
       expect(vectors.has(id)).toBe(true);
       expect(vectors.size).toBe(1);
       expect(search.getSearchIndex().has(id)).toBe(true);
@@ -152,10 +160,14 @@ describe("durable capture", () => {
       vectors.remove(id);
       const duplicate = await capture(body, "evc_000000000023");
       expect(duplicate).toMatchObject({ status: "duplicate", observationId: id });
+      expect(vectors.has(id)).toBe(false);
+      await recovery.pump(); await recovery.drain();
       expect(vectors.has(id)).toBe(true);
       expect(embed).toHaveBeenCalledTimes(3);
       expect(observations(kv)).toHaveLength(1);
     } finally {
+      recovery.stop(); await recovery.drain();
+      search.setEmbeddingRecovery(null);
       search.setVectorIndex(null);
       search.setEmbeddingProvider(null);
     }

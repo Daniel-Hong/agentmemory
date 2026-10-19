@@ -4,6 +4,7 @@ import { KV } from "./schema.js";
 import { logger } from "../logger.js";
 import { safeAudit } from "../functions/audit.js";
 import { getIndexSaveIntervalMs, getVectorBucketSize } from "../config.js";
+import { isDeepStrictEqual } from "node:util";
 
 const FAILURE_LOG_THROTTLE_MS = 60_000;
 const INDEX_PERSISTENCE_FUNCTION_ID = "mem::index-persistence";
@@ -15,6 +16,7 @@ const VECTOR_META_KEY = "vectors:meta";
 const VECTOR_BUCKET_SCOPE_PREFIX = `${KV.bm25Index}:vec:`;
 const WRITE_CONCURRENCY = 32;
 const LOAD_CONCURRENCY = 8;
+const DISK_FENCE_BATCH_KEYS = 200;
 const FIRST_CHECKPOINT_DELAY_MS = 5_000;
 const PENDING_CLEAR_KEY = "~clear";
 const PENDING_LOG_SAVE_THRESHOLD = 500;
@@ -71,6 +73,8 @@ export interface PendingReplayResult {
   cleared: boolean;
   skipped: number;
 }
+
+export type VectorPublication = { id: string; entry: VectorEntry | null };
 
 type IndexPersistenceOptions = {
   saveIntervalMs?: number;
@@ -194,6 +198,8 @@ export class IndexPersistence {
   private readonly now: () => number;
   private bucketOfId: Map<string, number> = new Map();
   private bucketCounts: Map<number, number> = new Map();
+  // Retain the original address until the deletion is certified on disk.
+  private removedBuckets: Map<string, number> = new Map();
   private highestBucket = 0;
   private hasOpenBucket = false;
   private vectorCountShortfall: VectorCountShortfall | null = null;
@@ -246,6 +252,49 @@ export class IndexPersistence {
       return queued;
     }
     return this.startRun();
+  }
+
+  async saveVerified(publication?: VectorPublication): Promise<void> {
+    const bucketBefore = publication
+      ? this.bucketOfId.get(publication.id) ?? this.removedBuckets.get(publication.id)
+      : undefined;
+    const expected = publication?.entry ? {
+      id: publication.id, s: publication.entry.sessionId, e: float32ToBase64(publication.entry.embedding),
+    } : null;
+    await this.save();
+    const unverified = () => Object.assign(new Error('vector_publication_unverified'), { code: 'VECTOR_PUBLICATION_UNVERIFIED' });
+    if (!publication) {
+      const status = this.status();
+      if (status.vector?.lastError || status.pendingLogError || status.pendingChanges > 0) throw unverified();
+      return;
+    }
+    try {
+      if (this.leg.lastError || !this.vector || (this.kv.backend === 'file' && !this.kv.durability)) throw unverified();
+      const { id } = publication;
+      const bucket = this.bucketOfId.get(id) ?? bucketBefore ?? this.removedBuckets.get(id);
+      const keys: Array<{scope:string;key:string}> = [
+        { scope: KV.vectorPendingLog, key: id },
+        { scope: KV.vectorPendingLog, key: PENDING_CLEAR_KEY },
+        { scope: KV.bm25Index, key: VECTOR_META_KEY },
+      ];
+      if (bucket !== undefined) keys.push({ scope: vectorBucketScope(bucket), key: id });
+      const check = async () => {
+        const [row, pending, clear, meta] = await Promise.all([
+          bucket === undefined ? null : this.kv.get<PersistedVector>(vectorBucketScope(bucket), id),
+          this.kv.get(KV.vectorPendingLog, id),
+          this.kv.get(KV.vectorPendingLog, PENDING_CLEAR_KEY),
+          this.kv.get<VectorMeta>(KV.bm25Index, VECTOR_META_KEY),
+        ]);
+        const validMeta = meta === null ? expected === null && bucket === undefined :
+          meta.v === 3 && Number.isInteger(meta.count) && meta.count >= (expected ? 1 : 0) &&
+          Number.isInteger(meta.bucketCount) && meta.bucketCount >= 0 && (bucket === undefined || bucket < meta.bucketCount);
+        if (!isDeepStrictEqual(row, expected) || pending !== null || clear !== null || !validMeta) throw unverified();
+      };
+      await Promise.all([this.logChains.get(id), this.logChains.get(PENDING_CLEAR_KEY)]);
+      await check();
+      await this.waitForVectorPublication(keys);
+      await check();
+    } catch { throw unverified(); }
   }
 
   status(): IndexPersistenceStatus {
@@ -451,8 +500,8 @@ export class IndexPersistence {
       const loaded = await this.loadBuckets(meta.bucketCount);
       if (!loaded) return { vector: null, state: "unavailable", savedAt: null };
       this.metaWritten = true;
-      await this.removeLegacyVectorSnapshotIfPresent();
-      await this.removeLegacyBm25Snapshot();
+      const replacementVerified = await this.removeLegacyVectorSnapshotIfPresent(loaded, meta);
+      if (replacementVerified) await this.removeLegacyBm25Snapshot();
       const expectedCount = Number.isInteger(meta.count) ? meta.count : undefined;
       this.vectorCountShortfall =
         expectedCount !== undefined && loaded.size < expectedCount
@@ -463,7 +512,7 @@ export class IndexPersistence {
           ...this.vectorCountShortfall,
         });
       }
-      return { vector: loaded, state: "buckets", savedAt: meta.savedAt ?? null, expectedCount };
+      return { vector: loaded, state: replacementVerified ? "buckets" : "unavailable", savedAt: meta.savedAt ?? null, expectedCount };
     }
 
     return this.migrateLegacy();
@@ -475,7 +524,14 @@ export class IndexPersistence {
 
   private assignBucket(id: string): number {
     const existing = this.bucketOfId.get(id);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) { this.removedBuckets.delete(id); return existing; }
+    const removed = this.removedBuckets.get(id);
+    if (removed !== undefined) {
+      this.removedBuckets.delete(id);
+      this.bucketOfId.set(id, removed);
+      this.bucketCounts.set(removed, (this.bucketCounts.get(removed) ?? 0) + 1);
+      return removed;
+    }
     if (!this.hasOpenBucket) {
       this.hasOpenBucket = true;
       this.highestBucket = 0;
@@ -563,6 +619,7 @@ export class IndexPersistence {
   private async writeChanges(vector: VectorIndex): Promise<void> {
     const changes = vector.takeChanges();
     if (changes.size === 0) return;
+    const keys: Array<{ scope: string; key: string }> = [{ scope: KV.bm25Index, key: VECTOR_META_KEY }];
     const failed = new Map<string, boolean>();
     const failures = await inBatches([...changes], WRITE_CONCURRENCY, async ([id, present]) => {
       const entry = present ? vector.get(id) : undefined;
@@ -574,10 +631,13 @@ export class IndexPersistence {
             s: entry.sessionId,
             e: float32ToBase64(entry.embedding),
           });
+          keys.push({ scope: vectorBucketScope(bucket), key: id });
         } else {
-          const bucket = this.bucketOfId.get(id);
+          const bucket = this.bucketOfId.get(id) ?? this.removedBuckets.get(id);
           if (bucket !== undefined) {
+            this.removedBuckets.set(id, bucket);
             await this.kv.delete(vectorBucketScope(bucket), id);
+            keys.push({ scope: vectorBucketScope(bucket), key: id });
             this.releaseBucket(id);
           }
         }
@@ -597,12 +657,14 @@ export class IndexPersistence {
         v: 3,
         bucketCount: this.bucketCountInUse(),
         savedAt: new Date(this.now()).toISOString(),
-        count: vector.size,
+        count: [...this.bucketCounts.values()].reduce((total, count) => total + count, 0),
       });
+      await this.waitForVectorPublication(keys);
     } catch (err) {
       vector.returnChanges(changes);
       throw err;
     }
+    for (const [id, present] of changes) if (!present) this.removedBuckets.delete(id);
     this.metaWritten = true;
   }
 
@@ -640,6 +702,17 @@ export class IndexPersistence {
     return loaded;
   }
 
+  private async waitForVectorPublication(keys: Array<{ scope: string; key: string }>): Promise<void> {
+    const durability = this.kv.durability;
+    if (!durability) return;
+    const dataKeys = keys.filter(({ scope, key }) => scope !== KV.bm25Index || key !== VECTOR_META_KEY);
+    // Each fence has a bounded SDK capture budget; certify metadata after verifying data.
+    for (let offset = 0; offset < dataKeys.length; offset += DISK_FENCE_BATCH_KEYS) {
+      await durability.waitForKeys(this.kv, dataKeys.slice(offset, offset + DISK_FENCE_BATCH_KEYS));
+    }
+    await durability.waitForKeys(this.kv, [{ scope: KV.bm25Index, key: VECTOR_META_KEY }]);
+  }
+
   private async migrateLegacy(): Promise<VectorLoadResult> {
     const manifest = await this.readIndexValue<IndexShardManifest>(
       KV.bm25Index,
@@ -669,6 +742,9 @@ export class IndexPersistence {
     for (const [id, entry] of legacy.entries()) staging.add(id, entry.sessionId, entry.embedding);
     try {
       await this.writeChanges(staging);
+      const meta = await this.kv.get<VectorMeta>(KV.bm25Index, VECTOR_META_KEY);
+      if (!meta) throw new Error("vector_migration_metadata_missing");
+      await this.verifyVectorReplacement(legacy, meta);
     } catch (err) {
       logger.warn("index persistence: migrating the legacy vector snapshot failed; it stays in place and the next save retries", {
         message: errorMessage(err),
@@ -700,12 +776,53 @@ export class IndexPersistence {
     await this.deleteKey(KV.bm25Index, LEGACY_VECTOR_KEY, "legacy_vector_cleanup");
   }
 
-  private async removeLegacyVectorSnapshotIfPresent(): Promise<void> {
+  private async verifyVectorReplacement(legacy: VectorIndex, meta: VectorMeta): Promise<void> {
+    if (meta.count < legacy.size) throw new Error("vector_migration_count_mismatch");
+    const keys: Array<{ scope: string; key: string }> = [{ scope: KV.bm25Index, key: VECTOR_META_KEY }];
+    if (!isDeepStrictEqual(await this.kv.get(KV.bm25Index, VECTOR_META_KEY), meta)) throw new Error("vector_migration_metadata_mismatch");
+    const loaded = await this.loadBuckets(meta.bucketCount);
+    if (!loaded || loaded.size !== meta.count) throw new Error("vector_migration_bucket_count_mismatch");
+    for (const [id, entry] of legacy.entries()) {
+      const actual = loaded.get(id);
+      if (!actual || actual.sessionId !== entry.sessionId || !isDeepStrictEqual(actual.embedding, entry.embedding)) throw new Error("vector_migration_readback_mismatch");
+    }
+    for (const [id] of loaded.entries()) keys.push({ scope: vectorBucketScope(this.bucketOfId.get(id)!), key: id });
+    if (this.kv.backend === "file" && !this.kv.durability) throw new Error("vector_disk_fence_unavailable");
+    await this.waitForVectorPublication(keys);
+    const verified = await this.loadBuckets(meta.bucketCount);
+    if (!verified || verified.size !== loaded.size) throw new Error("vector_migration_bucket_count_mismatch");
+    for (const [id, entry] of loaded.entries()) {
+      const actual = verified.get(id);
+      if (!actual || actual.sessionId !== entry.sessionId || !isDeepStrictEqual(actual.embedding, entry.embedding)) throw new Error("vector_migration_readback_mismatch");
+    }
+    if (!isDeepStrictEqual(await this.kv.get(KV.bm25Index, VECTOR_META_KEY), meta)) throw new Error("vector_migration_metadata_mismatch");
+  }
+
+  private async removeLegacyVectorSnapshotIfPresent(loaded: VectorIndex, meta: VectorMeta): Promise<boolean> {
     const manifest = await this.readIndexValue<IndexShardManifest>(KV.bm25Index, LEGACY_VECTOR_MANIFEST_KEY, "vector", "manifest");
     const legacy = await this.readIndexValue<string>(KV.bm25Index, LEGACY_VECTOR_KEY, "vector", "legacy");
-    if (!manifest.ok || !legacy.ok) return;
-    if (manifest.value == null && legacy.value == null) return;
+    if (!manifest.ok || !legacy.ok) return false;
+    if (manifest.value == null && legacy.value == null) return true;
+    let source: VectorIndex | null = null;
+    try {
+      const data = await this.loadShardedData(LEGACY_VECTOR_KEY, LEGACY_VECTOR_MANIFEST_KEY, "vector");
+      if (typeof data !== "string") throw new Error("vector_migration_legacy_unreadable");
+      source = VectorIndex.deserialize(data);
+      if (loaded.size < source.size) throw new Error("vector_migration_count_mismatch");
+      await this.verifyVectorReplacement(source, meta);
+    } catch (err) {
+      logger.warn("index persistence: kept legacy vector snapshot because replacement durability was not verified", { message: errorMessage(err) });
+      if (source) {
+        // Preserve newer bucket values while restoring the missing legacy vectors for retry.
+        for (const [id, entry] of source.entries()) {
+          if (!loaded.has(id)) loaded.loadPersisted(id, entry.sessionId, entry.embedding);
+        }
+        loaded.markAllChanged();
+      }
+      return false;
+    }
     await this.removeLegacyVectorSnapshot(manifest.value ?? null);
+    return true;
   }
 
   private async removeLegacyBm25Snapshot(): Promise<void> {

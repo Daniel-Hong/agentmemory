@@ -108,7 +108,7 @@ Hook scripts in `src/hooks/` are standalone Node.js scripts (no iii-sdk import).
 
 ## Testing
 
-- Before every commit run, in order: `npm run build`, `npm run skills:gen`, `npm run docs:sync`, `npm run skills:check`, `npm test` (2,700+ tests). Commit anything the generators changed. CI runs the same build, skills check and tests.
+- Before every commit run, in order: `npm run build`, `npm run skills:gen`, `npm run docs:sync`, `npm run skills:check`, `npm test` (2,800+ tests). Commit anything the generators changed. CI runs the same build, skills check and tests.
 - Before any npm publish: `npm run release:gate` must pass. It installs the packed tarballs into a clean home and runs capture, recovery, restart, export/import, MCP and status checks against the installed CLI (see CONTRIBUTING.md, Release process)
 - Mock pattern: `vi.mock("iii-sdk")` with mock `sdk.trigger`, `kv.get/set/list`
 - Test files go in `test/` with `.test.ts` extension
@@ -121,7 +121,7 @@ Hook scripts in `src/hooks/` are standalone Node.js scripts (no iii-sdk import).
 - 6 MCP resources, 3 MCP prompts
 - 12 hooks, 17 skills
 - 310+ iii functions
-- 2,700+ tests
+- 2,800+ tests
 
 ## Personal fork verification isolation
 
@@ -129,4 +129,4 @@ Run the test suite with its default fork pool. Do not use `--pool=threads`: on t
 
 ## Personal client capture maintenance
 
-PORT-04 implementation/limits: `docs/customizations/PORT-04.md`. Participating client README and AI update prompt: `integrations/codex-compat/README.md` and `AI-CLIENT-UPDATE.md`. `npm run build:codex-compat` follows the official build and never installs hooks. This intermediate branch is not deployment-approved. Preserve latest legacy outbox and receipt-managed spool during code rollback. Native Ollama plus fallback is currently explicitly unsupported; do not bypass the guard or force new JSON schemas onto XML consumers. Async embedding/publication and full operational control remain later ports.
+PORT-04 implementation/limits: `docs/customizations/PORT-04.md`. Participating client README and AI update prompt: `integrations/codex-compat/README.md` and `AI-CLIENT-UPDATE.md`. `npm run build:codex-compat` follows the official build and never installs hooks. This intermediate branch is not deployment-approved. Preserve latest legacy outbox and receipt-managed spool during code rollback. Native Ollama plus fallback is currently explicitly unsupported; do not bypass the guard or force new JSON schemas onto XML consumers. PORT-05 async embedding/publication is implemented and isolated-tested; see `docs/customizations/PORT-05.md`. Full operational control, bounded API/Viewer and real integration remain later ports. Operational server/client configuration has not been changed.
