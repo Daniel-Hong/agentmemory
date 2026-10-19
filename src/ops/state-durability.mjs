@@ -22,15 +22,15 @@ export function namespaceJson(buffer){
 export function createStateDurabilityFence({storePath,timeoutMs=15000,pollIntervalMs=100,clock=Date.now}={}){
   if(typeof storePath!=='string'||!isAbsolute(storePath))throw Error('absolute_state_store_path_required');
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||!Number.isSafeInteger(pollIntervalMs)||pollIntervalMs<1)throw Error('state_durability_interval_invalid');
-  let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null;
-  const active=new Set(),touched=new Map();
+  let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
+  const active=new Set(),touched=new Map(),pruneAttempts=new Map();
   function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
-  function forgetKeys(selected){for(const {scope,key,revision} of selected){const map=touched.get(scope);if(revision===undefined||map?.get(key)?.revision!==revision)continue;map.delete(key);if(!map.size)touched.delete(scope);}}
+  function forgetKeys(selected){for(const {scope,key,revision} of selected){const map=touched.get(scope);if(revision===undefined||map?.get(key)?.revision!==revision)continue;map.delete(key);if(!map.size){touched.delete(scope);pruneAttempts.delete(scope);}}}
   function stableKeys({minAgeMs=15000,limit=200}={}){
     if(!Number.isSafeInteger(minAgeMs)||minAgeMs<0||!Number.isSafeInteger(limit)||limit<1||limit>200)throw Error('state_stable_selection_invalid');
-    const now=clock();return keys().filter(item=>now-item.lastTouched>=minAgeMs).sort((a,b)=>a.lastTouched-b.lastTouched||a.scope.localeCompare(b.scope)||a.key.localeCompare(b.key)).slice(0,limit);
+    const now=clock();return keys().filter(item=>now-item.lastTouched>=minAgeMs).sort((a,b)=>(pruneAttempts.get(a.scope)??0)-(pruneAttempts.get(b.scope)??0)||a.lastTouched-b.lastTouched||a.scope.localeCompare(b.scope)||a.key.localeCompare(b.key)).slice(0,limit);
   }
   function mutate(scope,key,fn){
     if(frozen)return Promise.reject(Object.assign(Error('state_mutations_frozen'),{code:'STATE_FROZEN'}));
@@ -97,23 +97,29 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     }
     throw failed();
   }
-  async function wait(kv){
-    await drain();const selected=keys(),began=clock();
+  async function publishScopes(kv,selected){
+    const began=clock(),groups=new Map();
     if(!selected.length)return waitForKeys(kv,selected);
-    let verifiedKeys=0;const scopes=new Set();
-    // The deadline bounds one publication, not the accumulated lifetime dirty set.
-    for(let offset=0;offset<selected.length;offset+=200){
-      const batch=selected.slice(offset,offset+200);
-      const result=await waitForKeys(kv,batch);verifiedKeys+=result.keys;
-      for(const item of batch)scopes.add(item.scope);
+    for(const item of selected){if(!groups.has(item.scope))groups.set(item.scope,[]);groups.get(item.scope).push(item);}
+    let verifiedKeys=0,firstFailure,failedVerification;const scopes=new Set();
+    // One busy namespace must not consume another namespace's publication budget.
+    for(const [scope,items] of groups){
+      for(let offset=0;offset<items.length;offset+=200){
+        try{const result=await waitForKeys(kv,items.slice(offset,offset+200));verifiedKeys+=result.keys;scopes.add(scope);}
+        catch(error){if(!firstFailure){firstFailure=error;failedVerification={status:'failed',at:clock(),...error.diagnostics,errorCode:error.code,causeCode:error.diagnostics?.errorCode};}break;}
+      }
     }
+    if(firstFailure){lastVerification=failedVerification;throw firstFailure;}
     return {keys:verifiedKeys,scopes:scopes.size,synced:true,waitMs:clock()-began,mutationFailures};
   }
+  async function wait(kv){await drain();return publishScopes(kv,keys());}
   async function flushStable(kv,options){
     if(frozen||pruning)return {success:true,skipped:true,reason:frozen?'frozen':'already_pruning'};
     const selected=stableKeys(options);if(!selected.length)return {success:true,skipped:true,reason:'no_stable_dirty_keys'};
+    // Rotate attempted scopes behind untouched scopes even when a full batch fails.
+    for(const scope of new Set(selected.map(item=>item.scope)))pruneAttempts.set(scope,++pruneSequence);
     pruning=true;
-    try{return {success:true,...await waitForKeys(kv,selected)};}
+    try{return {success:true,...await publishScopes(kv,selected)};}
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }

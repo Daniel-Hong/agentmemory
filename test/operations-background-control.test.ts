@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBackgroundControl, registerBackgroundControlApi } from "../src/ops/background-control.mjs";
 
 function gate() { let resolve!: (value?: unknown) => void; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
@@ -6,7 +6,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(saved: unknown = null) {
   let value = saved;
   const kv = { get: async () => value, set: async (_scope: string, _key: string, v: unknown) => { value = v; },
-    durability: { flushStable: async (): Promise<any> => ({ success: true }), keys: () => [], waitForKeys: async () => {} } };
+    durability: { wait: async (): Promise<any> => ({ synced: true, mutationFailures: 0 }), flushStable: async (): Promise<any> => ({ success: true }), keys: () => [], waitForKeys: async () => {} } };
   return { kv, saved: () => value };
 }
 
@@ -38,7 +38,7 @@ describe("background transition status and safe diagnostics", () => {
   it("shows admitted work, worker drain, and disk confirmation separately with elapsed times", async () => {
     let now = 1000;
     const f = fixture(), work = gate(), publication = gate(), stable = gate(), disk = gate();
-    f.kv.durability.flushStable = () => stable.promise;
+    f.kv.durability.wait = async () => { await stable.promise; await disk.promise; return { synced: true, mutationFailures: 0 }; };
     const control = createBackgroundControl({ clock: () => now });
     await control.init(f.kv, () => publication.promise);
     f.kv.durability.waitForKeys = async () => { await disk.promise; };
@@ -76,10 +76,10 @@ describe("background transition status and safe diagnostics", () => {
 
   it.each(["pause", "resume"])("keeps safe returned storage diagnostics when %s fails", async action => {
     const f = fixture(action === "resume" ? { paused: true } : null);
-    f.kv.durability.flushStable = async () => ({ success: false, errorCode: "STATE_DURABILITY_TIMEOUT", diagnostics: {
+    f.kv.durability.wait = async () => { throw Object.assign(Error("synthetic storage failure"), { code: "STATE_DURABILITY_TIMEOUT", diagnostics: {
       category: "state_durability", errorCode: "STATE_NAMESPACE_NOT_COMMITTED", stage: "capture", keyCount: 9, scopeCount: 2, capturedKeyCount: 3, elapsedMs: 50, waitMs: 50,
       namespace: "/PRIVATE_PATH", sourceRaw: "PRIVATE_RAW", token: "PRIVATE_TOKEN",
-    } });
+    } }); };
     const control = createBackgroundControl(); await control.init(f.kv);
     if (action === "resume") await expect(control.change(action)).rejects.toThrow("background_storage_unavailable");
     else { await control.change(action); await control.settled(); }
@@ -123,11 +123,28 @@ describe("background transition status and safe diagnostics", () => {
     const f = fixture({ paused: true }), rollback = gate();
     let pauseWrites = 0;
     f.kv.set = async (_scope, _key, value: any) => { if (value.paused && ++pauseWrites > 1) await rollback.promise; };
-    f.kv.durability.flushStable = async () => ({ success: false, errorCode: "STATE_DURABILITY_TIMEOUT" });
+    f.kv.durability.wait = async () => { throw Object.assign(Error("synthetic storage failure"), { code: "STATE_DURABILITY_TIMEOUT" }); };
     const control = createBackgroundControl(); await control.init(f.kv);
     const resuming = control.change("resume"); await tick();
     expect(control.snapshot()).toMatchObject({ status: "error", pausedRequested: true, diagnostics: { errorCode: "STATE_DURABILITY_TIMEOUT", stage: "storage" } });
     expect((await control.run(() => 42)).deferred).toBe(true);
     rollback.resolve(); await expect(resuming).rejects.toThrow("background_storage_unavailable");
   });
+});
+
+
+it('certifies all preceding writes once through wait without a duplicate stable flush',async()=>{
+ const f=fixture({paused:true}),whole=vi.fn(async()=>({synced:true,mutationFailures:0})),legacy=vi.fn(async()=>({success:true}));
+ f.kv.durability.wait=whole;f.kv.durability.flushStable=legacy;const pair=vi.spyOn(f.kv.durability,'waitForKeys');
+ const control=createBackgroundControl();await control.init(f.kv);await control.change('resume');
+ expect(whole).toHaveBeenCalledOnce();expect(legacy).not.toHaveBeenCalled();expect(pair).toHaveBeenCalledTimes(2);
+});
+it.each([undefined,{}, {synced:false,mutationFailures:0},{synced:true,mutationFailures:1},{synced:true}, {synced:true,mutationFailures:Number.NaN}])('keeps resume admission closed for an uncertified full wait result %j',async result=>{
+ const f=fixture({paused:true});f.kv.durability.wait=async()=>result;const control=createBackgroundControl();await control.init(f.kv);
+ await expect(control.change('resume')).rejects.toThrow('background_storage_unavailable');expect(control.snapshot()).toMatchObject({status:'error',pausedRequested:true,diagnostics:{phase:'resume_storage',precedingWritesVerified:false,rollbackVerified:true}});
+ expect(f.saved()).toEqual({paused:true,resumePending:true});
+});
+it('fails closed when the full-dirty wait API is unavailable',async()=>{
+ const f=fixture({paused:true});delete (f.kv.durability as any).wait;const control=createBackgroundControl();await control.init(f.kv);
+ await expect(control.change('resume')).rejects.toThrow('background_storage_unavailable');expect(control.snapshot()).toMatchObject({status:'error',pausedRequested:true});
 });

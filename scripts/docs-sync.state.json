@@ -1,5 +1,5 @@
 {
-  "version": "0.9.30-daniel.3",
+  "version": "0.9.30-daniel.4",
   "facts": {
     "mcpTools": [
       "54"
@@ -20,7 +20,7 @@
       "12"
     ],
     "tests": [
-      "2900+"
+      "3000+"
     ],
     "functions": [
       "311"

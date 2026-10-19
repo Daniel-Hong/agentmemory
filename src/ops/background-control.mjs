@@ -30,9 +30,9 @@ export function createBackgroundControl({clock=Date.now}={}){
  }
  async function persist(){
   stage('storage');
-  const result=await kv.durability.flushStable(kv);
-  if(result?.success===false||result?.reason==='frozen')throw Object.assign(Error('background_storage_unavailable'),{code:result?.errorCode??'BACKGROUND_STORAGE_UNAVAILABLE',diagnostics:result?.diagnostics});
-  if(kv.durability.waitForKeys)await kv.durability.waitForKeys(kv,kv.durability.keys());
+  if(typeof kv.durability?.wait!=='function')throw Object.assign(Error('background_storage_unavailable'),{code:'BACKGROUND_PAUSE_FENCE_UNAVAILABLE'});
+  const result=await kv.durability.wait(kv);
+  if(result?.synced!==true||result?.mutationFailures!==0)throw Object.assign(Error('background_storage_unavailable'),{code:'BACKGROUND_STORAGE_UNVERIFIED'});
  }
  async function confirmPauseRecord(updateStage=true){
   if(updateStage&&transition)stage('storage');

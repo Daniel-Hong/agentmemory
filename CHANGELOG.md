@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.4] — 2026-10-20
+
+### Storage publication follow-up (verified source, not deployed)
+
+- daniel.3 applied successfully with all 453 existing data namespaces unchanged, protected code archives verified and dashboard root assets installed. Live acceptance remains incomplete: recurring 15-second storage read-back failures and a safely rolled-back resume left background work held. The deployment result is not proof of queue recovery.
+- Group boot backfill intents by canonical source namespace, at most 50 items and five SDK operations at once, then certify every source/retry pair in one strict publication. Keep foreground capture's original per-item certification and ACK boundary. Preserve source text, retry attempts/fingerprints and backfill markers through partial failure or stop.
+- Publish accumulated dirty keys per namespace with at most 200 keys and the original 15-second budget per publication. Preserve revision checks, failed keys and failure diagnostics; rotate failed scopes so others can progress. Reuse the full durability wait once for background transitions and fail closed without a verified result. No timeout increase, reset, migration or dependency change.
+- Actual worker benchmark on one synthetic 160MiB namespace: five concurrent singleton enqueues 12,257ms / five scans per scope; the new five-item batch 2,066ms / one scan per scope. Source and existing retry hashes were unchanged. This demonstrates amplification removal, not a guarantee of live latency.
+- Verification: 3,016 unit tests passed, four existing skips; build/compat/docs/skills and feedback40 passed. TypeScript retains exactly the same24 baseline diagnostics; no additions. Independent review and six-file50-test check found no P1/P2 issue. Final packaged CLI, deployment guard and live acceptance are separate gates recorded in the release dossier.
+- Keep the existing compatibility hooks and root updater assets when their exact file sets/hashes match; no client reinstall is needed for identical files. Preserve issued daniel.3 bundles. Long-term-memory recording remains pending separate manual review.
+
 ## [0.9.30-daniel.3] — 2026-10-19
 
 ### Personal storage recovery and dashboard updates (verified candidate, not deployed)
@@ -363,6 +374,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.4]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.3...v0.9.30-daniel.4
 [0.9.30-daniel.3]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.2...v0.9.30-daniel.3
 [0.9.30-daniel.2]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.1...v0.9.30-daniel.2
 [0.9.30-daniel.1]: https://github.com/Daniel-Hong/agentmemory/compare/v0.9.30...v0.9.30-daniel.1

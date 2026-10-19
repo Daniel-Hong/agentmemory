@@ -35,8 +35,9 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     if(typeof kv.durability?.waitForKeys!=='function')throw Object.assign(Error('embedding_fence_unavailable'),{code:'EMBEDDING_FENCE_UNAVAILABLE'});
     await kv.durability.waitForKeys(kv,keys);
   }
+  const sourceScope=item=>item.kind==='memory'?KV.memories:KV.observations(item.sessionId);
   function certifyIntent(item){return fence([
-    {scope:item.kind==='memory'?KV.memories:KV.observations(item.sessionId),key:item.id},
+    {scope:sourceScope(item),key:item.id},
     {scope:EMBEDDING_RETRY_NAMESPACE,key:item.id},
   ]);}
   function enqueue(item){
@@ -47,6 +48,30 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       if(!old)await retainUnlocked(item,{code:'CAPTURE_PENDING_EMBEDDING'},false);
       await certifyIntent(item);return !old;
     }));
+  }
+  function enqueueBatch(items){
+    if(stopped)return Promise.reject(Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'}));
+    return track((async()=>{
+      const groups=new Map();let firstFailure;
+      for(const item of items){const scope=sourceScope(item);if(!groups.has(scope))groups.set(scope,new Map());groups.get(scope).set(item.id,item);}
+      for(const group of groups.values()){
+        const rows=[...group.values()];
+        for(let offset=0;offset<rows.length;offset+=50){
+          if(stopped)throw Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'});
+          const batch=rows.slice(offset,offset+50);
+          for(let start=0;start<batch.length;start+=5){
+            const results=await Promise.allSettled(batch.slice(start,start+5).map(item=>withKeyedLock(intentKey(item.id),async()=>{
+              await initialize();
+              if(!await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id))await retainUnlocked(item,{code:'CAPTURE_PENDING_EMBEDDING'},false);
+            })));
+            for(const result of results)if(result.status==='rejected')firstFailure??=result;
+          }
+          // Backfill shares a source namespace; certify every source/intent pair in one scan.
+          try{await fence(batch.flatMap(item=>[{scope:sourceScope(item),key:item.id},{scope:EMBEDDING_RETRY_NAMESPACE,key:item.id}]))}catch(reason){firstFailure??={reason};}
+        }
+      }
+      if(firstFailure)throw firstFailure.reason;
+    })());
   }
   async function current(item){
     const row=await kv.get(item.kind==='memory'?KV.memories:KV.observations(item.sessionId),item.id);
@@ -177,5 +202,5 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
   function start(){if(stopped||interval)return;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});interval=setInterval(()=>void pump().catch(error=>{state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});}),15000);interval.unref();}
   if(schedule)start();
-  return {add,enqueue,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
+  return {add,enqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
 }

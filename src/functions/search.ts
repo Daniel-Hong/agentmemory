@@ -24,6 +24,7 @@ let currentEmbeddingProvider: EmbeddingProvider | null = null
 let embeddingRecovery: {
   add(item: EmbeddingIntent): Promise<boolean>;
   enqueue(item: EmbeddingIntent): Promise<unknown>;
+  enqueueBatch(items: EmbeddingIntent[]): Promise<void>;
 } | null = null
 export function setEmbeddingRecovery(recovery: typeof embeddingRecovery): void { embeddingRecovery = recovery }
 export async function enqueueObservationEmbedding(id: string, sessionId: string): Promise<void> {
@@ -676,13 +677,7 @@ export async function backfillVectors(jobs: VectorBackfillJob[]): Promise<number
 async function enqueueBackfill(jobs: VectorBackfillJob[]): Promise<number> {
   const recovery = embeddingRecovery!
   const missing = jobs.filter(job => !vectorIndex?.has(job.id))
-  let firstFailure: PromiseRejectedResult | undefined
-  for (let offset = 0; offset < missing.length; offset += 5) {
-    const results = await Promise.allSettled(missing.slice(offset, offset + 5).map(job => recovery.enqueue({ id: job.id, sessionId: job.sessionId, kind: job.context.kind })))
-    const failure = results.find(result => result.status === "rejected")
-    if (failure?.status === "rejected" && !firstFailure) firstFailure = failure
-  }
-  if (firstFailure) throw firstFailure.reason
+  await recovery.enqueueBatch(missing.map(job => ({ id: job.id, sessionId: job.sessionId, kind: job.context.kind })))
   return missing.length
 }
 

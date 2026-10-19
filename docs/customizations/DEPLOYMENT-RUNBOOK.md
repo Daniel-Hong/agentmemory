@@ -31,3 +31,7 @@
 ## daniel.3 대시보드 업데이트 경계
 
 개인 배포 daniel.3의 최초 helper/unit/sudoers 설치는 관리자 terminal 적용 거래에 포함한다. 이후 대시보드는 root가 사전에 검토·등록한 self-contained 후보만 적용한다. 서버 자체나 웹 입력을 root로 신뢰하지 않는다. 후보 제작/등록 및 interrupted 확인은 scripts/personal-release/DASHBOARD-UPDATES.md를 따른다. 설치됐어도 승인 목록이 비면 적용할 후보가 없다고 표시한다. daniel.2 compatibility client wrapper가 동일하면 다른 머신에 동일 ZIP을 다시 적용하지 않는다. 새 고정 후보/운영 묶음과 실제 인수 영수증으로 최종 적용 여부를 확인한다.
+
+## daniel.4 저장 인증 후속
+
+최신 후속은 STORAGE-PUBLICATION-DANIEL4.md와 별도 daniel4 후보/운영 묶음을 따른다. daniel.3 적용 성공과 최종 운영 복구 미완료를 구분한다. 호환13파일/root updater5자산이 기존 설치와 동일하면 재설치하지 않는다. 적용 후 저장 인증과 capture/embedding의 실제 완료를 확인하기 전 운영 검증 완료로 표시하지 않는다.

@@ -463,7 +463,7 @@ describe("graph compaction recovery", () => {
     vi.useFakeTimers();
     const kv = mockKV();
     await seed(kv, 6, 2, 1);
-    Object.assign(kv, { durability: { waitForKeys: async () => {}, flushStable: async () => {}, keys: () => [] } });
+    Object.assign(kv, { durability: { waitForKeys: async () => {}, wait: async () => ({ synced: true, mutationFailures: 0 }) } });
     const control = createBackgroundControl();
     await control.init(kv);
     installBackgroundControl(control);
