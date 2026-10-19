@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — storage durability and verified shutdown (not deployed)
+
+- Track file KV mutations through a disk read-back/fsync fence, retain dirty generations on failure, and verify the same namespace inode before and after synchronization. SDK acknowledgement alone does not certify persistence.
+- Close external admission, await initialization and accepted work, stop timers, drain capture/health/access writes, save the index, then freeze and verify storage before writing the worker's durable shutdown receipt. Keep raw sources, checkpoints, retries and existing history.
+- Await existing slot initialization and expose workerReady to both CLI import callers. CLI stop verifies a fresh matching-PID receipt before stopping the engine or clearing runtime metadata; an unavailable file path or unsupported backend cannot receive disk certification.
+- Review regressions cover identical-content inode replacement, access writes after response completion, and active health collection. No new dependency, storage migration, provider activation, or operational deployment.
+- Validation and the corrected test isolation procedure are recorded in docs/customizations/PORT-03.md. The initial thread-mode test run created host adapter files; those generated files were reversibly quarantined after hash verification. Final verification uses default forks plus a real temporary parent HOME. Long-term memory remains pending manual review.
+
 ### Personal fork — incremental summaries (not deployed)
 
 - Summarize only unprocessed source ranges and commit completed observation IDs, source offsets, pinned legacy projections and appended summary segments. Failed output or writes leave the last checkpoint intact; restarting resumes from the committed coordinate.

@@ -152,7 +152,7 @@ export function registerWorkingMemoryFunctions(
         usedTokens += tokens;
       }
 
-      void recordAccessBatch(kv, archivalIds);
+      await recordAccessBatch(kv, archivalIds);
 
       const pagedOut = active.length - archivalLines.length;
 

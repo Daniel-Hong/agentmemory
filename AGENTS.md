@@ -122,3 +122,7 @@ Hook scripts in `src/hooks/` are standalone Node.js scripts (no iii-sdk import).
 - 12 hooks, 17 skills
 - 310+ iii functions
 - 2,600+ tests
+
+## Personal fork verification isolation
+
+Run the test suite with its default fork pool. Do not use `--pool=threads`: on this host native `os.homedir()` does not follow Vitest's thread-local HOME stubs, allowing adapter tests to touch real home settings. Give the test launcher a real temporary HOME as a second guard; keep per-test HOME isolation. PORT-03 records the no-write reproduction and recovery.

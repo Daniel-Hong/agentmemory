@@ -147,7 +147,7 @@ export function registerSmartSearchFunction(
           ? expanded.filter((e) => e.observation.agentId === filterAgentId)
           : expanded;
 
-        void recordAccessBatch(
+        await recordAccessBatch(
           kv,
           scoped.map((e) => e.observation.id),
         );
@@ -205,7 +205,7 @@ export function registerSmartSearchFunction(
         timestamp: r.observation.timestamp,
       }));
 
-      void recordAccessBatch(
+      await recordAccessBatch(
         kv,
         compact.map((r) => r.obsId),
       );

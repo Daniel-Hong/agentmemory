@@ -1444,7 +1444,7 @@ fi
 | Prometheus / Grafana | iii OTEL + health monitor |
 | Custom plugin systems | `iii worker add <name>` |
 
-**219 source file · ~52,000 LOC · 2,600+ การทดสอบ · 310 function · 60 KV scope** ทั้งหมดอยู่บน primitive สามตัว ไม่มี `agentmemory plugin install` ระบบ plugin ก็คือ iii เองนั่นแหละ
+**220 source file · ~52,000 LOC · 2,600+ การทดสอบ · 310 function · 60 KV scope** ทั้งหมดอยู่บน primitive สามตัว ไม่มี `agentmemory plugin install` ระบบ plugin ก็คือ iii เองนั่นแหละ
 
 ---
 

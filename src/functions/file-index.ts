@@ -121,7 +121,7 @@ export function registerFileIndexFunction(sdk: IIIClient, kv: StateKV): void {
       for (const fh of results) {
         for (const obs of fh.observations) accessedIds.push(obs.obsId);
       }
-      void recordAccessBatch(kv, accessedIds);
+      await recordAccessBatch(kv, accessedIds);
 
       const context = lines.join("\n");
       logger.info("File context generated", {

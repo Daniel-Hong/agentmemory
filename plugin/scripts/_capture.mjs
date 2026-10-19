@@ -736,6 +736,10 @@ async function drainSpool(url, send, options = {}) {
 		let stopped = false;
 		let processed = 0;
 		for (const rec of records) {
+			if (options.shouldStop?.()) {
+				leftover.push(rec);
+				continue;
+			}
 			if (seen.has(rec.eventId)) {
 				result.duplicates++;
 				continue;

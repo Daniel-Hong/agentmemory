@@ -900,7 +900,7 @@ export function registerSearchFunction(sdk: IIIClient, kv: StateKV): void {
         })
       }
 
-      void recordAccessBatch(
+      await recordAccessBatch(
         kv,
         enriched.map((r) => r.observation.id),
       )

@@ -773,7 +773,8 @@ async function startWorkerForEngineState(): Promise<void> {
   if (configuredEngineMayStartWorker() && await waitForConfiguredWorker(5000)) {
     return;
   }
-  await import("./index.js");
+  const worker = await import("./index.js");
+  await worker.workerReady;
 }
 
 function configuredEngineMayStartWorker(): boolean {
@@ -2013,7 +2014,8 @@ async function main() {
 
   if (skipEngine) {
     if (IS_VERBOSE) p.log.info("Skipping engine check (--no-engine)");
-    await import("./index.js");
+    const worker = await import("./index.js");
+  await worker.workerReady;
     if (await waitForAgentmemoryReady(15000)) {
       await maybeOfferGlobalInstall();
       printReadyHint();
@@ -3329,7 +3331,17 @@ async function waitForEngineFlush(): Promise<void> {
 async function stopWorkerPid(pid: number, graceMs: number): Promise<boolean> {
   const s = p.spinner();
   s.start(`Stopping agentmemory worker (pid ${pid})... [flushing state]`);
-  const ok = await signalAndWait(pid, "SIGTERM", graceMs);
+  const startedAt = Date.now();
+  const stopped = await signalAndWait(pid, "SIGTERM", Math.max(graceMs,600000));
+  const stoppedAt = Date.now();
+  let verified = false;
+  try {
+    const receipt = JSON.parse(readFileSync(runtimeMetadataPath("shutdown-receipt.json"), "utf8"));
+    const receiptAt = typeof receipt.at === "string" ? Date.parse(receipt.at) : NaN;
+    verified = stoppedAt >= startedAt && Number.isFinite(receiptAt) && receiptAt >= startedAt && receiptAt <= stoppedAt
+      && receipt.pid === pid && receipt.verified === true && receipt.durability?.synced === true && receipt.durability?.mutationFailures === 0;
+  } catch {}
+  const ok=stopped&&verified;
   s.stop(ok ? `Stopped worker pid ${pid}` : `Failed to stop worker pid ${pid}`);
   return ok;
 }
@@ -3570,19 +3582,14 @@ async function runStop(): Promise<void> {
       return;
     }
     if (workerPid !== null && portPids.length === 0 && pidfilePid === null) {
-      // Engine already gone but worker is lingering — reap it directly
-      // instead of preserving for manual cleanup.
-      const s = p.spinner();
-      s.start(`Stopping orphaned agentmemory worker (pid ${workerPid})...`);
-      const ok = await signalAndWait(workerPid, "SIGTERM", SHUTDOWN_HARD_EXIT_MS + 1000);
-      s.stop(ok ? `Stopped worker pid ${workerPid}` : `Failed to stop worker pid ${workerPid}`);
+      const ok = await stopWorkerPid(workerPid, SHUTDOWN_HARD_EXIT_MS + 1000);
+      if (!ok) {
+        p.log.error("Worker shutdown was not verified. With the engine unavailable, persistence is uncertain. Runtime metadata and data were preserved.");
+        process.exit(1);
+      }
       clearEnginePidfile();
       clearEngineState();
       clearWorkerPidfile();
-      if (!ok) {
-        p.log.error(`Worker pid ${workerPid} survived SIGKILL. Investigate with \`ps\`.`);
-        process.exit(1);
-      }
       p.outro("Stopped orphaned worker. Memories persisted to disk.");
       return;
     }
@@ -3642,7 +3649,10 @@ async function runStop(): Promise<void> {
   // persists. Worker SIGTERM grace bumped 3s -> 5s to give a large
   // index a real chance to commit before the engine goes away.
   for (const pid of workerCandidates) {
-    if (!(await stopWorkerPid(pid, SHUTDOWN_HARD_EXIT_MS + 1000))) allStopped = false;
+    if (!(await stopWorkerPid(pid, SHUTDOWN_HARD_EXIT_MS + 1000))) {
+      p.log.error("Worker shutdown was not verified. Refusing to stop iii-engine; runtime metadata and data were preserved.");
+      process.exit(1);
+    }
   }
   if (workerCandidates.size > 0 && [...candidates].some((pid) => !workerCandidates.has(pid))) {
     await waitForEngineFlush();
@@ -3665,9 +3675,6 @@ async function runStop(): Promise<void> {
     if (!ok) allStopped = false;
   }
 
-  clearEnginePidfile();
-  clearEngineState();
-  clearWorkerPidfile();
   if (skippedForeign.length > 0) {
     const list = skippedForeign
       .map((sf) => `  pid ${sf.pid}  ${sf.comm}`)
@@ -3678,9 +3685,12 @@ async function runStop(): Promise<void> {
     process.exit(1);
   }
   if (!allStopped) {
-    p.log.error("One or more processes survived SIGKILL. Investigate with `ps`.");
+    p.log.error("One or more processes did not stop after SIGTERM. Runtime metadata was preserved; investigate with `ps`.");
     process.exit(1);
   }
+  clearEnginePidfile();
+  clearEngineState();
+  clearWorkerPidfile();
   p.outro("Stopped. Memories persisted to disk; restart anytime with: npx @agentmemory/agentmemory");
 }
 

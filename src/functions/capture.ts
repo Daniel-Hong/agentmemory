@@ -188,6 +188,7 @@ export interface CaptureController {
   durability(): SentMark;
   start(): void;
   stop(): void;
+  drain(): Promise<void>;
 }
 
 export function registerCaptureFunctions(
@@ -215,6 +216,13 @@ export function registerCaptureFunctions(
   let lastBootDrain: CaptureStatus["lastBootDrain"] = null;
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
   let inboxSize: number | null = null;
+  let stopped = false;
+  const maintenance = new Set<Promise<unknown>>();
+  function trackWork<T>(work: () => Promise<T>): Promise<T> {
+    const pending = Promise.resolve().then(work); maintenance.add(pending);
+    const done = () => { maintenance.delete(pending); }; pending.then(done, done);
+    return pending;
+  }
   const timers: Array<ReturnType<typeof setInterval>> = [];
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
@@ -354,8 +362,9 @@ export function registerCaptureFunctions(
     });
   }
 
-  async function retryOne(key: string, force: boolean): Promise<"recovered" | "dead" | "waiting" | "gone"> {
+  async function retryOne(key: string, force: boolean): Promise<"recovered" | "dead" | "waiting" | "gone" | "stopped"> {
     return withKeyedLock(`capture:${key}`, async () => {
+      if (stopped) return "stopped";
       const rec = await kv.get<InboxRecord>(KV.captureInbox, key);
       if (!rec) return "gone";
       if (rec.status === "dead" && !force) return "waiting";
@@ -375,6 +384,7 @@ export function registerCaptureFunctions(
   }
 
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
+    if (stopped) return { processed: 0, recovered: 0, deadLettered: 0 };
     const records = await kv.list<InboxRecord>(KV.captureInbox);
     inboxSize = records.length;
     let processed = 0;
@@ -386,7 +396,9 @@ export function registerCaptureFunctions(
       .filter((r) => r.status === "pending" || !r.nextAttemptAt || Date.parse(r.nextAttemptAt) <= now)
       .sort((a, b) => a.acceptedAt.localeCompare(b.acceptedAt));
     for (const rec of due) {
+      if (stopped) break;
       const outcome = await retryOne(rec.key, false).catch(() => "waiting" as const);
+      if (outcome === "stopped") break;
       if (outcome === "gone") continue;
       processed++;
       if (outcome === "recovered") recovered++;
@@ -397,8 +409,9 @@ export function registerCaptureFunctions(
   }
 
   function sweep() {
+    if (stopped) return Promise.resolve({ processed: 0, recovered: 0, deadLettered: 0 });
     if (!sweeping) {
-      sweeping = runSweep().finally(() => {
+      sweeping = trackWork(runSweep).finally(() => {
         sweeping = null;
       });
     }
@@ -406,15 +419,16 @@ export function registerCaptureFunctions(
   }
 
   async function prune(): Promise<number> {
+    if (stopped) return 0;
     const cutoff = Date.now() - policy.dedupRetentionHours * 3600_000;
     const perShard = Math.max(1, Math.ceil(policy.eventsMax / EVENT_SHARDS));
     let removed = 0;
-    for (let i = 0; i < EVENT_SHARDS; i++) {
+    for (let i = 0; i < EVENT_SHARDS && !stopped; i++) {
       const scope = KV.captureEvents(i.toString(16).padStart(EVENT_SHARD_CHARS, "0"));
       const events = await kv.list<CompletedEvent>(scope).catch(() => [] as CompletedEvent[]);
       if (events.length === 0) continue;
       const sorted = events.filter(Boolean).sort((a, b) => b.completedAt.localeCompare(a.completedAt));
-      for (let j = 0; j < sorted.length; j++) {
+      for (let j = 0; j < sorted.length && !stopped; j++) {
         const ev = sorted[j]!;
         if (j >= perShard || Date.parse(ev.deletedAt ?? ev.completedAt) < cutoff) {
           await kv.delete(scope, ev.key).catch(() => {});
@@ -424,14 +438,14 @@ export function registerCaptureFunctions(
     }
     const inbox = await kv.list<InboxRecord>(KV.captureInbox).catch(() => [] as InboxRecord[]);
     const dead = inbox.filter((r) => r && r.status === "dead").sort((a, b) => (b.deadAt ?? "").localeCompare(a.deadAt ?? ""));
-    for (let j = 0; j < dead.length; j++) {
+    for (let j = 0; j < dead.length && !stopped; j++) {
       const rec = dead[j]!;
       if (j >= policy.deadMax || Date.parse(rec.deadAt ?? rec.updatedAt) < cutoff) {
         await kv.delete(KV.captureInbox, rec.key).catch(() => {});
         removed++;
       }
     }
-    removed += await prunePromptLedgers(kv, cutoff, policy.eventsMax);
+    if (!stopped) removed += await prunePromptLedgers(kv, cutoff, policy.eventsMax);
     inboxSize = null;
     counters.pruned += removed;
     lastPruneAt = new Date().toISOString();
@@ -453,22 +467,27 @@ export function registerCaptureFunctions(
   async function settleRetained(): Promise<number> {
     let requeued = 0;
     for (const target of spoolTargets) {
+      if (stopped) break;
       const { url, dir } = splitTarget(target);
       const settled = reconcileSent(url, mark.bootId, { dir });
       if (settled.requeued > 0) {
-        await drainSpool(url, spoolSender(url, dir), { dir, policy: spoolPolicy() });
+        await drainSpool(url, spoolSender(url, dir), { dir, policy: spoolPolicy(), shouldStop: () => stopped });
         requeued += settled.requeued;
       }
     }
     return requeued;
   }
 
-  async function drainLocalSpool(): Promise<DrainResult[]> {
+  function drainLocalSpool(): Promise<DrainResult[]> {
+    return stopped ? Promise.resolve([]) : trackWork(runDrainLocalSpool);
+  }
+  async function runDrainLocalSpool(): Promise<DrainResult[]> {
     const results: DrainResult[] = [];
     for (const target of spoolTargets) {
+      if (stopped) break;
       const { url, dir } = splitTarget(target);
       reconcileSent(url, mark.bootId, { dir });
-      results.push(await drainSpool(url, spoolSender(url, dir), { dir, policy: spoolPolicy() }));
+      results.push(await drainSpool(url, spoolSender(url, dir), { dir, policy: spoolPolicy(), shouldStop: () => stopped }));
     }
     const total = results.reduce<DrainResult>(
       (acc, r) => ({
@@ -512,6 +531,7 @@ export function registerCaptureFunctions(
     const seen = new Set<string>();
     const spool: SpoolSummary[] = [];
     for (const target of spoolTargets) {
+      if (stopped) break;
       const { url, dir } = splitTarget(target);
       const summary = spoolSummary(url, { dir });
       if (seen.has(summary.path)) continue;
@@ -532,6 +552,7 @@ export function registerCaptureFunctions(
     });
     const outcomes = { recovered: 0, dead: 0, waiting: 0 };
     for (const rec of targets) {
+      if (stopped) break;
       const outcome = await retryOne(rec.key, true);
       if (outcome === "recovered") outcomes.recovered++;
       else if (outcome === "dead") outcomes.dead++;
@@ -566,21 +587,23 @@ export function registerCaptureFunctions(
     status,
     durability: () => ({ ...mark }),
     start() {
-      if (timers.length) return;
+      if (stopped || timers.length) return;
       const sweepTimer = setInterval(() => {
         void sweep().catch(() => {});
-        void settleRetained().catch(() => {});
+        void trackWork(settleRetained).catch(() => {});
       }, policy.retryIntervalMs);
       sweepTimer.unref();
       const pruneTimer = setInterval(() => {
-        void prune().catch(() => {});
+        void trackWork(prune).catch(() => {});
       }, 60 * 60 * 1000);
       pruneTimer.unref();
       timers.push(sweepTimer, pruneTimer);
     },
     stop() {
+      stopped = true;
       for (const t of timers.splice(0)) clearInterval(t);
     },
+    async drain() { while (maintenance.size) await Promise.allSettled([...maintenance]); },
   };
   activeController = controller;
   return controller;

@@ -338,7 +338,7 @@ export function registerRelationsFunction(sdk: IIIClient, kv: StateKV): void {
 
       result.sort((a, b) => b.confidence - a.confidence);
 
-      void recordAccessBatch(
+      await recordAccessBatch(
         kv,
         result.map((r) => r.memory.id),
       );

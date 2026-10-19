@@ -280,7 +280,7 @@ export function registerContextFunction(
       }
 
       if (accessedIds.length > 0) {
-        void recordAccessBatch(kv, accessedIds);
+        await recordAccessBatch(kv, accessedIds);
       }
 
       if (selected.length === 0) {

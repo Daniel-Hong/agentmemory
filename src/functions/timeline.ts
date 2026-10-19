@@ -92,7 +92,7 @@ export function registerTimelineFunction(sdk: IIIClient, kv: StateKV): void {
         });
       }
 
-      void recordAccessBatch(
+      await recordAccessBatch(
         kv,
         entries.map((e) => e.observation.id),
       );

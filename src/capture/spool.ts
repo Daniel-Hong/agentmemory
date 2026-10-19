@@ -563,7 +563,7 @@ export function drainInProgress(url: string, dir?: string): boolean {
 export async function drainSpool(
   url: string,
   send: (record: SpoolRecord) => Promise<SendOutcome>,
-  options: { policy?: SpoolPolicy; dir?: string; maxRecords?: number; deadlineMs?: number } = {},
+  options: { policy?: SpoolPolicy; dir?: string; maxRecords?: number; deadlineMs?: number; shouldStop?: () => boolean } = {},
 ): Promise<DrainResult> {
   const policy = options.policy ?? spoolPolicy();
   const result: DrainResult = { claimed: 0, delivered: 0, duplicates: 0, rejected: 0, expired: 0, corrupt: 0, remaining: 0 };
@@ -593,6 +593,7 @@ export async function drainSpool(
     let stopped = false;
     let processed = 0;
     for (const rec of records) {
+      if (options.shouldStop?.()) { leftover.push(rec); continue; }
       if (seen.has(rec.eventId)) {
         result.duplicates++;
         continue;

@@ -25,3 +25,5 @@ export function registerLongSessionSummarizer(
     onWorker?: (handle: SummaryWorker) => void;
   },
 ): SummaryWorker;
+
+export function closeLongSessionInferenceAdmission(): void;

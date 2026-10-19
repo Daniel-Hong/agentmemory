@@ -305,16 +305,33 @@ describe("graph compaction on boot", () => {
     expect((await first).state).toBe("done");
   });
 
-  it("is scheduled after the viewer starts and never awaited during boot", () => {
+  it("schedules graph work after the viewer and tracks it without blocking boot", async () => {
     const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-    const viewerAt = src.indexOf("startViewerServer(\n");
-    const runAt = src.indexOf("void runGraphCompactOnBoot(");
-    expect(viewerAt).toBeGreaterThan(0);
-    expect(runAt).toBeGreaterThan(viewerAt);
-    expect(src).not.toMatch(/await runGraphCompactOnBoot/);
-    expect(src).toMatch(/if \(isGraphCompactOnBootEnabled\(\)\)[\s\S]*?setGraphCompactBootDisabled\(\)/);
-  });
-});
+    const start = src.indexOf("  resources.viewer = startViewerServer(");
+    const end = src.indexOf("  const autoForgetIntervalMs", start);
+    const events: string[] = [], pending: Promise<unknown>[] = [];
+    let callback!: () => void, release!: () => void, stop!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const deps = {
+      resources: {}, config: {}, kv: {}, sdk: {}, secret: "fixture", shuttingDown: false,
+      startViewerServer: () => { events.push("viewer"); },
+      isGraphCompactOnBootEnabled: () => true,
+      setTimeout: (fn: () => void) => { events.push("scheduled"); callback = fn; return { unref() {} }; },
+      clearTimeout: () => { events.push("cancelled"); },
+      runGraphCompactOnBoot: () => { events.push("graph"); return gate; },
+      trackBoot: (work: Promise<unknown>) => { pending.push(work); return work; },
+      lifecycle: { track: (worker: { stop(): void }) => { stop = worker.stop; } },
+      bootLog: () => {}, bootWarn: () => {}, GRAPH_COMPACT_BOOT_DELAY_MS: 1,
+      setGraphCompactBootDisabled: () => {},
+    };
+    const run = new Function("deps", `const {${Object.keys(deps).join(",")}} = deps; ${src.slice(start, end)}`);
+    expect(run(deps)).toBeUndefined();
+    expect(events).toEqual(["viewer", "scheduled"]);
+    callback(); expect(events).toEqual(["viewer", "scheduled", "graph"]);
+    expect(pending).toHaveLength(1);
+    release(); await Promise.all(pending); stop();
+    expect(events.at(-1)).toBe("cancelled");
+  });});
 
 describe("AGENTMEMORY_GRAPH_COMPACT_ON_BOOT", () => {
   it("is on by default and off only for false", () => {

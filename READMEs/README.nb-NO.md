@@ -1447,7 +1447,7 @@ fi
 | Prometheus / Grafana | iii OTEL + helseovervåker |
 | Egendefinerte plugin-systemer | `iii worker add <name>` |
 
-**219 kildefiler · ~52,000 LOC · 2,600+ tester · 310 funksjoner · 60 KV-scopes**, alt på tre primitiver. Ingen `agentmemory plugin install`. Plugin-systemet er iii selv.
+**220 kildefiler · ~52,000 LOC · 2,600+ tester · 310 funksjoner · 60 KV-scopes**, alt på tre primitiver. Ingen `agentmemory plugin install`. Plugin-systemet er iii selv.
 
 ---
 

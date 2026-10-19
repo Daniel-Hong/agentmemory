@@ -1446,7 +1446,7 @@ Tinatanggap din ng `/agentmemory/export` ang `?maxSessions=` at `?offset=` para 
 | Prometheus / Grafana | iii OTEL + health monitor |
 | Custom na plugin system | `iii worker add <name>` |
 
-**219 na source file · ~52,000 LOC · 2,600+ na test · 310 na function · 60 na KV scope**, lahat sa tatlong primitive. Walang `agentmemory plugin install`. Ang plugin system mismo ay ang iii.
+**220 na source file · ~52,000 LOC · 2,600+ na test · 310 na function · 60 na KV scope**, lahat sa tatlong primitive. Walang `agentmemory plugin install`. Ang plugin system mismo ay ang iii.
 
 ---
 

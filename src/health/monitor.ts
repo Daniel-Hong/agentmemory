@@ -10,7 +10,9 @@ export function registerHealthMonitor(
   sdk: IIIClient,
   kv: StateKV,
   options: { streamRelayProbe?: StreamRelayProbe } = {},
-): { stop: () => void } {
+): { stop: () => void; drain: () => Promise<void> } {
+  let closed = false;
+  const active = new Set<Promise<unknown>>();
   let connectionState = "connected";
   let prevCpuUsage = process.cpuUsage();
   let prevCpuTime = Date.now();
@@ -102,14 +104,19 @@ export function registerHealthMonitor(
     return snapshot;
   }
 
-  collectHealth().catch(() => {});
-  const interval = setInterval(() => {
-    collectHealth().catch(() => {});
-  }, 30_000);
+  function collect() {
+    if (closed) return;
+    const work = collectHealth().catch(() => {}); active.add(work);
+    void work.finally(() => { active.delete(work); });
+  }
+  collect();
+  const interval = setInterval(collect, 30_000);
   interval.unref();
 
   return {
+    drain: async () => { while (active.size) await Promise.allSettled([...active]); },
     stop: () => {
+      closed = true;
       clearInterval(interval);
       options.streamRelayProbe?.close();
     },

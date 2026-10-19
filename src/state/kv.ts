@@ -1,10 +1,13 @@
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
+import { getEnvVar } from '../config.js'
+import { createStateDurabilityFence } from '../ops/state-durability.mjs'
 
 export type StateBackend = 'file' | 'redis'
 
 export interface StateKVOptions {
   backend?: StateBackend
+  durability?: ReturnType<typeof createStateDurabilityFence>
 }
 
 type UpdateOp = { type: string; path: string; value?: unknown }
@@ -103,12 +106,21 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
 
 export class StateKV {
   readonly backend: StateBackend
+  readonly durability: ReturnType<typeof createStateDurabilityFence> | null
 
   constructor(
     private sdk: IIIClient,
     options: StateKVOptions = {},
   ) {
     this.backend = options.backend ?? 'file'
+    const storePath = this.backend === 'file' ? getEnvVar('AGENTMEMORY_STATE_STORE_PATH') : undefined
+    this.durability = this.backend === 'file'
+      ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath }) : null)
+      : null
+  }
+
+  private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
+    return this.durability ? this.durability.mutate(scope, key, fn) : fn()
   }
 
   async get<T = unknown>(scope: string, key: string): Promise<T | null> {
@@ -119,10 +131,10 @@ export class StateKV {
   }
 
   async set<T = unknown>(scope: string, key: string, value: T): Promise<T> {
-    return this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
+    return this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
       function_id: 'state::set',
       payload: { scope, key, value },
-    })
+    }))
   }
 
   async update<T = unknown>(scope: string, key: string, ops: UpdateOp[]): Promise<T> {
@@ -135,17 +147,17 @@ export class StateKV {
         return result as T
       })
     }
-    return this.sdk.trigger<{ scope: string; key: string; ops: UpdateOp[] }, T>({
+    return this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string; ops: UpdateOp[] }, T>({
       function_id: 'state::update',
       payload: { scope, key, ops },
-    })
+    }))
   }
 
   async delete(scope: string, key: string): Promise<void> {
-    return this.sdk.trigger<{ scope: string; key: string }, void>({
+    return this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string }, void>({
       function_id: 'state::delete',
       payload: { scope, key },
-    })
+    }))
   }
 
   async list<T = unknown>(scope: string): Promise<T[]> {

@@ -1,4 +1,8 @@
-import { registerWorker, TriggerAction } from "iii-sdk";
+import { verifiedShutdown } from "./ops/verified-shutdown.js";
+import { createShutdownIngress } from "./ops/shutdown-ingress.mjs";
+import { createBackgroundLifecycle, registerBackgroundInterval } from "./ops/background-lifecycle.mjs";
+import { closeLongSessionInferenceAdmission } from "./ops/long-session.mjs";
+import { registerWorker } from "iii-sdk";
 import {
   hydrateProcessEnvFromFile,
   loadConfig,
@@ -31,7 +35,7 @@ import { StateKV } from "./state/kv.js";
 import { VectorIndex } from "./state/vector-index.js";
 import { HybridSearch } from "./state/hybrid-search.js";
 import { IndexPersistence } from "./state/index-persistence.js";
-import { SHUTDOWN_FLUSH_TIMEOUT_MS, SHUTDOWN_HARD_EXIT_MS, settleWithin } from "./shutdown.js";
+import { SHUTDOWN_FLUSH_TIMEOUT_MS, settleWithin } from "./shutdown.js";
 import { registerPrivacyFunction, withWriteScrubbing } from "./functions/privacy.js";
 import { registerObserveFunction } from "./functions/observe.js";
 import { registerCaptureFunctions } from "./functions/capture.js";
@@ -111,7 +115,7 @@ import { registerRetentionFunctions } from "./functions/retention.js";
 import { startAuditMigration } from "./functions/audit.js";
 import { registerCompressFileFunction } from "./functions/compress-file.js";
 import { registerReplayFunctions } from "./functions/replay.js";
-import { registerApiTriggers } from "./triggers/api.js";
+import { checkAuth, registerApiTriggers } from "./triggers/api.js";
 import { registerEventTriggers } from "./triggers/events.js";
 import { registerViewerStreamTriggers } from "./triggers/viewer-streams.js";
 import { registerMcpEndpoints } from "./mcp/server.js";
@@ -126,7 +130,7 @@ import { VERSION } from "./version.js";
 import { bootLog, bootWarn } from "./logger.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
 import { ensureServerSecret, explicitSecret, secretFilePath } from "./secret-store.js";
-import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 function workerPidfilePath(): string {
@@ -183,6 +187,8 @@ function resolveWorkerSecret(): string {
     );
   }
 }
+
+let fatalShutdown: (() => Promise<void>) | undefined;
 
 async function main() {
   // Fold ~/.agentmemory/.env into process.env before anything reads config
@@ -253,8 +259,56 @@ async function main() {
   } catch {}
   const kv = new StateKV(sdk, { backend: stateBackend });
   const secret = resolveWorkerSecret();
+  const ingress = createShutdownIngress();
+  const lifecycle = createBackgroundLifecycle(() => { ingress.close(); closeLongSessionInferenceAdmission(); });
+  ingress.install(sdk, (req) => checkAuth(req, secret));
+  const resources: { health?: ReturnType<typeof registerHealthMonitor>; capture?: ReturnType<typeof registerCaptureFunctions>; index?: IndexPersistence; viewer?: ReturnType<typeof startViewerServer> } = {};
+  let bootDone!: () => void, bootFailed = false;
+  const bootGate = new Promise<void>(resolve => { bootDone = resolve; });
+  let shuttingDown = false, shutdownPromise: Promise<void> | undefined;
+  const shutdown = () => shutdownPromise ?? (shutdownPromise = performShutdown());
+  async function performShutdown() {
+    shuttingDown = true;
+    ingress.close(); closeLongSessionInferenceAdmission();
+    resources.health?.stop(); resources.capture?.stop(); resources.index?.stop();
+    const outcome = await verifiedShutdown({
+      receiptDir: dirname(runtimeMetadataPath("shutdown-receipt.json")),
+      engineAlive: () => {
+        try {
+          const pid = Number(readFileSync(runtimeMetadataPath("iii.pid"), "utf8").trim());
+          if (!Number.isSafeInteger(pid) || pid < 1) return null;
+          process.kill(pid, 0); return true;
+        } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : null; }
+      },
+      work: async progress => {
+        progress({ stage: "boot_gate" }); await bootGate;
+        let disk: unknown = null;
+        await lifecycle.shutdown(async () => {
+          progress({ stage: "ingress" }); await ingress.drain();
+          progress({ stage: "index_save" }); await resources.index?.save();
+          const index = resources.index?.status();
+          if (index?.vector?.lastError || index?.pendingLogError || (index?.pendingChanges ?? 0) > 0)
+            throw Object.assign(Error("index_save_unverified"), { code: "INDEX_SAVE_UNVERIFIED" });
+          if (!kv.durability) throw Object.assign(Error("file_durability_unconfigured"), { code: "STATE_DURABILITY_UNCONFIGURED" });
+          progress({ stage: "durability_drain" }); await kv.durability.drain();
+          progress({ stage: "freeze" }); kv.durability.freeze();
+          progress({ stage: "final_disk_fence" }); disk = await kv.durability.wait(kv);
+        }, progress);
+        return disk;
+      },
+    });
+    resources.viewer?.closeAllConnections();
+    if (resources.viewer) await settleWithin(new Promise<void>(resolve => resources.viewer!.close(() => resolve())), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
+    await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
+    if (outcome.verified) clearWorkerPidfile();
+    process.exit(outcome.verified && !bootFailed ? 0 : 1);
+  }
+  process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
+  fatalShutdown = shutdown;
+  function trackBoot<T>(promise: Promise<T>) { lifecycle.track({ drain: () => promise }); return promise; }
+  try {
   const metricsStore = new MetricsStore(kv);
-  const dedupMap = new DedupMap();
+  const dedupMap = lifecycle.track(new DedupMap());
 
   const vectorIndex = embeddingProvider ? new VectorIndex() : null;
 
@@ -269,18 +323,18 @@ async function main() {
 
   registerPrivacyFunction(sdk);
   registerObserveFunction(sdk, kv, dedupMap, config.maxObservationsPerSession);
-  const capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort });
+  const capture = resources.capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort });
   registerImageQuotaCleanup(sdk, kv);
   registerVisionSearchFunctions(sdk, kv, imageEmbeddingProvider);
   if (isSlotsEnabled()) {
-    registerSlotsFunctions(sdk, kv);
+    await registerSlotsFunctions(sdk, kv);
   }
   registerDiskSizeManager(sdk, kv);
   registerCompressFunction(sdk, kv, provider, metricsStore);
   registerSearchFunction(sdk, kv);
   registerContextFunction(sdk, kv, config.tokenBudget);
   registerSessionIndexMaintenanceFunction(sdk, kv);
-  void rebuildSessionIndexIfStale(kv)
+  void trackBoot(rebuildSessionIndexIfStale(kv)
     .then((result) => {
       if (result) {
         bootLog(
@@ -290,8 +344,8 @@ async function main() {
     })
     .catch((err) => {
       console.warn(`[agentmemory] Failed to rebuild session index at boot:`, err);
-    });
-  const summaryWorker = registerSummarizeFunction(sdk, kv, provider, metricsStore);
+    }));
+  lifecycle.track(registerSummarizeFunction(sdk, kv, provider, metricsStore));
   registerMigrateFunction(sdk, kv);
   registerFileIndexFunction(sdk, kv);
   registerConsolidateFunction(sdk, kv, provider);
@@ -402,12 +456,11 @@ async function main() {
     // never keeps the process alive), mirroring the auto-forget timer.
     // mem::snapshot-create serializes overlapping runs internally (git-lock
     // safety), so the timer can stay a simple fire-and-forget tick.
-    const snapshotTimer = setInterval(() => {
+    const snapshotTimer = registerBackgroundInterval(lifecycle, () => {
       sdk
         .trigger({
           function_id: "mem::snapshot-create",
           payload: {},
-          action: TriggerAction.Void(),
         })
         .catch(() => {});
     }, snapshotConfig.interval * 1000);
@@ -441,14 +494,14 @@ async function main() {
   registerViewerStreamTriggers(sdk, kv, { secret, metricsStore, provider });
   registerMcpEndpoints(sdk, kv, secret);
 
-  const healthMonitor = registerHealthMonitor(sdk, kv, {
+  const healthMonitor = resources.health = registerHealthMonitor(sdk, kv, {
     streamRelayProbe:
       kv.backend === "redis"
         ? createStreamRelayProbe(sdk, { url: `ws://localhost:${config.streamsPort}` })
         : undefined,
   });
 
-  const indexPersistence = new IndexPersistence(kv, vectorIndex);
+  const indexPersistence = resources.index = new IndexPersistence(kv, vectorIndex);
   setIndexPersistence(indexPersistence);
 
   const loaded = await indexPersistence.load().catch((err) => {
@@ -520,7 +573,7 @@ async function main() {
     }
   }
 
-  const auditMigration = startAuditMigration(kv).catch(() => {});
+  const auditMigration = trackBoot(startAuditMigration(kv).catch(() => {}));
 
   const vectorCountShortfall =
     Boolean(loaded?.vector) &&
@@ -564,7 +617,7 @@ async function main() {
       bootLog(
         `Re-embedding ${keyword.vectorJobs.length} vectors missing since the last index save, ${getVectorBackfillMax()} per batch in the background`,
       );
-      void backfillVectorBacklog(keyword.vectorJobs)
+      void trackBoot(backfillVectorBacklog(keyword.vectorJobs)
         .then(async (result) => {
           if (result.complete && backlogScanComplete) await indexPersistence.clearBackfillMarker().catch(() => {});
           setVectorBackfillState(result.complete ? "idle" : "paused");
@@ -578,11 +631,11 @@ async function main() {
         .catch((err) => {
           setVectorBackfillState("paused");
           console.warn(`[agentmemory] Failed to backfill vectors:`, err);
-        });
+        }));
     } else if (keyword.vectorJobs.length > 0) {
       setVectorBackfillState("running");
       bootLog(`Backfilling ${keyword.vectorJobs.length} missing vectors in the background`);
-      void backfillVectors(keyword.vectorJobs)
+      void trackBoot(backfillVectors(keyword.vectorJobs)
         .then((count) => {
           setPendingVectorBackfillCount(keyword.fullBackfillPending);
           setVectorBackfillState(keyword.fullBackfillPending > 0 ? "waiting-for-opt-in" : "idle");
@@ -591,7 +644,7 @@ async function main() {
         .catch((err) => {
           setVectorBackfillState("idle");
           console.warn(`[agentmemory] Failed to backfill vectors:`, err);
-        });
+        }));
     }
   } catch (err) {
     console.warn(`[agentmemory] Failed to rebuild the BM25 index:`, err);
@@ -611,7 +664,7 @@ async function main() {
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,
   );
 
-  void (async () => {
+  void trackBoot((async () => {
     try {
       const drained = await capture.drainLocalSpool();
       const delivered = drained.reduce((n, r) => n + r.delivered, 0);
@@ -628,10 +681,13 @@ async function main() {
     } catch (err) {
       bootWarn(`Capture recovery at boot failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    capture.start();
-  })();
+    if (!shuttingDown) capture.start();
+  })());
+  lifecycle.track(capture);
+  lifecycle.track(healthMonitor);
+  lifecycle.track({ stop: () => indexPersistence.stop() });
 
-  const viewerServer = startViewerServer(
+  resources.viewer = startViewerServer(
     config.viewerPort,
     kv,
     sdk,
@@ -641,9 +697,10 @@ async function main() {
 
   if (isGraphCompactOnBootEnabled()) {
     const graphCompactTimer = setTimeout(() => {
-      void runGraphCompactOnBoot(kv, { log: bootLog, warn: bootWarn }).catch(() => {});
+      if (!shuttingDown) void trackBoot(runGraphCompactOnBoot(kv, { log: bootLog, warn: bootWarn }).catch(() => {}));
     }, GRAPH_COMPACT_BOOT_DELAY_MS);
     graphCompactTimer.unref();
+    lifecycle.track({ stop: () => clearTimeout(graphCompactTimer) });
   } else {
     setGraphCompactBootDisabled();
   }
@@ -652,7 +709,7 @@ async function main() {
   const consolidationIntervalMs = getConsolidationIntervalMs();
 
   if (process.env.AUTO_FORGET_ENABLED !== "false") {
-    const autoForgetTimer = setInterval(async () => {
+    const autoForgetTimer = registerBackgroundInterval(lifecycle, async () => {
       try {
         await sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun: false } });
       } catch {}
@@ -669,8 +726,8 @@ async function main() {
         await sdk.trigger({ function_id: "mem::audit-retention-sweep", payload: {} });
       } catch {}
     };
-    void runAuditSweep();
-    const auditRetentionTimer = setInterval(runAuditSweep, 86400000);
+    void trackBoot(runAuditSweep());
+    const auditRetentionTimer = registerBackgroundInterval(lifecycle, runAuditSweep, 86400000);
     auditRetentionTimer.unref();
     bootLog(
       `Audit retention sweep: enabled (drop month scopes older than ${auditRetentionMonths}mo, every 24h)`,
@@ -678,7 +735,7 @@ async function main() {
   }
 
   if (process.env.LESSON_DECAY_ENABLED !== "false") {
-    const lessonDecayTimer = setInterval(async () => {
+    const lessonDecayTimer = registerBackgroundInterval(lifecycle, async () => {
       try {
         await sdk.trigger({ function_id: "mem::lesson-decay-sweep", payload: {} });
       } catch {}
@@ -688,7 +745,7 @@ async function main() {
   }
 
   if (process.env.INSIGHT_DECAY_ENABLED !== "false") {
-    const insightDecayTimer = setInterval(async () => {
+    const insightDecayTimer = registerBackgroundInterval(lifecycle, async () => {
       try {
         await sdk.trigger({ function_id: "mem::insight-decay-sweep", payload: {} });
       } catch {}
@@ -696,7 +753,7 @@ async function main() {
     insightDecayTimer.unref();
   }
 
-  const recentSearchesSweepTimer = setInterval(async () => {
+  const recentSearchesSweepTimer = registerBackgroundInterval(lifecycle, async () => {
     try {
       await sdk.trigger({
         function_id: "mem::diagnostic::recent-searches-sweep",
@@ -706,10 +763,10 @@ async function main() {
   }, 60 * 60 * 1000);
   recentSearchesSweepTimer.unref();
 
-  void seedViewerStreamTracker(sdk, { unorderedListing: kv.backend === "redis" }).catch(() => {});
+  void trackBoot(seedViewerStreamTracker(sdk, { unorderedListing: kv.backend === "redis" }).catch(() => {}));
 
   if (isSessionSweepEnabled()) {
-    const sessionSweepTimer = setInterval(async () => {
+    const sessionSweepTimer = registerBackgroundInterval(lifecycle, async () => {
       try {
         await sdk.trigger({ function_id: "mem::session-sweep", payload: {} });
       } catch (err) {
@@ -721,7 +778,7 @@ async function main() {
   }
 
   if (isConsolidationEnabled()) {
-    const consolidationTimer = setInterval(async () => {
+    const consolidationTimer = registerBackgroundInterval(lifecycle, async () => {
       try {
         await sdk.trigger({ function_id: "mem::consolidate-pipeline", payload: {} });
       } catch {}
@@ -730,46 +787,13 @@ async function main() {
     bootLog(`Auto-consolidation: enabled (every ${consolidationIntervalMs / 60000}m)`);
   }
 
-  const shutdown = async () => {
-    console.log(`\n[agentmemory] Shutting down...`);
-    const hardExit = setTimeout(() => {
-      console.warn(
-        `[agentmemory] Shutdown still blocked after ${SHUTDOWN_HARD_EXIT_MS}ms; exiting now.`,
-      );
-      clearWorkerPidfile();
-      process.exit(1);
-    }, SHUTDOWN_HARD_EXIT_MS);
-    hardExit.unref();
-    healthMonitor.stop();
-    dedupMap.stop();
-    capture.stop();
-    await summaryWorker.stop();
-    indexPersistence.stop();
-    const viewerClosed = new Promise<void>((resolve) =>
-      viewerServer.close(() => resolve()),
-    );
-    viewerServer.closeAllConnections();
-    await viewerClosed;
-    const flushed = await settleWithin(
-      indexPersistence.save(),
-      SHUTDOWN_FLUSH_TIMEOUT_MS,
-    );
-    if (!flushed) {
-      console.warn(
-        `[agentmemory] Search index flush did not finish within ${SHUTDOWN_FLUSH_TIMEOUT_MS}ms; the engine is probably gone. Observations are already in the engine's state store and the index reconciles them on the next boot.`,
-      );
-    }
-    await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch((err) => {
-      console.warn(`[agentmemory] SDK shutdown failed:`, err);
-    });
-    clearWorkerPidfile();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  if (kv.durability) registerBackgroundInterval(lifecycle, () => kv.durability!.flushStable(kv), 15000, false);
+  } catch (error) { bootFailed = true; throw error; } finally { bootDone(); }
 }
 
-main().catch((err) => {
+export const workerReady = main();
+workerReady.catch(async (err) => {
   console.error(`[agentmemory] Fatal:`, err);
+  if (fatalShutdown) await fatalShutdown();
   process.exit(1);
 });

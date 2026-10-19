@@ -192,8 +192,8 @@ export function renderPinnedContext(slots: MemorySlot[]): string {
   return lines.join("\n");
 }
 
-export function registerSlotsFunctions(sdk: IIIClient, kv: StateKV): void {
-  void seedDefaults(kv).catch((err) => {
+export function registerSlotsFunctions(sdk: IIIClient, kv: StateKV): Promise<void> {
+  const initialized = seedDefaults(kv).catch((err) => {
     logger.warn("slot defaults seed failed", {
       error: err instanceof Error ? err.message : String(err),
     });
@@ -483,4 +483,5 @@ export function registerSlotsFunctions(sdk: IIIClient, kv: StateKV): void {
       return { success: true, applied, observationsReviewed: recent.length };
     },
   );
+  return initialized;
 }
