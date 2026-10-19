@@ -291,7 +291,7 @@ async function main() {
     .catch((err) => {
       console.warn(`[agentmemory] Failed to rebuild session index at boot:`, err);
     });
-  registerSummarizeFunction(sdk, kv, provider, metricsStore);
+  const summaryWorker = registerSummarizeFunction(sdk, kv, provider, metricsStore);
   registerMigrateFunction(sdk, kv);
   registerFileIndexFunction(sdk, kv);
   registerConsolidateFunction(sdk, kv, provider);
@@ -743,6 +743,7 @@ async function main() {
     healthMonitor.stop();
     dedupMap.stop();
     capture.stop();
+    await summaryWorker.stop();
     indexPersistence.stop();
     const viewerClosed = new Promise<void>((resolve) =>
       viewerServer.close(() => resolve()),

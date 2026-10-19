@@ -150,6 +150,10 @@ export interface Memory {
 }
 
 export interface SessionSummary {
+  processedObservationIds?: string[];
+  sourceOffsets?: Record<string, number>;
+  sourceProjectionSnapshots?: Record<string, unknown>;
+  segments?: unknown[];
   sessionId: string;
   project: string;
   createdAt: string;
@@ -596,6 +600,7 @@ export interface AuditEntry {
   timestamp: string;
   operation:
     | "observe"
+    | "summarize"
     | "compress"
     | "remember"
     | "forget"

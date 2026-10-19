@@ -3,7 +3,6 @@ import type {
   CompressedObservation,
   SessionSummary,
   MemoryProvider,
-  Session,
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
@@ -14,14 +13,12 @@ import {
   buildReducePrompt,
 } from "../prompts/summary.js";
 import { getXmlTag, getXmlChildren } from "../prompts/xml.js";
-import { SummaryOutputSchema } from "../eval/schemas.js";
-import { validateOutput } from "../eval/validator.js";
-import { scoreSummary } from "../eval/quality.js";
-import { isNoopProvider } from "../providers/noop.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
 import { safeAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import { scrubRecord } from "./privacy.js";
+import { withKeyedLock } from "../state/keyed-mutex.js";
+import { registerLongSessionSummarizer } from "../ops/long-session.mjs";
 
 // Per-chunk observation budget when a session is too large to fit in one
 // LLM call. Default ≈ 50k input tokens per chunk at ~110 tok/obs — fits
@@ -97,7 +94,7 @@ async function summarizeChunkWithRetry(
 // are split into chunks processed in parallel batches, each chunk retried
 // once on parse failure, persistently-bad chunks skipped, and remaining
 // partials merged via a reduce call.
-async function produceSummaryXml(
+export async function produceSummaryXml(
   provider: MemoryProvider,
   compressed: CompressedObservation[],
   sessionId: string,
@@ -229,164 +226,9 @@ export function registerSummarizeFunction(
   kv: StateKV,
   provider: MemoryProvider,
   metricsStore?: MetricsStore,
-): void {
-  sdk.registerFunction("mem::summarize", 
-    async (data: { sessionId: string } | undefined) => {
-      const startMs = Date.now();
-      if (!data || typeof data.sessionId !== "string" || !data.sessionId.trim()) {
-        return { success: false, error: "sessionId is required" };
-      }
-      const sessionId = data.sessionId.trim();
-
-      const session = await kv.get<Session>(KV.sessions, sessionId);
-      if (!session) {
-        logger.warn("Session not found for summarize", {
-          sessionId,
-        });
-        return { success: false, error: "session_not_found" };
-      }
-
-      const observations = await kv.list<CompressedObservation>(
-        KV.observations(sessionId),
-      );
-      const compressed = observations.filter((o) => o.title);
-
-      if (compressed.length === 0) {
-        logger.info("No observations to summarize", {
-          sessionId,
-        });
-        return { success: false, error: "no_observations" };
-      }
-
-      if (isNoopProvider(provider)) {
-        logger.info("Summarize skipped — no LLM provider configured", {
-          sessionId,
-        });
-        return {
-          success: false,
-          error: "no_provider",
-          reason:
-            "No LLM provider key set; Summarize is a no-op. Set ANTHROPIC_API_KEY (or GEMINI/OPENROUTER/MINIMAX) in ~/.agentmemory/.env to enable.",
-        };
-      }
-
-      try {
-        let summary: SessionSummary | null = null;
-        let response = "";
-        let mode = "single";
-        let chunks = 1;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          const produced = await produceSummaryXml(
-            provider,
-            compressed,
-            sessionId,
-            session.project,
-          );
-          response = produced.response;
-          mode = produced.mode;
-          chunks = produced.chunks;
-          if (!response || !response.trim()) {
-            logger.warn("Empty provider response on summarize", {
-              sessionId,
-              provider: provider.name,
-              mode,
-              chunks,
-              observationCount: compressed.length,
-              attempt,
-            });
-            continue;
-          }
-          summary = parseSummaryXml(
-            response,
-            sessionId,
-            session.project,
-            compressed.length,
-          );
-          if (summary) break;
-          logger.warn("Failed to parse summary XML", { sessionId, attempt });
-        }
-
-        if (!response || !response.trim()) {
-          const latencyMs = Date.now() - startMs;
-          if (metricsStore) {
-            await metricsStore.record("mem::summarize", latencyMs, false);
-          }
-          return { success: false, error: "empty_provider_response" };
-        }
-
-        if (!summary) {
-          const latencyMs = Date.now() - startMs;
-          if (metricsStore) {
-            await metricsStore.record("mem::summarize", latencyMs, false);
-          }
-          return { success: false, error: "parse_failed" };
-        }
-        summary = scrubRecord(summary);
-
-        const summaryForValidation = {
-          title: summary.title,
-          narrative: summary.narrative,
-          keyDecisions: summary.keyDecisions,
-          filesModified: summary.filesModified,
-          concepts: summary.concepts,
-        };
-        const validation = validateOutput(
-          SummaryOutputSchema,
-          summaryForValidation,
-          "mem::summarize",
-        );
-
-        if (!validation.valid) {
-          const latencyMs = Date.now() - startMs;
-          if (metricsStore) {
-            await metricsStore.record("mem::summarize", latencyMs, false);
-          }
-          logger.warn("Summary validation failed", {
-            sessionId,
-            errors: validation.result.errors,
-          });
-          return { success: false, error: "validation_failed" };
-        }
-
-        const qualityScore = scoreSummary(summaryForValidation);
-
-        await kv.set(KV.summaries, sessionId, summary);
-        await safeAudit(kv, "compress", "mem::summarize", [sessionId], {
-          title: summary.title,
-          observationCount: compressed.length,
-        });
-
-        const latencyMs = Date.now() - startMs;
-        if (metricsStore) {
-          await metricsStore.record(
-            "mem::summarize",
-            latencyMs,
-            true,
-            qualityScore,
-          );
-        }
-
-        logger.info("Session summarized", {
-          sessionId,
-          title: summary.title,
-          decisions: summary.keyDecisions.length,
-          qualityScore,
-          valid: validation.valid,
-        });
-
-        return { success: true, summary, qualityScore };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const latencyMs = Date.now() - startMs;
-        if (metricsStore) {
-          await metricsStore.record("mem::summarize", latencyMs, false);
-        }
-        logger.error("Summarize failed", {
-          sessionId,
-          error: msg,
-        });
-        return { success: false, error: msg };
-      }
-    },
-  );
+  options: { schedule?: boolean; onWorker?: (handle: unknown) => void } = {},
+) {
+  return registerLongSessionSummarizer(sdk, kv, provider, metricsStore, {
+    KV, withKeyedLock, logger, safeAudit, scrubRecord, ...options,
+  });
 }

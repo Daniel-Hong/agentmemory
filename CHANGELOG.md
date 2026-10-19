@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — incremental summaries (not deployed)
+
+- Summarize only unprocessed source ranges and commit completed observation IDs, source offsets, pinned legacy projections and appended summary segments. Failed output or writes leave the last checkpoint intact; restarting resumes from the committed coordinate.
+- Preserve existing raw, summary segments and quarantine metadata/history. Repeated content failures isolate the affected record while other evidence continues; retries back off and concurrent requests for a session share one inference.
+- Retain the upstream XML helper and its chunk/retry/concurrency tests. The registered summarize path now follows the approved incremental JSON contract. No new dependency or store is introduced; operational provider/control integration and disk shutdown verification remain later port stages.
+- Stop the summary timer and drain in-flight checkpoints at shutdown before index/SDK closure. This is the minimum lifecycle connection for the new worker; full operational shutdown verification remains pending.
+- See `docs/customizations/PORT-02.md` for tests, type boundary, upstream replacement criteria and pending validation. This intermediate branch is not a deployment candidate. Long-term memory recording awaits separate manual review.
+
 ### Personal fork — source preservation (not deployed)
 
 - Retain complete privacy-scrubbed capture evidence in `sourceRaw` before model compression, alongside the first synthetic reference. Successful recompression preserves both; a failed model call leaves the captured evidence available.
