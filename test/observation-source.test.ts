@@ -14,9 +14,9 @@ import { registerTimelineFunction } from "../src/functions/timeline.js";
 import { registerTeamFunction } from "../src/functions/team.js";
 import { registerApiTriggers } from "../src/triggers/api.js";
 import { getSearchIndex, registerSearchFunction, setEmbeddingProvider, setVectorIndex } from "../src/functions/search.js";
-import { createObservationSource, OBSERVATION_SOURCE_MAX_BYTES } from "../src/functions/observation-source.js";
+import { createObservationSource, OBSERVATION_SOURCE_MAX_BYTES, rawFromObservationSource, withoutObservationSource } from "../src/functions/observation-source.js";
 import { buildSummaryPrompt } from "../src/prompts/summary.js";
-import { budgetImportedObservationSources, SESSION_SOURCE_MAX_BYTES } from "../src/functions/observation-source-budget.js";
+import { budgetImportedObservationSources, budgetLiveObservationSource, SESSION_SOURCE_MAX_BYTES } from "../src/functions/observation-source-budget.js";
 import { payloadByteLength, SAFE_PAYLOAD_BYTES } from "../src/state/frame-guard.js";
 
 vi.mock("../src/logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -91,6 +91,131 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("retained observation source", () => {
+  it("preserves scrubbed JSONL prompt tails beyond the bounded projection on replay", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "source-raw-jsonl-"));
+    vi.stubEnv("AGENTMEMORY_IMPORT_ROOT", dir);
+    const prompt = "original prompt ".repeat(3000) + "JSONL_COMPLETE_TAIL";
+    const path = join(dir, "session.jsonl");
+    writeFileSync(path, JSON.stringify({
+      type: "user", uuid: "raw-import-1", sessionId: "raw-jsonl-session", cwd: dir,
+      timestamp: "2026-09-30T00:00:00Z",
+      message: { role: "user", content: prompt + " <private>hidden-import-canary</private>" },
+    }) + "\n");
+    try {
+      const r = rig();
+      const imported = await r.call("mem::replay::import-jsonl", { path });
+      expect(imported).toMatchObject({ success: true, imported: 1 });
+      const replay = await r.call("mem::replay::load", { sessionId: "raw-jsonl-session" });
+      expect(replay.timeline.events[0].body).toBe(prompt + " [REDACTED]");
+      const rows = await r.kv.list<CompressedObservation>(KV.observations("raw-jsonl-session"));
+      expect(rows[0].syntheticCompression?.title).toBe("prompt_submit");
+      expect(JSON.stringify(rows)).not.toContain("hidden-import-canary");
+      expect(withoutObservationSource(rows[0])).not.toHaveProperty("sourceRaw");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps full scrubbed raw beyond the source cap through export/import and replay without streaming it", async () => {
+    const r = rig();
+    const tail = "RAW_TAIL_BEYOND_SOURCE_CAP";
+    const output = '한글😀"\\\n'.repeat(6000) + tail;
+    const saved = await r.observe("post_tool_use", {
+      tool_name: "Read", tool_output: output + " <private>hidden-raw-canary</private>",
+    });
+    expect(saved.source?.truncated).toBe(true);
+    expect(saved.sourceRaw?.toolOutput).toBe(output + " [REDACTED]");
+    expect(saved.syntheticCompression?.title).toBe("Read");
+    expect(rawFromObservationSource(saved)?.toolOutput).toBe(output + " [REDACTED]");
+    expect(JSON.stringify(r.sdk.trigger.mock.calls)).not.toContain(tail);
+    const exported = await r.call("mem::export", {});
+    const fresh = rig();
+    expect(await fresh.call("mem::import", { exportData: exported })).toMatchObject({ success: true });
+    const replay = await fresh.call("mem::replay::load", { sessionId: saved.sessionId });
+    expect(replay.timeline.events[0].toolOutput).toBe(output + " [REDACTED]");
+    const listed = await fresh.call("api::observations", { headers: {}, query_params: { sessionId: saved.sessionId } });
+    expect(JSON.stringify(listed)).not.toContain(tail);
+    expect(JSON.stringify(exported)).not.toContain("hidden-raw-canary");
+  });
+
+  it("retains full raw and a searchable synthetic record when model compression fails", async () => {
+    const r = rig();
+    vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true");
+    registerCompressFunction(r.sdk as never, r.kv as never, {
+      name: "test", summarize: vi.fn(), compress: async () => { throw Error("offline fixture"); },
+    });
+    const output = "complete source ".repeat(3000) + "RAW_FAILED_MODEL_TAIL";
+    const saved = await r.observe("post_tool_use", { tool_name: "Read", tool_output: output });
+    expect(saved.sourceRaw?.toolOutput).toBe(output);
+    expect(saved.title).toBe("Read");
+    expect(saved.syntheticCompression?.title).toBe("Read");
+  });
+
+  it("preserves the first raw and synthetic reference when recompressed with a different projection", async () => {
+    const r = rig();
+    const saved = await r.observe("post_tool_use", { tool_name: "Read", tool_output: "original raw evidence" });
+    const provider: MemoryProvider = {
+      name: "test", summarize: vi.fn(),
+      compress: async () => "<type>file_read</type><title>Recompressed</title><facts><fact>Read evidence</fact></facts><narrative>Read the original evidence.</narrative><concepts></concepts><files></files><importance>5</importance>",
+    };
+    registerCompressFunction(r.sdk as never, r.kv as never, provider);
+    const original = raw({ id: saved.id, toolName: "Read", toolOutput: "different model projection" });
+    const result = await r.call("mem::compress", { observationId: saved.id, sessionId: saved.sessionId, raw: original });
+    expect(result.success).toBe(true);
+    const rewritten = await r.kv.get<CompressedObservation>(KV.observations(saved.sessionId), saved.id);
+    expect(rewritten?.sourceRaw?.toolOutput).toBe("original raw evidence");
+    expect(rewritten?.syntheticCompression?.title).toBe("Read");
+    expect(result.compressed).not.toHaveProperty("sourceRaw");
+    expect(result.compressed).not.toHaveProperty("syntheticCompression");
+  });
+
+  it("keeps legacy root raw evidence when a different projection is compressed", async () => {
+    const r = rig();
+    const original = raw({ toolName: "Read", toolOutput: "legacy full original" });
+    await r.kv.set(KV.observations(original.sessionId), original.id, original);
+    registerCompressFunction(r.sdk as never, r.kv as never, {
+      name: "test", summarize: vi.fn(),
+      compress: async () => "<type>file_read</type><title>Recompressed</title><facts><fact>Read evidence</fact></facts><narrative>Read the original evidence.</narrative><concepts></concepts><files></files><importance>5</importance>",
+    });
+    const result = await r.call("mem::compress", {
+      observationId: original.id, sessionId: original.sessionId,
+      raw: { ...original, toolOutput: "different projection" },
+    });
+    expect(result.success).toBe(true);
+    const stored = await r.kv.get<CompressedObservation>(KV.observations(original.sessionId), original.id);
+    expect(stored?.sourceRaw).toEqual(original);
+  });
+
+  it.each([true, false])("reports full raw retained even when the bounded source is absent or truncated (source=%s)", async (withSource) => {
+    const r = rig();
+    const original = raw({ toolName: "Read", toolOutput: "complete original evidence" });
+    const row = {
+      ...buildSyntheticCompression(original), sourceRaw: original,
+      source: withSource ? { hookType: "post_tool_use", truncated: true, originalBytes: 100000 } : undefined,
+    };
+    await r.kv.set(KV.observations(original.sessionId), original.id, row);
+    const replay = await r.call("mem::replay::load", { sessionId: original.sessionId });
+    expect(replay.timeline.events[0].toolOutput).toBe("complete original evidence");
+    expect(replay.sourceRetention[0]).toMatchObject({ observationId: original.id, retained: true, truncated: false });
+  });
+
+  it("omits source at an exhausted response budget while retaining raw and its synthetic reference", () => {
+    const observation = {
+      ...buildSyntheticCompression(raw({ toolName: "Read", toolOutput: "full original" })),
+      sourceRaw: raw({ toolOutput: "full original" }),
+      syntheticCompression: { title: "first synthetic" },
+    };
+    const existing = [{ ...observation, id: "large", narrative: "x".repeat(SAFE_PAYLOAD_BYTES) }];
+    const retained = budgetLiveObservationSource(observation, existing);
+    expect(retained.source).toBeUndefined();
+    expect(retained.sourceRaw?.toolOutput).toBe("full original");
+    expect(retained.syntheticCompression?.title).toBe("first synthetic");
+    const projection = withoutObservationSource(retained);
+    expect(projection).not.toHaveProperty("sourceRaw");
+    expect(projection).not.toHaveProperty("syntheticCompression");
+    expect(observation.sourceRaw.toolOutput).toBe("full original");
+  });
+
   it("preserves sanitized long prompts, tool results and responses through export/import and replay", async () => {
     const { observe, call } = rig();
     const tail = "deployment-port-19091";
@@ -108,7 +233,7 @@ describe("retained observation source", () => {
     expect(response.source?.assistantResponse).toBe(long);
     expect(tool.source).not.toHaveProperty("raw");
     expect(tool.source).not.toHaveProperty("payload");
-    expect(JSON.stringify(tool).split(tail)).toHaveLength(2);
+    expect(tool.sourceRaw?.toolOutput).toContain(tail);
     expect(JSON.stringify(tool)).not.toContain("private-canary");
     expect(JSON.stringify(tool)).not.toContain(secret);
     const exported = JSON.parse(JSON.stringify(await call("mem::export", {}))) as ExportData;
@@ -305,10 +430,11 @@ describe("retained observation source", () => {
     expect(source.payload).toEqual({ event: "retained" });
   });
 
-  it("reapplies privacy and byte bounds to imported evidence and preserves truncation metadata", async () => {
+  it("reapplies privacy and byte bounds to legacy imported evidence and preserves truncation metadata", async () => {
     const r = rig();
     const saved = await r.observe("prompt_submit", { prompt: "summary" });
     const exported = await r.call("mem::export", {}) as ExportData;
+    delete exported.observations[saved.sessionId][0].sourceRaw;
     exported.observations[saved.sessionId][0].source = {
       hookType: "prompt_submit", originalBytes: 999999, truncated: true,
       userPrompt: `<private>import-private</private>${"界".repeat(100000)}`,

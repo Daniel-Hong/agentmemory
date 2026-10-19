@@ -245,7 +245,9 @@ export function registerObserveFunction(
 
         try {
 
-          await kv.set(KV.observations(payload.sessionId), obsId, raw);
+          const synthetic = budgetLiveObservationSource({ ...buildSyntheticCompression(raw), sourceRaw: raw }, existing);
+          synthetic.syntheticCompression = withoutObservationSource(synthetic);
+          await kv.set(KV.observations(payload.sessionId), obsId, synthetic);
           await indexObservationSession(kv, obsId, payload.sessionId).catch(
             (err) => {
               logger.warn("observation index update failed", {
@@ -289,7 +291,7 @@ export function registerObserveFunction(
             group_id: STREAM.viewerGroup,
             id: `raw-${obsId}`,
             type: "raw_observation",
-            data: { type: "raw", observation: raw, sessionId: payload.sessionId },
+            data: { type: "raw", observation: { id: obsId, sessionId: payload.sessionId, timestamp: raw.timestamp, hookType: raw.hookType }, sessionId: payload.sessionId },
           },
           action: TriggerAction.Void(),
         });
@@ -379,12 +381,7 @@ export function registerObserveFunction(
             action: TriggerAction.Void(),
           });
         } else {
-          const synthetic = budgetLiveObservationSource(buildSyntheticCompression(raw), existing);
-          await kv.set(
-            KV.observations(payload.sessionId),
-            obsId,
-            synthetic,
-          );
+          const synthetic = (await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId))!;
           getSearchIndex().add(synthetic);
           scheduleIndexSave();
           await vectorIndexAddGuarded(

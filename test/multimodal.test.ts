@@ -140,7 +140,7 @@ describe("End-to-End Multimodal Flow", () => {
     expect(compressCallback).not.toBeNull();
 
     const rawObsList = await kv.list("mem:obs:test-session");
-    const raw = rawObsList[0] as RawObservation;
+    const raw = (rawObsList[0] as CompressedObservation).sourceRaw!;
 
     expect(raw.modality).toBeDefined();
     expect(raw.imageData).toBe(savedImagePath);

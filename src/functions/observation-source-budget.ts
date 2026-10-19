@@ -9,7 +9,9 @@ export function budgetLiveObservationSource(
   existing: CompressedObservation[],
 ): CompressedObservation {
   const planned = budgetImportedObservationSources([observation], existing);
-  return planned.success ? planned.observations[0]! : withoutObservationSource(observation);
+  if (planned.success) return planned.observations[0]!;
+  const { source: _source, ...retained } = observation;
+  return retained;
 }
 
 export function budgetImportedObservationSources(
@@ -22,7 +24,7 @@ export function budgetImportedObservationSources(
   const written = rows.filter((row) => strategy !== "skip" || !existingById.has(row.id));
   const replacedIds = new Set(written.map((row) => row.id));
   const kept = strategy === "replace" ? [] : existing.filter((row) => !replacedIds.has(row.id));
-  const base = [...kept, ...written.map(withoutObservationSource)];
+  const base = [...kept.map(withoutObservationSource), ...written.map(withoutObservationSource)];
   const envelope = { message_type: "invocation_result", invocation_id: "00000000-0000-0000-0000-000000000000", result: base };
   const oversized = checkPayloadFrameSize(envelope, "observation summaries already exceed one session response; split the import into smaller sessions");
   if (oversized) return oversized;

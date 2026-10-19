@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork — source preservation (not deployed)
+
+- Retain complete privacy-scrubbed capture evidence in `sourceRaw` before model compression, alongside the first synthetic reference. Successful recompression preserves both; a failed model call leaves the captured evidence available.
+- Keep internal raw/reference fields out of normal search/list/timeline/team/compression/stream projections. Explicit export/import and replay retain full evidence even beyond the bounded `source` projection.
+- Preserve complete scrubbed JSONL input and existing stock raw records during recompression. Replay retention metadata follows the complete raw evidence rather than a truncated or omitted source projection.
+- Preserve raw evidence when the source projection budget is exhausted. This is the first port unit; incremental summaries, worker scheduling, bounded KV readers and operational durability are still pending. See `docs/customizations/PORT-01.md` for scope, validation and upstream replacement criteria.
+- Durable memory recording is pending separate manual review; no production deployment or runtime version change has occurred.
+
 ## [0.9.30] - 2026-10-06
 
 Scale, durability and safety release. The iii engine moves from 0.11.2 to 0.22.1. The stores that grew without bound on shared daemons (graph provenance, the audit log, the vector index, the viewer stream backlog) are bounded and heal themselves at boot. Capture is durable end to end: the server accepts each observation into a persistent inbox with a restart-safe event id, and hooks keep an offline spool while the server is down. Vectors survive a force-kill through a pending log. The REST API requires auth by default. Redis becomes an opt-in state backend, and the viewer is rebuilt around one snapshot plus live stream events with a Health page backed by `GET /agentmemory/status`. Every publish now goes through a release gate that installs the packed tarballs and runs capture and recovery against them. Contributions from david-waltermire, a652, cbsincool, dmazhukov and Tyxiel, with earlier work by DaveCole, Srinath279, joyjit and cristianbdev carried into merged PRs.

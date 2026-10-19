@@ -83,6 +83,8 @@ export interface ObservationSource {
 }
 
 export interface CompressedObservation {
+  sourceRaw?: RawObservation;
+  syntheticCompression?: Partial<CompressedObservation>;
   id: string;
   sessionId: string;
   timestamp: string;

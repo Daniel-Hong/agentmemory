@@ -85,12 +85,13 @@ export function normalizeObservationSource(value: unknown, maxBytes = OBSERVATIO
   }, maxBytes);
 }
 
-export function withoutObservationSource<T extends CompressedObservation>(observation: T): Omit<T, "source"> {
-  const { source: _source, ...summary } = observation;
+export function withoutObservationSource<T extends CompressedObservation>(observation: T): Omit<T, "source" | "sourceRaw" | "syntheticCompression"> {
+  const { source: _source, sourceRaw: _raw, syntheticCompression: _synthetic, ...summary } = observation;
   return summary;
 }
 
 export function rawFromObservationSource(observation: CompressedObservation): RawObservation | null {
+  if (observation.sourceRaw) return observation.sourceRaw;
   const source = observation.source;
   if (!source || typeof source.hookType !== "string") return null;
   return {

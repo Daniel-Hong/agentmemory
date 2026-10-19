@@ -24,7 +24,7 @@ import { safeAudit } from "./audit.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { indexRecords } from "./search.js";
 import { logger } from "../logger.js";
-import { rawFromObservationSource } from "./observation-source.js";
+import { rawFromObservationSource, withoutObservationSource } from "./observation-source.js";
 import { budgetImportedObservationSources } from "./observation-source-budget.js";
 
 export const MAX_FILES_DEFAULT = 200;
@@ -234,7 +234,10 @@ async function loadObservations(
   return {
     observations: rows.map((r) => (isRawShape(r) ? r : rawFromCompressed(r as CompressedObservation))),
     sourceRetention: rows.map((row) => {
-      const source = !isRawShape(row) ? row.source : undefined;
+      if (isRawShape(row) || row.sourceRaw) {
+        return { observationId: row.id, retained: true, truncated: false };
+      }
+      const source = row.source;
       return {
         observationId: row.id,
         retained: isRawShape(row) || source !== undefined,
@@ -455,6 +458,8 @@ export function registerReplayFunctions(sdk: IIIClient, kv: StateKV): void {
         const incoming = parsed.observations.map((obs) => {
           const synthetic = buildSyntheticCompression(obs);
           synthetic.origin = importOrigin(synthetic.origin, synthetic.timestamp, "jsonl");
+          synthetic.sourceRaw = obs;
+          synthetic.syntheticCompression = withoutObservationSource(synthetic);
           return synthetic;
         });
         const committed = await withKeyedLock(`obs:${parsed.sessionId}`, async () => {

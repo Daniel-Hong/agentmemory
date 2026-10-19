@@ -1,5 +1,12 @@
 # agentmemory — Agent Instructions
 
+## Personal fork maintenance
+
+- Work on `personal`; keep `main` as upstream tracking history. Follow the approved customization port order in `docs/customizations/PORT-01.md`; do not redesign it without documenting the conflict and minimum alternative.
+- Do not deploy, restart services, resume paused background work, or use production data/configuration for development tests. Source data, summary cursors, retry/history, lessons and metrics must survive changes. Never roll back current data to an old backup to undo code.
+- Record each custom change, reason, actual validation, deployment state and upstream replacement criteria in CHANGELOG.md and the customization notes. Long-term memory requires separate manual review; do not overwrite, auto-merge or silently supersede existing memories. Pending memory recording is not saved memory.
+- Keep dependencies and upstream behavior where possible. Replace custom code with upstream only after the same acceptance tests prove equivalent behavior and data compatibility. Do not commit secrets, operational content, backups or generated caches.
+
 ## Architecture
 
 agentmemory is a persistent memory system for AI coding agents, built on iii-engine's three primitives (Worker/Function/Trigger). Everything goes through `registerFunction`/`registerTrigger`/`sdk.trigger()` — never bypass iii-engine with standalone SQLite or in-process alternatives.
@@ -101,7 +108,7 @@ Hook scripts in `src/hooks/` are standalone Node.js scripts (no iii-sdk import).
 
 ## Testing
 
-- Before every commit run, in order: `npm run build`, `npm run skills:gen`, `npm run docs:sync`, `npm run skills:check`, `npm test` (2,500+ tests). Commit anything the generators changed. CI runs the same build, skills check and tests.
+- Before every commit run, in order: `npm run build`, `npm run skills:gen`, `npm run docs:sync`, `npm run skills:check`, `npm test` (2,600+ tests). Commit anything the generators changed. CI runs the same build, skills check and tests.
 - Before any npm publish: `npm run release:gate` must pass. It installs the packed tarballs into a clean home and runs capture, recovery, restart, export/import, MCP and status checks against the installed CLI (see CONTRIBUTING.md, Release process)
 - Mock pattern: `vi.mock("iii-sdk")` with mock `sdk.trigger`, `kv.get/set/list`
 - Test files go in `test/` with `.test.ts` extension
@@ -114,4 +121,4 @@ Hook scripts in `src/hooks/` are standalone Node.js scripts (no iii-sdk import).
 - 6 MCP resources, 3 MCP prompts
 - 12 hooks, 17 skills
 - 311+ iii functions
-- 2,500+ tests
+- 2,600+ tests
