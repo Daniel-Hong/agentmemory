@@ -1,3 +1,4 @@
+import { publishViewerEvent } from "../state/viewer-stream.js";
 import { TriggerAction, type IIIClient } from "iii-sdk";
 import { readFileSync } from "node:fs";
 import { isManagedImagePath } from "../utils/image-store.js";
@@ -26,6 +27,11 @@ import { createObservationSource, withoutObservationSource } from "./observation
 import { budgetLiveObservationSource } from "./observation-source-budget.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { scrubRecord, stripPrivateData } from "./privacy.js";
+
+import { getEnvVar } from "../config.js";
+import { boundedEnrichmentText, ENRICHMENT_REVISION } from "../ops/background-enrichment.mjs";
+import { parseCompressionStructuredOutput, STRUCTURED_COMPRESSION_SYSTEM } from "../ops/structured-compression.mjs";
+import { safeFailureDetails } from "../ops/provider-readiness.mjs";
 
 const VALID_TYPES = new Set<string>([
   "file_read",
@@ -127,8 +133,13 @@ export function registerCompressFunction(
       });
 
       try {
+        const structured = getEnvVar("AGENTMEMORY_OLLAMA_NATIVE_CHAT")?.toLowerCase() === "true" && provider.name.includes("openai");
+        const parse = (response: string) => structured || response.trim().startsWith("{")
+          ? parseCompressionStructuredOutput(response) : parseCompressionXml(response);
         const validator = (response: string) => {
-          const parsed = parseCompressionXml(response);
+          let parsed;
+          try { parsed = parse(response); }
+          catch (error) { return { valid: false, errors: ["structured_parse_failed"], diagnostics: safeFailureDetails(error) }; }
           if (!parsed) return { valid: false, errors: ["xml_parse_failed"] };
           const result = validateOutput(
             CompressOutputSchema,
@@ -142,24 +153,18 @@ export function registerCompressFunction(
 
         const { response, retried } = await compressWithRetry(
           provider,
-          COMPRESSION_SYSTEM,
-          prompt,
+          structured ? STRUCTURED_COMPRESSION_SYSTEM : COMPRESSION_SYSTEM,
+          boundedEnrichmentText(prompt),
           validator,
           1,
         );
 
-        const parsed = parseCompressionXml(response);
-        if (!parsed) {
-          const latencyMs = Date.now() - startMs;
-          if (metricsStore) {
-            await metricsStore.record("mem::compress", latencyMs, false);
-          }
-          logger.warn("Failed to parse compression XML", {
-            obsId: data.observationId,
-            retried,
-          });
-          return { success: false, error: "parse_failed" };
-        }
+        const outputValidation = validator(response);
+        if (!outputValidation.valid) throw Object.assign(Error("compression_invalid_output"), {
+          diagnostics: outputValidation.diagnostics ?? { category: "output_invalid" },
+        });
+        const parsed = parse(response);
+        if (!parsed) throw Error("compression_invalid_output");
 
         const qualityScore = scoreCompression(parsed);
 
@@ -180,13 +185,11 @@ export function registerCompressFunction(
 
         const compressed = await withKeyedLock(`obs:${data.sessionId}`, async () => {
           const existing = await kv.list<CompressedObservation>(KV.observations(data.sessionId));
-          const previous = existing.find(row => row.id === data.observationId) as
-            (CompressedObservation & Partial<RawObservation>) | undefined;
+          const previous = existing.find(row => row.id === data.observationId) as (CompressedObservation & Partial<RawObservation>) | undefined;
           const bounded = budgetLiveObservationSource({
             ...candidate,
-            sourceRaw: previous?.sourceRaw ?? scrubRecord(
-              typeof previous?.hookType === "string" ? previous as RawObservation : data.raw,
-            ),
+            sourceRaw: previous?.sourceRaw ?? scrubRecord(typeof previous?.hookType === "string" ? previous as RawObservation : data.raw),
+            llmCompressionRevision: ENRICHMENT_REVISION,
             ...(previous?.syntheticCompression ? { syntheticCompression: previous.syntheticCompression } : {}),
           }, existing);
           await kv.set(KV.observations(data.sessionId), data.observationId, bounded);
@@ -229,6 +232,9 @@ export function registerCompressFunction(
             action: TriggerAction.Void(),
           }),
         ]);
+        if (streamResults[0].status === "fulfilled") publishViewerEvent("compressed_observation", {
+          type: "compressed", observation: withoutObservationSource(compressed), sessionId: data.sessionId,
+        });
         for (const result of streamResults) {
           if (result.status === "rejected") {
             logger.warn("Non-fatal stream publish failure after compress", {
@@ -262,6 +268,9 @@ export function registerCompressFunction(
 
         return { success: true, compressed: withoutObservationSource(compressed), qualityScore };
       } catch (err) {
+        if ((err as { providerUnavailable?: boolean })?.providerUnavailable) {
+          return { success: false, deferred: true, error: "provider_unavailable", retained: true };
+        }
         const msg = err instanceof Error ? err.message : String(err);
         const latencyMs = Date.now() - startMs;
         if (metricsStore) {
@@ -269,9 +278,9 @@ export function registerCompressFunction(
         }
         logger.error("Compression failed", {
           obsId: data.observationId,
-          error: msg,
+          error: msg, diagnostics: safeFailureDetails(err),
         });
-        return { success: false, error: "compression_failed" };
+        return { success: false, error: "compression_failed", diagnostics: safeFailureDetails(err), retained: true };
       }
     },
   );

@@ -1,3 +1,4 @@
+import { getCpuCapacityCores } from "../ops/metrics-cpu-capacity.mjs";
 import { getHeapStatistics } from "node:v8";
 import type { IIIClient } from "iii-sdk";
 import type { HealthSnapshot } from "../types.js";
@@ -11,14 +12,13 @@ export function registerHealthMonitor(
   kv: StateKV,
   options: { streamRelayProbe?: StreamRelayProbe } = {},
 ): { stop: () => void; drain: () => Promise<void> } {
-  let closed = false;
-  const active = new Set<Promise<unknown>>();
   let connectionState = "connected";
   let prevCpuUsage = process.cpuUsage();
   let prevCpuTime = Date.now();
 
-  if (typeof sdk.on === "function") {
-    sdk.on("connection_state", (state?: unknown) => {
+  const events=sdk as unknown as {on?: (event:string,fn:(state?:unknown)=>void)=>void};
+  if (typeof events.on === "function") {
+    events.on("connection_state", (state?: unknown) => {
       connectionState = state as string;
     });
   }
@@ -68,10 +68,12 @@ export function registerHealthMonitor(
       kvConnectivity = { status: "error", error: "kv_probe_failed", latencyMs: Math.round((performance.now() - kvStart) * 100) / 100 };
     }
 
+    if(!events.on)connectionState=kvConnectivity.status==="ok"?"connected":"disconnected";
     const streamRelay = options.streamRelayProbe
       ? await options.streamRelayProbe.check().catch(() => "unknown" as const)
       : undefined;
 
+    const capacityCores = await getCpuCapacityCores();
     const snapshot: HealthSnapshot = {
       connectionState,
       ...(streamRelay ? { streamRelay } : {}),
@@ -87,6 +89,8 @@ export function registerHealthMonitor(
         userMicros: currentCpu.user,
         systemMicros: currentCpu.system,
         percent: Math.round(cpuPercent * 100) / 100,
+        capacityCores,
+        capacityPercent: capacityCores ? Math.round(cpuPercent / capacityCores * 100) / 100 : null,
       },
       eventLoopLagMs,
       uptimeSeconds: uptime,
@@ -104,20 +108,16 @@ export function registerHealthMonitor(
     return snapshot;
   }
 
-  function collect() {
-    if (closed) return;
-    const work = collectHealth().catch(() => {}); active.add(work);
-    void work.finally(() => { active.delete(work); });
-  }
+  let active:Promise<unknown>|null=null,stopped=false;
+  const collect=()=>{if(stopped||active)return;active=collectHealth().catch(()=>{}).finally(()=>{active=null;});};
   collect();
   const interval = setInterval(collect, 30_000);
   interval.unref();
 
   return {
-    drain: async () => { while (active.size) await Promise.allSettled([...active]); },
+    drain:async()=>{if(active)await active;},
     stop: () => {
-      closed = true;
-      clearInterval(interval);
+      stopped=true;clearInterval(interval);
       options.streamRelayProbe?.close();
     },
   };

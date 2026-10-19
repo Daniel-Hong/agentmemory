@@ -1,4 +1,5 @@
 export interface Session {
+  lastTurnEndedAt?: string;
   id: string;
   project: string;
   cwd: string;
@@ -83,6 +84,7 @@ export interface ObservationSource {
 }
 
 export interface CompressedObservation {
+  llmCompressionRevision?: string;
   sourceRaw?: RawObservation;
   syntheticCompression?: Partial<CompressedObservation>;
   id: string;
@@ -243,6 +245,9 @@ export interface EvalResult {
 }
 
 export interface FunctionMetrics {
+  qualitySampleCount?: number;
+  qualityEpochAt?: number;
+  legacyAvgQualityScore?: number;
   functionId: string;
   totalCalls: number;
   successCount: number;
@@ -261,7 +266,7 @@ export interface HealthSnapshot {
     rss: number;
     external: number;
   };
-  cpu: { userMicros: number; systemMicros: number; percent: number };
+  cpu: { userMicros: number; systemMicros: number; percent: number; capacityCores?: number|null; capacityPercent?: number|null };
   eventLoopLagMs: number;
   uptimeSeconds: number;
   kvConnectivity?: { status: string; latencyMs?: number; error?: string };
@@ -673,7 +678,7 @@ export interface AuditMigrationState {
 }
 
 export interface AuditQueryResult {
-  entries: AuditEntry[];
+  entries: (AuditEntry | import("./ops/audit-reader.mjs").AuditMetadata)[];
   legacyFrozen: boolean;
   legacyFrozenBytes?: number;
 }

@@ -1,0 +1,13 @@
+import type { IIIClient } from "iii-sdk";
+import type { StateKV } from "../state/kv.js";
+import type { OllamaReadiness } from "./provider-readiness.mjs";
+import type { MemoryProvider } from "../types.js";
+import type { MetricsStore } from "../eval/metrics-store.js";
+export const ENRICHMENT_REVISION:string;
+export const ENRICHMENT_NAMESPACE:string;
+export const STRUCTURED_GRAPH_EXTRACTION_SYSTEM:string;
+export const GRAPH_EXTRACTION_FORMAT:Record<string,unknown>;
+export function buildGraphExtractionFormat(text:string):Record<string,unknown>;
+export function boundedEnrichmentText(text:string,max?:number):string;
+export function parseGraphStructuredOutput(text:string,observationIds:string[],generateId:(prefix:string)=>string,observedText:string):{nodes:import("../types.js").GraphNode[];edges:import("../types.js").GraphEdge[]};
+export function registerEnrichmentWorker(options:{kv:StateKV;sdk:IIIClient;KV:typeof import("../state/schema.js").KV;withKeyedLock:typeof import("../state/keyed-mutex.js").withKeyedLock;isGraphEnabled:()=>boolean;isCompressEnabled:()=>boolean;logger:typeof import("../logger.js").logger;metricsStore?:MetricsStore;readiness?:OllamaReadiness|null;clock?:()=>number;schedule?:boolean;rawFromObservationSource:typeof import("../functions/observation-source.js").rawFromObservationSource}):{pump():Promise<void>;stop():Promise<void>;drain():Promise<void>};

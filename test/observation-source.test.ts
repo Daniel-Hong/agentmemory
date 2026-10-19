@@ -282,9 +282,12 @@ describe("retained observation source", () => {
     };
     registerCompressFunction(r.sdk as never, r.kv as never, provider);
     const tail = "MODEL_SOURCE_ONLY_TAIL";
-    const saved = await r.observe("post_tool_use", {
+    let saved = await r.observe("post_tool_use", {
       tool_name: "Read", tool_input: { file_path: "config.ts" }, tool_output: `${"detail ".repeat(1000)}${tail}`,
     });
+    expect(provider.compress).not.toHaveBeenCalled();
+    await r.call("mem::compress", {observationId:saved.id,sessionId:saved.sessionId,raw:saved.sourceRaw});
+    saved = await r.kv.get(KV.observations(saved.sessionId),saved.id);
     expect(saved.source?.toolOutput).toContain(tail);
     expect(saved.narrative).not.toContain(tail);
     expect(provider.compress).toHaveBeenCalledOnce();

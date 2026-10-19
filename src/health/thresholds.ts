@@ -56,11 +56,12 @@ export function evaluateHealth(
     degraded = true;
   }
 
-  if (snapshot.cpu.percent > cfg.cpuCriticalPercent) {
-    alerts.push(`cpu_critical_${Math.round(snapshot.cpu.percent)}%`);
+  const effectiveCpu = typeof snapshot.cpu.capacityPercent === "number" && Number.isFinite(snapshot.cpu.capacityPercent) ? snapshot.cpu.capacityPercent : snapshot.cpu.percent;
+  if (effectiveCpu > cfg.cpuCriticalPercent) {
+    alerts.push(`cpu_critical_${Math.round(effectiveCpu)}%`);
     critical = true;
-  } else if (snapshot.cpu.percent > cfg.cpuWarnPercent) {
-    alerts.push(`cpu_warn_${Math.round(snapshot.cpu.percent)}%`);
+  } else if (effectiveCpu > cfg.cpuWarnPercent) {
+    alerts.push(`cpu_warn_${Math.round(effectiveCpu)}%`);
     degraded = true;
   }
 

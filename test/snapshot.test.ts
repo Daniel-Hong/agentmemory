@@ -4,24 +4,16 @@ vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("node:child_process", () => ({
-  execFile: vi.fn(
-    (_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
-      cb(null, { stdout: "abc1234\n", stderr: "" });
-    },
-  ),
+const { gitMock } = vi.hoisted(() => ({ gitMock: vi.fn() }));
+vi.mock("node:util", async () => ({ ...(await vi.importActual("node:util")), promisify: () => gitMock }));
+vi.mock("node:fs/promises", async () => ({
+  ...(await vi.importActual("node:fs/promises")),
+  mkdir: vi.fn(async () => {}), chmod: vi.fn(async () => {}),
+  lstat: vi.fn(async () => ({ isDirectory: () => true })),
+  readFile: vi.fn(async () => { throw Object.assign(Error("missing fixture"), { code: "ENOENT" }); }),
+  open: vi.fn(async () => ({ writeFile: vi.fn(async () => {}), sync: vi.fn(async () => {}), close: vi.fn(async () => {}) })),
+  rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}),
 }));
-
-vi.mock("node:util", async () => {
-  const actual = (await vi.importActual("node:util")) as Record<
-    string,
-    unknown
-  >;
-  return {
-    ...actual,
-    promisify: () => async () => ({ stdout: "abc1234\n", stderr: "" }),
-  };
-});
 
 vi.mock("node:fs", () => ({
   existsSync: vi.fn().mockReturnValue(true),
@@ -33,6 +25,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import { readFileSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { registerSnapshotFunction } from "../src/functions/snapshot.js";
 import { currentAuditScope } from "./helpers/mocks.js";
 import { getProjectSessionIndex } from "../src/state/session-index.js";
@@ -76,6 +69,12 @@ function mockSdk() {
     },
   };
 }
+
+beforeEach(() => {
+  gitMock.mockReset().mockImplementation(async (_cmd, args) => ({ stdout: args[0] === "log" ? "" : args[1] === "--is-inside-work-tree" ? "true" : "a".repeat(40), stderr: "" }));
+  vi.mocked(readFileSync).mockReset().mockReturnValue('{"version":"0.4.0","sessions":[],"memories":[]}');
+  vi.mocked(lstat).mockReset().mockResolvedValue({ isDirectory: () => true } as never);
+});
 
 describe("Snapshot Functions", () => {
   let sdk: ReturnType<typeof mockSdk>;
@@ -122,7 +121,7 @@ describe("Snapshot Functions", () => {
 
     expect(result.success).toBe(true);
     expect(result.snapshot).toBeDefined();
-    expect(result.snapshot.commitHash).toBe("abc1234");
+    expect(result.snapshot.commitHash).toBe("a".repeat(40));
     expect(result.snapshot.message).toBe("Test snapshot");
     expect(result.snapshot.stats.sessions).toBe(1);
     expect(result.snapshot.stats.memories).toBe(1);
@@ -139,6 +138,22 @@ describe("Snapshot Functions", () => {
 
     expect(result.snapshots).toBeDefined();
     expect(Array.isArray(result.snapshots)).toBe(true);
+  });
+
+  it("snapshot-list scopes Git history to state.json and preserves message pipes", async () => {
+    gitMock.mockResolvedValueOnce({ stdout: "a".repeat(40) + "|2026-10-14T00:00:00Z|snapshot | fixture\n", stderr: "" });
+    expect(await sdk.trigger("mem::snapshot-list", {})).toEqual({ snapshots: [{ commitHash: "a".repeat(40), createdAt: "2026-10-14T00:00:00Z", message: "snapshot | fixture" }] });
+    expect(gitMock).toHaveBeenCalledWith("git", ["log", "--format=%H|%aI|%s", "--all", "-20", "--", "state.json"], { cwd: snapshotDir });
+  });
+
+  it("snapshot-list exposes directory read errors instead of an empty result", async () => {
+    vi.mocked(lstat).mockRejectedValueOnce(Object.assign(Error("fixture denied"), { code: "EACCES" }));
+    expect(await sdk.trigger("mem::snapshot-list", {})).toEqual({ success: false, error: "EACCES" });
+  });
+
+  it("snapshot-list exposes Git read errors instead of an empty result", async () => {
+    gitMock.mockRejectedValueOnce(Object.assign(Error("fixture read failed"), { code: "EIO" }));
+    expect(await sdk.trigger("mem::snapshot-list", {})).toEqual({ success: false, error: "EIO" });
   });
 
   it("snapshot-restore requires commitHash", async () => {
@@ -199,10 +214,7 @@ describe("Snapshot Functions", () => {
 });
 
 describe("snapshot-create reentrancy guard", () => {
-  // Regression (P2): mem::snapshot-create is triggered by the periodic timer,
-  // REST (api::snapshot-create), and MCP. Two runs writing state.json and
-  // committing in the same git repo at once race on the index lock. An
-  // overlapping call must be a no-op success while the first run finishes.
+  // An overlapping request is deferred while the admitted export finishes.
   it("skips an overlapping call and releases the guard on completion", async () => {
     let releaseFirst!: () => void;
     const firstListGate = new Promise<void>((resolve) => {
@@ -234,14 +246,11 @@ describe("snapshot-create reentrancy guard", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // Overlapping call: must be rejected as already-in-progress, NOT run git.
+    // Recovery defers the second call while the admitted export is active.
     const r2 = (await localSdk.trigger("mem::snapshot-create", {
       message: "second",
     })) as { success: boolean; message?: string; snapshot?: unknown };
-    expect(r2).toEqual({
-      success: true,
-      message: "Snapshot already in progress",
-    });
+    expect(r2).toEqual({ success: false, deferred: true, reason: "snapshot_in_progress" });
     expect(r2.snapshot).toBeUndefined();
 
     // Release the first run; it completes normally.

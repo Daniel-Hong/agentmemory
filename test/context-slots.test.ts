@@ -56,6 +56,7 @@ async function seedPinnedSlot(
     pinned: true,
     readOnly: false,
     scope,
+    ...(scope === "project" ? {project:"/tmp/proj"} : {}),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });

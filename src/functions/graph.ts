@@ -1,3 +1,5 @@
+import { buildGraphExtractionFormat, parseGraphStructuredOutput, STRUCTURED_GRAPH_EXTRACTION_SYSTEM } from "../ops/background-enrichment.mjs";
+import { safeFailureDetails } from "../ops/provider-readiness.mjs";
 import type { IIIClient } from "iii-sdk";
 import type {
   GraphNode,
@@ -811,7 +813,7 @@ export function registerGraphFunction(
   provider: MemoryProvider,
 ): void {
   sdk.registerFunction("mem::graph-extract",
-    async (data: { observations: CompressedObservation[] }) => {
+    async (data: { observations: CompressedObservation[]; requireLlm?: boolean }) => {
       if (!data.observations || data.observations.length === 0) {
         return { success: false, error: "No observations provided" };
       }
@@ -833,6 +835,7 @@ export function registerGraphFunction(
       const llmEnabled =
         isGraphExtractionEnabled() && !provider.name.includes("noop");
       let llmError: string | undefined;
+      let llmDiagnostics: ReturnType<typeof safeFailureDetails> | undefined;
       if (llmEnabled) {
         const prompt = buildGraphExtractionPrompt(
           data.observations.map((o) => ({
@@ -845,22 +848,37 @@ export function registerGraphFunction(
         );
         try {
           const response = await provider.compress(
-            GRAPH_EXTRACTION_SYSTEM,
+            data.requireLlm
+              ? STRUCTURED_GRAPH_EXTRACTION_SYSTEM + "\nJSON schema:\n" + JSON.stringify(buildGraphExtractionFormat(prompt))
+              : GRAPH_EXTRACTION_SYSTEM,
             prompt,
           );
-          const parsed = parseGraphXml(response, obsIds);
+          const structured = typeof response === "string" && response.trim().startsWith("{");
+          if (data.requireLlm && !structured) throw Object.assign(Error("graph_structured_output_required"), {
+            diagnostics: { category: "output_invalid", field: "root", errorCode: "structured_required" },
+          });
+          const parsed = structured
+            ? parseGraphStructuredOutput(response, obsIds, generateId, prompt) as { nodes: GraphNode[]; edges: GraphEdge[] }
+            : parseGraphXml(response, obsIds);
           nodes = nodes.concat(parsed.nodes);
           edges = edges.concat(parsed.edges);
         } catch (err) {
+          if ((err as { providerUnavailable?: boolean })?.providerUnavailable) {
+            return { success: false, deferred: true, error: "provider_unavailable", retained: true };
+          }
           llmError = err instanceof Error ? err.message : String(err);
-          logger.error("LLM graph extraction failed", { error: llmError });
+          llmDiagnostics = safeFailureDetails(err);
+          logger.error("LLM graph extraction failed", { error: llmError, diagnostics: llmDiagnostics });
         }
       }
 
+      if (data.requireLlm && (!llmEnabled || llmError)) {
+        return { success: false, error: llmError ?? "graph_llm_disabled", diagnostics: llmDiagnostics, retained: true };
+      }
       if (nodes.length === 0 && edges.length === 0) {
         return llmError
-          ? { success: false, error: llmError }
-          : { success: true, nodesAdded: 0, edgesAdded: 0 };
+          ? { success: false, error: llmError, diagnostics: llmDiagnostics }
+          : { success: true, nodesAdded: 0, edgesAdded: 0, llm: llmEnabled && !llmError };
       }
 
       try {
@@ -886,6 +904,7 @@ export function registerGraphFunction(
           success: true,
           nodesAdded: nodes.length,
           edgesAdded: edges.length,
+          llm: llmEnabled && !llmError,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

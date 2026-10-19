@@ -1,0 +1,78 @@
+[
+  {
+    "id": "bounded-operations-viewer",
+    "reason": "제한된 조회와 실제 운영 진행 상태 표시",
+    "files": [
+      "src/ops/observation-pages.mjs",
+      "src/ops/audit-reader.mjs",
+      "src/viewer/index.html"
+    ],
+    "tests": [
+      "test/observation-list-performance.test.ts",
+      "test/viewer-operations-browser.test.ts"
+    ],
+    "replacementConditions": [
+      "같은 페이지·응답 byte budget 및 미반영 쓰기 보존",
+      "Audit 이관의 disk read-back 선행",
+      "실제 proxy/WebSocket/브라우저 회귀 동등"
+    ],
+    "baseUpstreamVersion": "0.9.30",
+    "relatedReports": [],
+    "decision": "unverified",
+    "upstreamEvidence": [],
+    "memoryPolicy": "manual_review_only"
+  },
+  {
+    "id": "background-lifecycle",
+    "reason": "영속 일시정지와 공급자·압박·복구의 일관된 admission",
+    "files": [
+      "src/ops/background-control.mjs",
+      "src/ops/feature-lifecycle.mjs",
+      "src/ops/snapshot-recovery.mjs"
+    ],
+    "tests": [
+      "test/operations-background-control.test.ts",
+      "test/port07-scoped-callers.test.ts",
+      "test/port07-redis-boot.test.ts"
+    ],
+    "replacementConditions": [
+      "원문·커서·retry·수동 슬롯/정지 상태와 종료 인증 보존",
+      "프로젝트별 context 격리·공개 호출부 소유권 전달",
+      "동일한 공급자/회복/백엔드 회귀 검사 통과"
+    ],
+    "baseUpstreamVersion": "0.9.30",
+    "relatedReports": [],
+    "decision": "unverified",
+    "upstreamEvidence": [],
+    "memoryPolicy": "manual_review_only"
+  },
+  {
+    "id": "personal-feedback-v1",
+    "reason": "개인 제보 접수·분석·관계 검토·검증/적용 체인지로그",
+    "files": [
+      "src/feedback/feedback-store.mjs",
+      "src/feedback/feedback-api.mjs",
+      "src/feedback/feedback-analysis.mjs",
+      "src/feedback/feedback-history.mjs",
+      "src/feedback/feedback-runtime.mjs",
+      "src/feedback/feedback-viewer.js"
+    ],
+    "tests": [
+      "test/feedback/store.check.mjs",
+      "test/feedback/relations.check.mjs",
+      "test/feedback/browser.check.mjs",
+      "test/feedback-proxy.test.ts"
+    ],
+    "replacementConditions": [
+      "원문/과거 이벤트/requestId/낙관적 revision/페이지 호환",
+      "최초 정기 OFF·분석 예산·실행 제한·실제 적용 증거 동등",
+      "기존 기억 변경 없이 장기기억 수동 검토 정책 유지",
+      "관계/예외 이력 유지 및 과거 데이터 조회 보존"
+    ],
+    "baseUpstreamVersion": "0.9.30",
+    "relatedReports": [],
+    "decision": "unverified",
+    "upstreamEvidence": [],
+    "memoryPolicy": "manual_review_only"
+  }
+]

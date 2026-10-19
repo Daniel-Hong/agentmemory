@@ -17,7 +17,7 @@ export function buildSemanticMergePrompt(
   const items = episodes
     .map(
       (e, i) =>
-        `[Episode ${i + 1}]\nTitle: ${e.title}\nNarrative: ${e.narrative}\nConcepts: ${e.concepts.join(", ")}`,
+        `[Episode ${i + 1}]\nTitle: ${e.title.slice(0,100)}\nNarrative: ${e.narrative.slice(0,550)}\nConcepts: ${e.concepts.slice(0,6).join(", ")}`,
     )
     .join("\n\n");
   return `Consolidate these episodic memories into stable facts:\n\n${items}`;

@@ -152,3 +152,18 @@ export function resetViewerStreamTracker(): void {
   pruning = false;
   pruneAgain = false;
 }
+
+// Live transport carries new Viewer events only; the HTTP snapshot owns initial state.
+const viewerListeners = new Set<(message: string | null) => void>();
+export function subscribeViewerEvents(listener: (message: string | null) => void): () => void {
+  viewerListeners.add(listener);
+  return () => { viewerListeners.delete(listener); };
+}
+export function publishViewerEvent(type: string, data: Record<string, unknown>): void {
+  if (viewerListeners.size === 0) return;
+  try {
+    const message = JSON.stringify({ type: "stream", event: { type: "event", event: { type, data } } });
+    const bounded = Buffer.byteLength(message) <= 1024 * 1024 ? message : null;
+    for (const listener of viewerListeners) { try { listener(bounded); } catch {} }
+  } catch {} // A display notification must never fail an accepted write.
+}

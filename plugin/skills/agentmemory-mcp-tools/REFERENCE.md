@@ -48,12 +48,12 @@ agentmemory exposes 54 MCP tools. 8 are in the lean core set (`--tools core` or 
 | `memory_signal_send` |  | `from`*: string, `to`: string, `content`*: string, `type`: string, `replyTo`: string | Send a message to another agent or broadcast. Supports threading, typed messages, and TTL expiration. |
 | `memory_sketch_create` |  | `title`*: string, `description`: string, `expiresInMs`: number, `project`: string | Create an ephemeral action graph for exploratory work. Auto-expires after TTL. Can be promoted to permanent actions or discarded. |
 | `memory_sketch_promote` |  | `sketchId`*: string, `project`: string | Promote a sketch's ephemeral actions to permanent actions. Makes the exploratory work official. |
-| `memory_slot_append` |  | `label`*: string, `text`*: string | Append text to an existing slot. Fails with 413 if the append would exceed the slot's sizeLimit, agent must compact via memory_slot_replace first. |
-| `memory_slot_create` |  | `label`*: string, `content`: string, `sizeLimit`: number, `description`: string, `pinned`: string, `scope`: string | Create a new slot. Reject if a slot with the same label already exists. |
-| `memory_slot_delete` |  | `label`*: string | Delete a slot. Seeded default slots can be deleted unless marked readOnly. |
-| `memory_slot_get` |  | `label`*: string | Read a single slot by label. |
-| `memory_slot_list` |  | none | List all memory slots (pinned + project + global). Slots are editable, size-limited memory units the agent can read and modify across sessions. |
-| `memory_slot_replace` |  | `label`*: string, `content`*: string | Replace slot content in place. Fails if content exceeds sizeLimit. |
+| `memory_slot_append` |  | `scope`: string, `project`: string, `label`*: string, `text`*: string | Append text to an existing slot. Fails with 413 if the append would exceed the slot's sizeLimit, agent must compact via memory_slot_replace first. |
+| `memory_slot_create` |  | `project`: string, `label`*: string, `content`: string, `sizeLimit`: number, `description`: string, `pinned`: string, `scope`: string | Create a new slot. Reject if a slot with the same label already exists. |
+| `memory_slot_delete` |  | `scope`: string, `project`: string, `label`*: string | Delete a slot. Seeded default slots can be deleted unless marked readOnly. |
+| `memory_slot_get` |  | `scope`: string, `project`: string, `label`*: string | Read a single slot by label. |
+| `memory_slot_list` |  | `project`: string, `scope`: string | List all memory slots (pinned + project + global). Slots are editable, size-limited memory units the agent can read and modify across sessions. |
+| `memory_slot_replace` |  | `scope`: string, `project`: string, `label`*: string, `content`*: string | Replace slot content in place. Fails if content exceeds sizeLimit. |
 | `memory_smart_search` | yes | `query`*: string, `expandIds`: string, `limit`: number | Hybrid semantic+keyword search with progressive disclosure. |
 | `memory_snapshot_create` |  | `message`: string | Create a git-versioned snapshot of current memory state. |
 | `memory_team_feed` |  | `limit`: number | Get recent shared items from all team members. |

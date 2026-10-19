@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { IIIClient } from "iii-sdk";
 import type {
   SemanticMemory,
@@ -18,6 +19,7 @@ import { recordAudit } from "./audit.js";
 import { CONSOLIDATION_LAST_RUN_KEY } from "./consolidation-status.js";
 import { getConsolidationDecayDays, isConsolidationEnabled } from "../config.js";
 import { logger } from "../logger.js";
+import { isReflectEnabled } from "./slots.js";
 
 function applyDecay(
   items: Array<{
@@ -78,6 +80,85 @@ async function decayAndWriteChanged<
   return { scanned: items.length, written: dirty.length };
 }
 
+const SEMANTIC_GROUNDING_STOPWORDS = new Set([
+	"the", "and", "for", "with", "that", "this", "from", "into", "can",
+	"are", "was", "were", "has", "have", "had", "its", "their", "they",
+	"them", "then", "than", "but", "not", "all", "any", "some", "one",
+	"two", "each", "other", "using", "used", "use", "via", "within",
+	"between", "across", "allows", "allow", "includes", "include",
+	"system"
+]);
+
+function semanticGroundingTokens(value: unknown) {
+	const expanded = String(value ?? "")
+		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+		.toLowerCase();
+
+	const raw =
+		expanded.match(/[\p{L}\p{N}][\p{L}\p{N}_-]*/gu) ?? [];
+
+	return [...new Set(
+		raw.filter((token) =>
+			token.length >= 3 &&
+			!SEMANTIC_GROUNDING_STOPWORDS.has(token) &&
+			!/^\d+$/.test(token)
+		)
+	)];
+}
+
+function semanticFactSupportedBySummary(fact: string, summary: SessionSummary) {
+	const factTokens = semanticGroundingTokens(fact);
+
+	// Very short/generated facts are too ambiguous to promote safely.
+	if (factTokens.length < 3) return false;
+
+	const summaryText = [
+		summary.title ?? "",
+		summary.narrative ?? "",
+		Array.isArray(summary.concepts)
+			? summary.concepts.join(" ")
+			: ""
+	].join("\n");
+
+	const summaryTokens =
+		new Set(semanticGroundingTokens(summaryText));
+
+	let matched = 0;
+
+	for (const token of factTokens) {
+		if (summaryTokens.has(token)) matched++;
+	}
+
+	const coverage = matched / factTokens.length;
+
+	// Conservative by design: false negatives are preferable to
+	// promoting a one-session hallucination into semantic memory.
+	const minimumMatches =
+		factTokens.length <= 5 ? 2 : 3;
+
+	return (
+		matched >= minimumMatches &&
+		coverage >= 0.5
+	);
+}
+
+function parseSemanticFacts(response: string): Array<{confidence:number;fact:string}> {
+  let facts: Array<{confidence:number;fact:string}>;
+  if(response.trim().startsWith('{')) {
+    const parsed=JSON.parse(response);
+    if(!parsed || Object.keys(parsed).some(k=>k!=='facts') || !Array.isArray(parsed.facts) || parsed.facts.length>2) throw Error('semantic_merge_invalid_json');
+    facts=parsed.facts;
+  } else {
+    const body=response.trim().match(/^<facts\s*>([\s\S]*)<\/facts>$/)?.[1];
+    if(body===undefined)throw Error('semantic_merge_invalid_xml');
+    const regex=/<fact\s+confidence="([^"]+)">([^<]+)<\/fact>/g;
+    facts=[...body.matchAll(regex)].map(m=>({confidence:Number(m[1]),fact:m[2].trim().replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&')}));
+    if(body.replace(regex,'').trim())throw Error('semantic_merge_invalid_xml');
+  }
+  if(facts.some(f=>!f || Object.keys(f).some(k=>!['confidence','fact'].includes(k)) || typeof f.fact!=='string' || !f.fact.trim() || f.fact.length>120 || !Number.isFinite(f.confidence) || f.confidence<0 || f.confidence>1))throw Error('semantic_merge_invalid_fact');
+  return facts;
+}
+
 export function registerConsolidationPipelineFunction(
   sdk: IIIClient,
   kv: StateKV,
@@ -105,6 +186,12 @@ export function registerConsolidationPipelineFunction(
             )
             .slice(0, 20);
 
+          const fingerprintKey="consolidation:semanticFingerprint:v2";
+          const fingerprint=createHash("sha256").update("semantic-grounded-v2|"+JSON.stringify(recentSummaries.map(s=>({sessionId:s.sessionId,title:s.title,narrative:s.narrative,concepts:s.concepts})))).digest("hex");
+          const previous=await kv.get<{hash:string}>(KV.config,fingerprintKey);
+          if(previous?.hash===fingerprint) {
+            results.semantic={skipped:true,reason:"summaries unchanged",totalSummaries:summaries.length};
+          } else {
           const prompt = buildSemanticMergePrompt(
             recentSummaries.map((s) => ({
               title: s.title,
@@ -119,16 +206,13 @@ export function registerConsolidationPipelineFunction(
               prompt,
             );
 
-            const factRegex = /<fact\s+confidence="([^"]+)">([^<]+)<\/fact>/g;
-            let match;
+            const facts=parseSemanticFacts(response);
             let newFacts = 0;
             const now = new Date().toISOString();
-
-            while ((match = factRegex.exec(response)) !== null) {
-              const parsedConf = parseFloat(match[1]);
-              const confidence = Number.isNaN(parsedConf) ? 0.5 : parsedConf;
-              const fact = match[2].trim();
-
+            for (const {confidence,fact} of facts) {
+              const supporting=recentSummaries.filter(summary=>semanticFactSupportedBySummary(fact,summary));
+              if(supporting.length<2)continue;
+              const sourceSessionIds=[...new Set(supporting.map(s=>s.sessionId))];
               const existing = existingSemantic.find(
                 (s) => s.fact.toLowerCase() === fact.toLowerCase(),
               );
@@ -137,13 +221,14 @@ export function registerConsolidationPipelineFunction(
                 existing.lastAccessedAt = now;
                 existing.updatedAt = now;
                 existing.confidence = Math.max(existing.confidence, confidence);
+                existing.sourceSessionIds=[...new Set([...(existing.sourceSessionIds??[]),...sourceSessionIds])];
                 await kv.set(KV.semantic, existing.id, existing);
               } else {
                 const sem: SemanticMemory = {
                   id: generateId("sem"),
                   fact,
                   confidence,
-                  sourceSessionIds: recentSummaries.map((s) => s.sessionId),
+                  sourceSessionIds,
                   sourceMemoryIds: [],
                   accessCount: 1,
                   lastAccessedAt: now,
@@ -155,11 +240,13 @@ export function registerConsolidationPipelineFunction(
                 newFacts++;
               }
             }
+            await kv.set(KV.config,fingerprintKey,{hash:fingerprint,at:now,summaryCount:summaries.length});
             results.semantic = { newFacts, totalSummaries: summaries.length };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.error("Semantic consolidation failed", { error: msg });
             results.semantic = { error: msg };
+          }
           }
         } else {
           results.semantic = {
@@ -170,7 +257,8 @@ export function registerConsolidationPipelineFunction(
       }
 
       if (tier === "all" || tier === "reflect") {
-        try {
+        if(!isReflectEnabled())results.reflect={skipped:true,reason:"reflection disabled"};
+        else try {
           const reflectResult = await sdk.trigger({ function_id: "mem::reflect", payload: {
             maxClusters: 10,
             project: data?.project,
@@ -191,9 +279,17 @@ export function registerConsolidationPipelineFunction(
             content: m.content,
             frequency: m.sessionIds.length || 1,
           }))
-          .filter((p) => p.frequency >= 2);
+          .filter((p) => p.frequency >= 2)
+          .sort((a, b) => a.content.localeCompare(b.content) || a.frequency - b.frequency);
 
         if (patterns.length >= 2) {
+          const fingerprintKey = "consolidation:proceduralFingerprint:v1";
+          const fingerprint = createHash("sha256")
+            .update("procedural-patterns-v1|" + JSON.stringify(patterns)).digest("hex");
+          const previous = await kv.get<{ hash: string }>(KV.config, fingerprintKey).catch(() => null);
+          if (previous?.hash === fingerprint) {
+            results.procedural = { skipped: true, reason: "patterns unchanged", patternsAnalyzed: patterns.length };
+          } else {
           const prompt = buildProceduralExtractionPrompt(patterns);
 
           try {
@@ -201,6 +297,9 @@ export function registerConsolidationPipelineFunction(
               PROCEDURAL_EXTRACTION_SYSTEM,
               prompt,
             );
+            if (!/<procedures\b[^>]*>[\s\S]*<\/procedures>/.test(response)) {
+              throw new Error("procedural_extraction_invalid_xml");
+            }
 
             const procRegex =
               /<procedure\s+name="([^"]+)"\s+trigger="([^"]+)">([\s\S]*?)<\/procedure>/g;
@@ -247,6 +346,7 @@ export function registerConsolidationPipelineFunction(
                 newProcs++;
               }
             }
+            await kv.set(KV.config, fingerprintKey, { hash: fingerprint, at: now, patternCount: patterns.length });
             results.procedural = {
               newProcedures: newProcs,
               patternsAnalyzed: patterns.length,
@@ -255,6 +355,7 @@ export function registerConsolidationPipelineFunction(
             const msg = err instanceof Error ? err.message : String(err);
             logger.error("Procedural extraction failed", { error: msg });
             results.procedural = { error: msg };
+          }
           }
         } else {
           results.procedural = {
@@ -308,7 +409,8 @@ export function registerConsolidationPipelineFunction(
         .catch(() => {});
 
       logger.info("Consolidation pipeline complete", { tier, results });
-      return { success: true, results };
+      const success=!Object.values(results).some(result=>result && typeof result==="object" && ("error" in result || ("success" in result && result.success===false)));
+      return { success, results };
     },
   );
 }

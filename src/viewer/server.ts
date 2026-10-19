@@ -1,3 +1,5 @@
+import WebSocket, { WebSocketServer } from "ws";
+import { subscribeViewerEvents } from "../state/viewer-stream.js";
 import {
   createServer,
   type Server,
@@ -342,6 +344,48 @@ export function startViewerServer(
     }
   });
 
+  // This endpoint cannot select an engine stream or send writes upstream.
+  const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
+  server.on("upgrade", (req, socket, head) => {
+    socket.on("error", () => {});
+    const reject = (status: number) => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
+    const addr = server.address();
+    const actualPort = addr && typeof addr === "object" ? addr.port : port;
+    const hosts = allowedHosts ?? buildAllowedHosts(ALLOWED_ORIGINS, actualPort, host);
+    if (!isHostAllowed(req.headers.host, hosts)) { reject(403); return; }
+    const origin = req.headers.origin;
+    if (!origin || (origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}` &&
+        !(allowedOrigins ?? buildAllowedOrigins(actualPort, resolvedRestPort)).has(origin))) { reject(403); return; }
+    if (inboundSecret !== null && !requireInboundBearer(req.headers.authorization, inboundSecret)) { reject(401); return; }
+    if (req.method !== "GET" || req.url !== "/agentmemory/viewer/stream") { reject(404); return; }
+    if (live.clients.size >= 32) { reject(503); return; }
+    live.handleUpgrade(req, socket, head, client => {
+      live.emit("connection", client, req);
+      const unsubscribe = subscribeViewerEvents(message => {
+        if (client.readyState !== WebSocket.OPEN) return;
+        if (message === null || client.bufferedAmount > 1024 * 1024) { client.close(1009, "resync required"); return; }
+        client.send(message, error => { if (error) client.terminate(); });
+      });
+      let alive = true;
+      client.on("pong", () => { alive = true; });
+      client.on("message", () => client.close(1008, "read only"));
+      client.on("error", () => client.terminate());
+      const heartbeat = setInterval(() => {
+        if (!alive) { client.terminate(); return; }
+        alive = false; client.ping();
+      }, 30000);
+      heartbeat.unref();
+      client.once("close", () => { clearInterval(heartbeat); unsubscribe(); });
+    });
+  });
+  // HTTP close waits for upgraded sockets, so release them before closing the listener.
+  const closeHttp = server.close.bind(server);
+  server.close = (callback) => {
+    for (const client of live.clients) client.terminate();
+    live.close();
+    return closeHttp(callback);
+  };
+
   let attempt = 0;
   let currentPort = requestedPort;
 
@@ -434,6 +478,16 @@ async function proxyToRestApi(
   if (ct) {
     headers["Content-Type"] = ct;
   }
+  const marker = upstreamPath === "/agentmemory/diagnostics/codex-inspection"
+    ? "x-agentmemory-inspection"
+    : upstreamPath.startsWith("/agentmemory/feedback/")
+      ? "x-agentmemory-feedback"
+    : upstreamPath === "/agentmemory/background/control"
+      ? "x-agentmemory-background"
+      : null;
+  if (["POST", "PUT"].includes(method) && marker && req.headers[marker] === "1") {
+    headers[marker] = "1";
+  }
 
   let body: string | undefined;
   if (method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") {
@@ -443,6 +497,7 @@ async function proxyToRestApi(
   const controller = new AbortController();
   const fetchTimeout = setTimeout(() => controller.abort(), 10000);
   let upstream: Response;
+  let responseBody: string;
   try {
     upstream = await fetch(upstreamUrl, {
       method,
@@ -450,18 +505,18 @@ async function proxyToRestApi(
       body: body || undefined,
       signal: controller.signal,
     });
-    clearTimeout(fetchTimeout);
+    responseBody = await upstream.text();
   } catch (err) {
-    clearTimeout(fetchTimeout);
     if (err instanceof Error && err.name === "AbortError") {
       json(res, 504, { error: "upstream timeout" }, req);
       return;
     }
     throw err;
+  } finally {
+    clearTimeout(fetchTimeout);
   }
 
   const cors = corsHeaders(req);
-  const responseBody = await upstream.text();
   const responseHeaders: Record<string, string> = {
     ...cors,
   };

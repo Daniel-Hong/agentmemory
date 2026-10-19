@@ -73,7 +73,16 @@ export interface CapturePolicy {
   eventsMax: number;
 }
 
+export interface CaptureProgress {
+  pending: number | null;
+  lastCompletedAt: string | null;
+  lastSweepAt: string | null;
+  sweepRunning: boolean;
+  stalled: boolean;
+  stallAfterMs: number;
+}
 export interface CaptureStatus {
+  progress?: CaptureProgress;
   policy: CapturePolicy;
   inbox: {
     pending: number;
@@ -185,6 +194,7 @@ export interface CaptureController {
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
   status(): Promise<CaptureStatus>;
+  progress(): CaptureProgress;
   durability(): SentMark;
   start(): void;
   stop(): void;
@@ -212,22 +222,30 @@ export function registerCaptureFunctions(
     pruned: 0,
   };
   let lastSweepAt: string | null = null;
+  let lastCompletedAt: string | null = null;
+  let pendingSince: number | null = null;
+  const stallAfterMs = Math.max(300000, policy.retryIntervalMs * 30);
+  function progress(): CaptureProgress {
+    return {pending:inboxSize,lastCompletedAt,lastSweepAt,sweepRunning:!!sweeping,stallAfterMs,
+      stalled:inboxSize!==null && inboxSize>0 && pendingSince!==null && Date.now()-Math.max(pendingSince,lastCompletedAt?Date.parse(lastCompletedAt):0)>stallAfterMs};
+  }
   let lastPruneAt: string | null = null;
   let lastBootDrain: CaptureStatus["lastBootDrain"] = null;
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
   let inboxSize: number | null = null;
   let stopped = false;
-  const maintenance = new Set<Promise<unknown>>();
-  function trackWork<T>(work: () => Promise<T>): Promise<T> {
-    const pending = Promise.resolve().then(work); maintenance.add(pending);
-    const done = () => { maintenance.delete(pending); }; pending.then(done, done);
+  const timers: Array<ReturnType<typeof setInterval>> = [];
+  const maintenance=new Set<Promise<unknown>>();
+  function trackWork<T>(work:()=>Promise<T>):Promise<T> {
+    const pending=Promise.resolve().then(work);maintenance.add(pending);
+    const done=()=>{maintenance.delete(pending);};pending.then(done,done);
     return pending;
   }
-  const timers: Array<ReturnType<typeof setInterval>> = [];
+  const trackMaintenance=(work:()=>Promise<unknown>)=>{void trackWork(work).catch(()=>{});};
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
   async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) inboxSize = (await kv.list<InboxRecord>(KV.captureInbox)).length;
+    if (inboxSize === null) { inboxSize = (await kv.list<InboxRecord>(KV.captureInbox)).length; if(inboxSize>0)pendingSince=Date.now(); }
     return inboxSize;
   }
 
@@ -246,6 +264,8 @@ export function registerCaptureFunctions(
     await kv.delete(KV.captureInbox, rec.key);
     if (inboxSize !== null) inboxSize = Math.max(0, inboxSize - 1);
     counters.completed++;
+    lastCompletedAt = done.completedAt;
+    if(inboxSize===0)pendingSince=null;
   }
 
   async function storedObservation(done: CompletedEvent): Promise<CompressedObservation | null | undefined> {
@@ -357,7 +377,7 @@ export function registerCaptureFunctions(
         payload: { ...cleanPayload, data: scrubRecord(cleanPayload.data) },
       };
       await kv.set(KV.captureInbox, key, rec);
-      if (inboxSize !== null) inboxSize++;
+      if (inboxSize !== null) { if(inboxSize===0)pendingSince=Date.now(); inboxSize++; }
       counters.accepted++;
       return attempt(rec);
     });
@@ -512,7 +532,9 @@ export function registerCaptureFunctions(
     let inbox: CaptureStatus["inbox"] = null;
     try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+      if(records.length>0 && (inboxSize===0||pendingSince===null))pendingSince=Date.now();
       inboxSize = records.length;
+      if(!inboxSize)pendingSince=null;
       const live = records.filter((r) => r.status !== "dead");
       const next = live
         .map((r) => r.nextAttemptAt)
@@ -533,14 +555,13 @@ export function registerCaptureFunctions(
     const seen = new Set<string>();
     const spool: SpoolSummary[] = [];
     for (const target of spoolTargets) {
-      if (stopped) break;
       const { url, dir } = splitTarget(target);
       const summary = spoolSummary(url, { dir });
       if (seen.has(summary.path)) continue;
       seen.add(summary.path);
       spool.push(summary);
     }
-    return { policy, inbox, sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
+    return { policy, inbox, progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
@@ -587,16 +608,17 @@ export function registerCaptureFunctions(
     prune,
     drainLocalSpool,
     status,
+    progress,
     durability: () => ({ ...mark }),
     start() {
       if (stopped || timers.length) return;
       const sweepTimer = setInterval(() => {
-        void sweep().catch(() => {});
-        void trackWork(settleRetained).catch(() => {});
+        trackMaintenance(sweep);
+        trackMaintenance(settleRetained);
       }, policy.retryIntervalMs);
       sweepTimer.unref();
       const pruneTimer = setInterval(() => {
-        void trackWork(prune).catch(() => {});
+        trackMaintenance(prune);
       }, 60 * 60 * 1000);
       pruneTimer.unref();
       timers.push(sweepTimer, pruneTimer);

@@ -1,7 +1,10 @@
+import {createSnapshotRecovery, ensurePrivateSnapshotDir, publishSnapshotFile} from "../ops/snapshot-recovery.mjs";
+import {backgroundPaused} from "../ops/background-control.mjs";
 import type { IIIClient } from "iii-sdk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   SnapshotMeta,
@@ -14,7 +17,7 @@ import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import { addSessionToProjectIndex } from "../state/session-index.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
-import { recordAudit } from "./audit.js";
+import { recordAudit, safeAudit } from "./audit.js";
 import { boundRecordSources } from "./graph.js";
 import { VERSION } from "../version.js";
 import { logger } from "../logger.js";
@@ -29,9 +32,7 @@ async function gitExec(dir: string, args: string[]): Promise<string> {
 }
 
 async function ensureGitRepo(dir: string): Promise<void> {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  await ensurePrivateSnapshotDir(dir);
   if (!existsSync(join(dir, ".git"))) {
     await gitExec(dir, ["init"]);
     await gitExec(dir, ["config", "user.email", "agentmemory@local"]);
@@ -43,20 +44,11 @@ export function registerSnapshotFunction(
   sdk: IIIClient,
   kv: StateKV,
   snapshotDir: string,
-): void {
-  // Serialize snapshots: the periodic timer, REST (api::snapshot-create), and
-  // MCP can all trigger this concurrently. Two runs writing state.json and
-  // committing in the same git repo at once race on the index lock. An
-  // overlapping call is a no-op success; the winner captures current state.
-  let snapshotInFlight = false;
-
+  intervalMs = 86400000,
+): ReturnType<typeof createSnapshotRecovery> {
+  const recovery = createSnapshotRecovery({dir:snapshotDir, intervalMs, gitExec, isPaused:backgroundPaused, create:()=>sdk.trigger({function_id:"mem::snapshot-create",payload:{}})});
   sdk.registerFunction("mem::snapshot-create",
-    async (data?: { message?: string }) => {
-      if (snapshotInFlight) {
-        return { success: true, message: "Snapshot already in progress" };
-      }
-      snapshotInFlight = true;
-
+    async (data?: { message?: string }) => recovery.runCreate(async () => {
       try {
         await ensureGitRepo(snapshotDir);
         const ts = new Date().toISOString();
@@ -64,15 +56,11 @@ export function registerSnapshotFunction(
         const sessions = await kv.list<Session>(KV.sessions);
         const memories = await kv.list<Memory>(KV.memories);
         const graphNodes = await kv.list<GraphNode>(KV.graphNodes);
-        const accessLogs = await kv
-          .list<AccessLogExport>(KV.accessLog)
-          .catch(() => [] as AccessLogExport[]);
+        const accessLogs = await kv.list<AccessLogExport>(KV.accessLog);
 
         const observations: Record<string, unknown[]> = {};
         for (const session of sessions) {
-          const obs = await kv
-            .list(KV.observations(session.id))
-            .catch(() => []);
+          const obs = await kv.list(KV.observations(session.id));
           if (obs.length > 0) {
             observations[session.id] = obs;
           }
@@ -88,22 +76,16 @@ export function registerSnapshotFunction(
           accessLogs,
         };
 
-        writeFileSync(
-          join(snapshotDir, "state.json"),
-          JSON.stringify(state, null, 2),
-          "utf-8",
-        );
-
-        await gitExec(snapshotDir, ["add", "."]);
+        await publishSnapshotFile(snapshotDir, "state.json", JSON.stringify(state, null, 2));
+        await gitExec(snapshotDir, ["add", "--", "state.json"]);
 
         const message = data?.message || `Snapshot ${ts}`;
         try {
-          await gitExec(snapshotDir, ["commit", "-m", message]);
+          await gitExec(snapshotDir, ["commit", "-m", message, "--only", "--", "state.json"]);
         } catch (commitErr) {
-          const errMsg =
-            commitErr instanceof Error ? commitErr.message : String(commitErr);
-          if (errMsg.includes("nothing to commit")) {
-            return { success: true, message: "No changes to snapshot" };
+          const changed = await gitExec(snapshotDir, ["diff", "HEAD", "--name-only", "--", "state.json"]);
+          if (!changed) {
+            return { success: true, message: "No changes to snapshot", commitHash: await gitExec(snapshotDir, ["rev-parse", "HEAD"]) };
           }
           throw commitErr;
         }
@@ -126,7 +108,7 @@ export function registerSnapshotFunction(
           },
         };
 
-        await recordAudit(kv, "export", "mem::snapshot-create", [meta.id], {
+        await safeAudit(kv, "export", "mem::snapshot-create", [meta.id], {
           commitHash,
           stats: meta.stats,
         });
@@ -134,24 +116,25 @@ export function registerSnapshotFunction(
         logger.info("Snapshot created", { commitHash });
         return { success: true, snapshot: meta };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error("Snapshot failed", { error: msg });
-        return { success: false, error: msg };
-      } finally {
-        snapshotInFlight = false;
+        const code = (err as { code?: unknown })?.code;
+        const errorCode = typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "SNAPSHOT_FAILED";
+        logger.error("Snapshot failed", { error: errorCode });
+        return { success: false, error: errorCode, errorCode };
       }
-    },
+    }),
   );
 
   sdk.registerFunction("mem::snapshot-list",  async () => {
     try {
-      if (!existsSync(join(snapshotDir, ".git"))) {
-        return { snapshots: [] };
+      try { await lstat(join(snapshotDir, ".git")); }
+      catch (err) {
+        if ((err as { code?: string }).code === "ENOENT") return { snapshots: [] };
+        throw err;
       }
       const log = await gitExec(snapshotDir, [
         "log",
         "--format=%H|%aI|%s",
-        "-20",
+        "--all", "-20", "--", "state.json",
       ]);
       const snapshots = log
         .split("\n")
@@ -163,8 +146,9 @@ export function registerSnapshotFunction(
           return { commitHash: hash, createdAt: date, message: msg };
         });
       return { snapshots };
-    } catch {
-      return { snapshots: [] };
+    } catch (err) {
+      const code = (err as { code?: unknown })?.code;
+      return { success: false, error: typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "SNAPSHOT_LIST_FAILED" };
     }
   });
 
@@ -258,4 +242,5 @@ export function registerSnapshotFunction(
       }
     },
   );
+  return recovery;
 }

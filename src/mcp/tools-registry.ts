@@ -881,7 +881,7 @@ export const V010_SLOTS_TOOLS: McpToolDef[] = [
     name: "memory_slot_list",
     description:
       "List all memory slots (pinned + project + global). Slots are editable, size-limited memory units the agent can read and modify across sessions.",
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: { type: "object", properties: {project:{type:"string",description:"Explicit owning project for project slots"},scope:{type:"string",description:"project or global; explicit project required for project slots"}} },
   },
   {
     name: "memory_slot_get",
@@ -889,6 +889,8 @@ export const V010_SLOTS_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
+        scope: {type:"string",description:"project or global; explicit project required for project slots"},
+        project: {type:"string",description:"Explicit owning project for project slots"},
         label: { type: "string", description: "Slot label (e.g. 'persona', 'pending_items')" },
       },
       required: ["label"],
@@ -900,6 +902,7 @@ export const V010_SLOTS_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
+        project: {type:"string",description:"Explicit owning project for project slots"},
         label: { type: "string", description: "Slot label — lowercase, starts with letter, [a-z0-9_]" },
         content: { type: "string", description: "Initial content (default empty)" },
         sizeLimit: { type: "number", description: "Max chars (default 2000, hard cap 20000)" },
@@ -917,6 +920,8 @@ export const V010_SLOTS_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
+        scope: {type:"string",description:"project or global; explicit project required for project slots"},
+        project: {type:"string",description:"Explicit owning project for project slots"},
         label: { type: "string", description: "Slot label" },
         text: { type: "string", description: "Text to append" },
       },
@@ -929,6 +934,8 @@ export const V010_SLOTS_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
+        scope: {type:"string",description:"project or global; explicit project required for project slots"},
+        project: {type:"string",description:"Explicit owning project for project slots"},
         label: { type: "string", description: "Slot label" },
         content: { type: "string", description: "New full content" },
       },
@@ -941,6 +948,8 @@ export const V010_SLOTS_TOOLS: McpToolDef[] = [
     inputSchema: {
       type: "object",
       properties: {
+        scope: {type:"string",description:"project or global; explicit project required for project slots"},
+        project: {type:"string",description:"Explicit owning project for project slots"},
         label: { type: "string", description: "Slot label" },
       },
       required: ["label"],

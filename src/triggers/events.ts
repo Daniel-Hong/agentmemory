@@ -1,3 +1,6 @@
+import { publishViewerEvent } from "../state/viewer-stream.js";
+import { operationalState } from "../ops/context.js";
+import { finishLongSession } from "../ops/long-session.mjs";
 import { TriggerAction, type IIIClient } from "iii-sdk";
 import type { CompressedObservation, HookPayload, Memory, Session } from "../types.js";
 import { KV, STREAM } from "../state/schema.js";
@@ -71,7 +74,10 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
       const session = await withKeyedLock(`obs:${data.sessionId}`, async () => {
         const existing = await kv.get<Session>(KV.sessions, data.sessionId);
         const merged: Session = {
+          ...existing,
           ...freshSession,
+          startedAt:existing?.startedAt??freshSession.startedAt,
+          endedAt:undefined,
           observationCount: existing?.observationCount ?? freshSession.observationCount,
           firstPrompt: existing?.firstPrompt,
           summary: existing?.summary,
@@ -120,6 +126,11 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
   });
 
   sdk.registerFunction("event::session::stopped", async (data: { sessionId: string; skipConsolidation?: boolean }) => {
+    if(operationalState.featureLifecycle){
+      const found=await finishLongSession(kv,KV,withKeyedLock,data.sessionId,false);
+      if(found)await operationalState.featureLifecycle.enqueue(data.sessionId);
+      return {success:true,queued:found};
+    }
     const summary = await sdk.trigger({ function_id: "mem::summarize", payload: data });
     const fireVoid = (function_id: string, payload: unknown) =>
       sdk
@@ -187,6 +198,11 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
       const sessionId = data?.sessionId;
       if (typeof sessionId !== "string" || sessionId.length === 0) {
         return { success: true, ended: false, reason: "not_found" as const };
+      }
+      if(operationalState.featureLifecycle){
+        const found=await finishLongSession(kv,KV,withKeyedLock,sessionId,true);
+        if(found)await operationalState.featureLifecycle.enqueue(sessionId);
+        return {success:true,ended:found};
       }
       const endResult = await withKeyedLock(`obs:${sessionId}`, async () => {
         const session = await kv.get<Session>(KV.sessions, sessionId);
@@ -316,4 +332,5 @@ export async function sendViewerEvent(
     payload: { stream_name: STREAM.name, group_id: STREAM.viewerGroup, id, type, data },
     action: TriggerAction.Void(),
   });
+  publishViewerEvent(type, data);
 }

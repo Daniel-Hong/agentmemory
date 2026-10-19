@@ -1,3 +1,4 @@
+import { operationalState } from "../ops/context.js";
 import type { IIIClient } from "iii-sdk";
 import type { StateKV } from "../state/kv.js";
 import { KV, fingerprintId } from "../state/schema.js";
@@ -167,6 +168,7 @@ export function registerReflectFunctions(
 ): void {
   sdk.registerFunction("mem::reflect", 
     async (data: { maxClusters?: number; project?: string }) => {
+      if (operationalState.featureLifecycle) return operationalState.featureLifecycle.reflect(data ?? {});
       const maxClusters = Math.min(data?.maxClusters ?? 10, 20);
       const maxInsightsPerCluster = 5;
       const maxTotal = 50;

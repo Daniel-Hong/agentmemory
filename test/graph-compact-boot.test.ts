@@ -6,6 +6,7 @@ vi.mock("../src/logger.js", () => ({
 }));
 
 import {
+  createGraphCompactBootRecovery,
   GRAPH_COMPACT_BOOT_KEY,
   GRAPH_COMPACT_BOOT_VERSION,
   describeGraphCompactBoot,
@@ -18,6 +19,7 @@ import {
 import { MAX_GRAPH_SOURCE_OBSERVATIONS, compactGraphProvenance } from "../src/functions/graph.js";
 import { isGraphCompactOnBootEnabled } from "../src/config.js";
 import { evaluateStatus, renderStatusHtml, type StatusInputs } from "../src/functions/status.js";
+import { createBackgroundControl, installBackgroundControl } from "../src/ops/background-control.mjs";
 import type { GraphEdge, GraphNode } from "../src/types.js";
 
 const NODES = "mem:graph:nodes";
@@ -305,33 +307,17 @@ describe("graph compaction on boot", () => {
     expect((await first).state).toBe("done");
   });
 
-  it("schedules graph work after the viewer and tracks it without blocking boot", async () => {
+  it("is scheduled after the viewer starts and never awaited during boot", () => {
     const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-    const start = src.indexOf("  resources.viewer = startViewerServer(");
-    const end = src.indexOf("  const autoForgetIntervalMs", start);
-    const events: string[] = [], pending: Promise<unknown>[] = [];
-    let callback!: () => void, release!: () => void, stop!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const deps = {
-      resources: {}, config: {}, kv: {}, sdk: {}, secret: "fixture", shuttingDown: false,
-      startViewerServer: () => { events.push("viewer"); },
-      isGraphCompactOnBootEnabled: () => true,
-      setTimeout: (fn: () => void) => { events.push("scheduled"); callback = fn; return { unref() {} }; },
-      clearTimeout: () => { events.push("cancelled"); },
-      runGraphCompactOnBoot: () => { events.push("graph"); return gate; },
-      trackBoot: (work: Promise<unknown>) => { pending.push(work); return work; },
-      lifecycle: { track: (worker: { stop(): void }) => { stop = worker.stop; } },
-      bootLog: () => {}, bootWarn: () => {}, GRAPH_COMPACT_BOOT_DELAY_MS: 1,
-      setGraphCompactBootDisabled: () => {},
-    };
-    const run = new Function("deps", `const {${Object.keys(deps).join(",")}} = deps; ${src.slice(start, end)}`);
-    expect(run(deps)).toBeUndefined();
-    expect(events).toEqual(["viewer", "scheduled"]);
-    callback(); expect(events).toEqual(["viewer", "scheduled", "graph"]);
-    expect(pending).toHaveLength(1);
-    release(); await Promise.all(pending); stop();
-    expect(events.at(-1)).toBe("cancelled");
-  });});
+    const viewerAt = src.indexOf("startViewerServer(\n");
+    const runAt = src.indexOf("const graphCompaction = createGraphCompactBootRecovery(");
+    expect(viewerAt).toBeGreaterThan(0);
+    expect(runAt).toBeGreaterThan(viewerAt);
+    expect(src).not.toMatch(/await (?:runGraphCompactOnBoot|graphCompaction.start)/);
+    expect(src).toMatch(/lifecycle.track\(graphCompaction\);\s*graphCompaction.start\(\)/);
+    expect(src).toMatch(/if \(isGraphCompactOnBootEnabled\(\)\)[\s\S]*?setGraphCompactBootDisabled\(\)/);
+  });
+});
 
 describe("AGENTMEMORY_GRAPH_COMPACT_ON_BOOT", () => {
   it("is on by default and off only for false", () => {
@@ -390,7 +376,7 @@ describe("graph compaction in /agentmemory/status", () => {
     expect(renderStatusHtml(r, "n")).toMatch(/Provenance compaction/);
   });
 
-  it("shows a failed pass as a warning with the reason and the manual command", () => {
+  it("shows a failed pass as a warning with the reason and safe recovery guidance", () => {
     const r = evaluateStatus({
       ...base,
       graphCompaction: { state: "failed", phase: "nodes", processed: 3, total: 6, error: "state::get timed out" },
@@ -398,7 +384,7 @@ describe("graph compaction in /agentmemory/status", () => {
     const p = r.problems.find((x) => x.code === "graph-compaction-failed")!;
     expect(p.level).toBe("warn");
     expect(p.message).toMatch(/state::get timed out/);
-    expect(p.fix).toContain("curl -X POST http://localhost:4611/agentmemory/graph/compact");
+    expect(p.fix).toContain("background admission");
   });
 
   it("adds no problem when done or off", () => {
@@ -406,5 +392,129 @@ describe("graph compaction in /agentmemory/status", () => {
       const r = evaluateStatus({ ...base, graphCompaction: { state } });
       expect(r.problems.map((x) => x.code).filter((c) => c.startsWith("graph-compaction"))).toEqual([]);
     }
+  });
+});
+
+
+describe("graph compaction recovery", () => {
+  afterEach(() => { installBackgroundControl(null); vi.useRealTimers(); });
+
+  it("resumes failed pending writes after cooldown without restarting or losing counts", async () => {
+    vi.useFakeTimers();
+    const kv = mockKV();
+    await seed(kv, 6, 2, 1);
+    const set = kv.set;
+    let fail = true;
+    kv.set = async (scope, key, value) => {
+      if (scope === NODES && key === "gn_0004" && fail) throw Error("store unavailable");
+      return set(scope, key, value);
+    };
+    const recovery = createGraphCompactBootRecovery(kv as never, { ...fast, maxAttempts: 1 });
+    recovery.start();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(getGraphCompactBootStatus()).toMatchObject({ state: "failed", processed: 3, retryAttempts: 1 });
+    expect(describeGraphCompactBoot(getGraphCompactBootStatus())).toMatch(/retry 1 scheduled at/);
+    expect((await marker(kv))?.pending).toMatchObject({ phase: "nodes", offset: 3 });
+    fail = false;
+    await vi.advanceTimersByTimeAsync(59999);
+    expect(getGraphCompactBootStatus().state).toBe("failed");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getGraphCompactBootStatus()).toMatchObject({ state: "done", scanned: 9, trimmed: 7, idsRemoved: 6 * (100 - MAX_GRAPH_SOURCE_OBSERVATIONS) });
+    const calls = kv.calls.get.length;
+    await vi.advanceTimersByTimeAsync(3600000);
+    expect(kv.calls.get.length).toBe(calls);
+    await recovery.stop();
+  });
+
+  it("defers while paused and drains active work before stopping at the next boundary", async () => {
+    vi.useFakeTimers();
+    const kv = mockKV();
+    await seed(kv, 6, 0, 0);
+    let paused = true;
+    installBackgroundControl({ isPaused: () => paused, run: (fn: () => unknown) => fn() });
+    const recovery = createGraphCompactBootRecovery(kv as never, fast);
+    recovery.start();
+    const reads = kv.calls.get.length;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(kv.calls.get.length).toBe(reads);
+    paused = false;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const get = kv.get;
+    kv.get = async (scope, key) => {
+      if (scope === NODES) await gate;
+      return get(scope, key);
+    };
+    await vi.advanceTimersByTimeAsync(30000);
+    let stopped = false;
+    const stop = recovery.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release();
+    await stop;
+    expect(getGraphCompactBootStatus().state).toBe("pending");
+    expect(kv.calls.set.filter((x) => x.startsWith(CONFIG))).toHaveLength(1);
+    const calls = kv.calls.get.length;
+    await vi.advanceTimersByTimeAsync(3600000);
+    expect(kv.calls.get.length).toBe(calls);
+  });
+
+  it("joins manual pause drain and resumes the same checkpoint after admission reopens", async () => {
+    vi.useFakeTimers();
+    const kv = mockKV();
+    await seed(kv, 6, 2, 1);
+    Object.assign(kv, { durability: { waitForKeys: async () => {}, flushStable: async () => {}, keys: () => [] } });
+    const control = createBackgroundControl();
+    await control.init(kv);
+    installBackgroundControl(control);
+    const recovery = createGraphCompactBootRecovery(kv as never, fast);
+    const get = kv.get;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held = true;
+    kv.get = async (scope, key) => {
+      if (scope === NODES && held) await gate;
+      return get(scope, key);
+    };
+    recovery.start();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(control.snapshot().activeOperations).toBe(1);
+    await control.change("pause");
+    expect(control.snapshot().status).toBe("pausing");
+    held = false;
+    release();
+    await control.settled();
+    expect(control.snapshot()).toMatchObject({ status: "paused", activeOperations: 0 });
+    const reads = kv.calls.get.length;
+    await vi.advanceTimersByTimeAsync(90000);
+    expect(kv.calls.get.length).toBe(reads);
+    await control.change("resume");
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(getGraphCompactBootStatus()).toMatchObject({ state: "done", scanned: 9, trimmed: 7 });
+    await recovery.stop();
+  });
+
+  it("never overlaps unresolved work and caps repeated failure cooldown", async () => {
+    vi.useFakeTimers();
+    const kv = mockKV();
+    let release!: () => void;
+    let reads = 0;
+    const gate = new Promise<void>((r) => { release = r; });
+    kv.get = async () => { reads++; await gate; throw Error("store unavailable"); };
+    const recovery = createGraphCompactBootRecovery(kv as never, { ...fast, maxAttempts: 1 });
+    recovery.start();
+    recovery.start();
+    await vi.advanceTimersByTimeAsync(3000 + 3600000);
+    expect(reads).toBe(1);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    for (const delay of [60000, 120000, 240000, 480000, 900000, 900000]) {
+      const before = reads;
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      expect(reads).toBe(before);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reads).toBe(before + 1);
+    }
+    await recovery.stop();
   });
 });

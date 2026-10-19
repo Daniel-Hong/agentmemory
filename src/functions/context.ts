@@ -1,3 +1,4 @@
+import { listProjectPinnedSlots } from "../ops/feature-lifecycle.mjs";
 import type { IIIClient } from "iii-sdk";
 import type {
   Session,
@@ -18,7 +19,6 @@ import { recordAccessBatch } from "./access-tracker.js";
 import { logger } from "../logger.js";
 import {
   isSlotsEnabled,
-  listPinnedSlots,
   renderPinnedContext,
 } from "./slots.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
@@ -70,7 +70,7 @@ export function registerContextFunction(
 
       const [pinnedSlots, profile, lessons] = await Promise.all([
         isSlotsEnabled()
-          ? listPinnedSlots(kv).catch(() => [] as MemorySlot[])
+          ? listProjectPinnedSlots(kv, KV, data.project).catch(() => [] as MemorySlot[])
           : Promise.resolve([] as MemorySlot[]),
         kv
           .get<ProjectProfile>(KV.profiles, data.project)

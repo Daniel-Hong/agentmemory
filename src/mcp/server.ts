@@ -1,3 +1,4 @@
+import { parseSlotOwner } from "../functions/slots.js";
 import type { IIIClient } from "iii-sdk";
 import type { HttpRequest } from "@iii-dev/helpers/http";
 import type { StateKV } from "../state/kv.js";
@@ -1151,7 +1152,9 @@ export function registerMcpEndpoints(
           }
 
           case "memory_slot_list": {
-            const result = await sdk.trigger({ function_id: "mem::slot-list", payload: {} });
+            const owner = parseSlotOwner(args);
+            if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
+            const result = await sdk.trigger({ function_id: "mem::slot-list", payload: owner });
             return {
               status_code: 200,
               body: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
@@ -1159,9 +1162,11 @@ export function registerMcpEndpoints(
           }
 
           case "memory_slot_get": {
+            const owner = parseSlotOwner(args);
+            if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
             const label = asNonEmptyString(args.label);
             if (!label) return { status_code: 400, body: { error: "label required" } };
-            const result = await sdk.trigger({ function_id: "mem::slot-get", payload: { label } });
+            const result = await sdk.trigger({ function_id: "mem::slot-get", payload: { label, ...owner } });
             return {
               status_code: 200,
               body: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
@@ -1169,9 +1174,11 @@ export function registerMcpEndpoints(
           }
 
           case "memory_slot_create": {
+            const owner = parseSlotOwner(args);
+            if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
             const label = asNonEmptyString(args.label);
             if (!label) return { status_code: 400, body: { error: "label required" } };
-            const payload: Record<string, unknown> = { label };
+            const payload: Record<string, unknown> = { label, ...owner };
             if (typeof args.content === "string") payload.content = args.content;
             if (typeof args.description === "string") payload.description = args.description;
             if (typeof args.sizeLimit === "number") payload.sizeLimit = args.sizeLimit;
@@ -1188,10 +1195,12 @@ export function registerMcpEndpoints(
           }
 
           case "memory_slot_append": {
+            const owner = parseSlotOwner(args);
+            if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
             const label = asNonEmptyString(args.label);
             const text = typeof args.text === "string" ? args.text : null;
             if (!label || !text) return { status_code: 400, body: { error: "label and text required" } };
-            const result = await sdk.trigger({ function_id: "mem::slot-append", payload: { label, text } });
+            const result = await sdk.trigger({ function_id: "mem::slot-append", payload: { label, text, ...owner } });
             return {
               status_code: 200,
               body: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
@@ -1199,11 +1208,13 @@ export function registerMcpEndpoints(
           }
 
           case "memory_slot_replace": {
+            const owner = parseSlotOwner(args);
+            if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
             const label = asNonEmptyString(args.label);
             if (!label || typeof args.content !== "string") {
               return { status_code: 400, body: { error: "label and content (string) required" } };
             }
-            const result = await sdk.trigger({ function_id: "mem::slot-replace", payload: { label, content: args.content } });
+            const result = await sdk.trigger({ function_id: "mem::slot-replace", payload: { label, content: args.content, ...owner } });
             return {
               status_code: 200,
               body: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
@@ -1211,9 +1222,11 @@ export function registerMcpEndpoints(
           }
 
           case "memory_slot_delete": {
+            const owner = parseSlotOwner(args);
+            if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
             const label = asNonEmptyString(args.label);
             if (!label) return { status_code: 400, body: { error: "label required" } };
-            const result = await sdk.trigger({ function_id: "mem::slot-delete", payload: { label } });
+            const result = await sdk.trigger({ function_id: "mem::slot-delete", payload: { label, ...owner } });
             return {
               status_code: 200,
               body: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },

@@ -85,6 +85,13 @@ describe("mem::observe auto-compress gate", () => {
     delete process.env["AGENTMEMORY_AUTO_COMPRESS"];
   });
 
+  it("publishes immediate sanitized synthetic content to the same-origin Viewer stream",async()=>{
+    const {registerObserveFunction}=await import("../src/functions/observe.js");
+    const {subscribeViewerEvents}=await import("../src/state/viewer-stream.js");
+    const messages:string[]=[];const off=subscribeViewerEvents(message=>{if(message)messages.push(message);});
+    try{const sdk=mockSdk(),kv=mockKV();registerObserveFunction(sdk as never,kv as never);await sdk.trigger("mem::observe",validPayload());const content=messages.map(s=>JSON.parse(s)).find(m=>m.event?.event?.type==="compressed_observation");expect(content).toBeTruthy();expect(JSON.stringify(content)).toContain("Read");expect(JSON.stringify(content)).not.toContain("sourceRaw");}finally{off();}
+  });
+
   it("default (AGENTMEMORY_AUTO_COMPRESS unset): does NOT fire mem::compress", async () => {
     const { registerObserveFunction } = await import(
       "../src/functions/observe.js"
@@ -131,7 +138,7 @@ describe("mem::observe auto-compress gate", () => {
     expect(obs.confidence).toBe(0.3);
   });
 
-  it("AGENTMEMORY_AUTO_COMPRESS=true: fires mem::compress exactly once", async () => {
+  it("AGENTMEMORY_AUTO_COMPRESS=true: saves synthetic evidence for background compression", async () => {
     process.env["AGENTMEMORY_AUTO_COMPRESS"] = "true";
     const { registerObserveFunction } = await import(
       "../src/functions/observe.js"
@@ -143,7 +150,10 @@ describe("mem::observe auto-compress gate", () => {
     await sdk.trigger("mem::observe", validPayload());
 
     const compressCalls = sdk.triggered.filter((t) => t.id === "mem::compress");
-    expect(compressCalls).toHaveLength(1);
+    expect(compressCalls).toHaveLength(0);
+    const captured = await kv.list<any>("mem:obs:ses_test");
+    expect(captured[0].title).toBe("Read");
+    expect(captured[0].sourceRaw.toolOutput).toBe("file contents here");
   });
 
   it("AGENTMEMORY_AUTO_COMPRESS=false explicitly: does NOT fire mem::compress", async () => {

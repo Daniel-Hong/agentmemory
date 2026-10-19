@@ -43,3 +43,7 @@ EXPECTED_MANIFEST_SHA256: <승인 영수증에서 얻은 값>
 
 PREPARE 실행 시 RELEASE 값이 아직 없으면 설치 발견·문서/시험 준비까지만 수행하고,
 임의의 최신 커밋이나 이 후보의 hash를 승인 값으로 대체하지 않는다.
+
+## Source fork 이후 인수인계
+
+서버 준비 후보의 release.json sourceCommit/sourceTree 및 package SHA256과 검증 영수증을 먼저 대조한다. 이전 PORT-04 단독 ZIP을 최신 서버 전체 배포 묶음으로 오인하지 않는다. 코드 업데이트 뒤에도 최신 outbox/spool/receipt와 토큰·MCP·개인 설정을 보존한다. 서버 측 제보함은 참여 클라이언트마다 설치하는 코드가 아니며 capture/context 훅은 각 OS·사용자·WSL·컨테이너에서 별도 시험한다. 제보·분석 이력을 장기기억에 자동 기록하지 않는다. 변경과 검증/적용 결과는 체인지로그에 남기고 필요한 기억은 영향 검토 후 명시 지시로만 저장한다.

@@ -1,6 +1,7 @@
 import { stat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { AuditEntry, AuditMigrationState, AuditQueryResult } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
@@ -9,6 +10,7 @@ import { withKeyedLock } from "../state/keyed-mutex.js";
 import { getEnvVar, getAuditMigrateMaxBytes } from "../config.js";
 import { runtimeConfigPath } from "../cli/engine-launch.js";
 import { ENGINE_DEFAULT_SAVE_INTERVAL_MS, engineSaveIntervalMs, engineStateConfigPaths } from "../cli/engine-config.js";
+import { AUDIT_PAGE_BYTES, projectAuditMetadata } from "../ops/audit-reader.mjs";
 
 const AUDIT_MIGRATE_FUNCTION_ID = "mem::audit-migrate";
 const AUDIT_MIGRATION_COPY_CONCURRENCY = 32;
@@ -219,6 +221,7 @@ export async function queryAudit(
     dateTo?: string;
     query?: string;
     limit?: number;
+    metadata?: boolean;
   },
 ): Promise<AuditQueryResult> {
   const limit = filter?.limit || 100;
@@ -265,6 +268,20 @@ export async function queryAudit(
   };
 
   const months = await listAuditMonthsDesc(kv);
+  if (kv.auditReader) {
+    const scopes = months.filter(month =>
+      (toMs === undefined || monthStartMs(month) <= toMs) &&
+      (fromMs === undefined || monthEndMs(month) >= fromMs),
+    ).map(month => KV.auditMonth(month));
+    const migrationState = await readAuditMigrationState(kv);
+    if (migrationState?.safeToListLegacy) scopes.push(KV.audit);
+    const legacyFrozen = migrationState?.status === "too-large" || migrationState?.status === "unreadable";
+    return {
+      entries: await kv.auditReader.query(filter, { scopes }),
+      legacyFrozen,
+      legacyFrozenBytes: legacyFrozen ? migrationState?.legacySizeBytes : undefined,
+    };
+  }
   for (const month of months) {
     if (collected.length >= limit) break;
     if (toMs !== undefined && monthStartMs(month) > toMs) continue;
@@ -290,8 +307,13 @@ export async function queryAudit(
   collected.sort(
     (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
   );
+  const page = collected.slice(0, limit);
+  const entries = filter?.metadata === true ? page.map(row=>projectAuditMetadata(row)) : page;
+  if (Buffer.byteLength(JSON.stringify(entries), "utf8") > AUDIT_PAGE_BYTES) {
+    throw Object.assign(new Error("audit_page_exceeds_budget"), { code: "audit_page_exceeds_budget", status: 413 });
+  }
   return {
-    entries: collected.slice(0, limit),
+    entries,
     legacyFrozen,
     legacyFrozenBytes,
   };
@@ -425,7 +447,7 @@ export async function startAuditMigration(
     });
   }
 
-  await sleep(await runDeleteDelayMs());
+  if (deps.deleteDelayMs || !kv.durability) await sleep(await runDeleteDelayMs());
 
   let remaining: AuditEntry[];
   try {
@@ -439,6 +461,29 @@ export async function startAuditMigration(
   }
 
   try {
+    const keys: Array<{ scope: string; key: string }> = [
+      { scope: KV.auditMonths, key: "index" },
+      { scope: KV.auditMonths, key: AUDIT_MIGRATION_STATE_KEY },
+    ];
+    await inParallel(remaining.filter(entry => entry.operation !== "index_persist"), AUDIT_MIGRATION_COPY_CONCURRENCY, async entry => {
+      const month = auditMonthOf(entry.timestamp);
+      const scope = KV.auditMonth(month);
+      // A copied marker can outlive an uncommitted copy after an engine crash.
+      if (marker?.status === "copied" || !isDeepStrictEqual(await kv.get(scope, entry.id), entry)) await kv.set(scope, entry.id, entry);
+      if (!isDeepStrictEqual(await kv.get(scope, entry.id), entry)) throw new Error("audit_copy_readback_mismatch");
+      await markAuditMonth(kv, month);
+      keys.push({ scope, key: entry.id });
+    });
+    if (kv.backend === "file" && !kv.durability) throw new Error("audit_disk_fence_unavailable");
+    await kv.durability?.waitForKeys(kv, keys);
+  } catch (err) {
+    logger.warn("audit migration kept legacy rows because copy durability was not verified", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  try {
     await inParallel(
       remaining.slice().reverse(),
       AUDIT_MIGRATION_DELETE_CONCURRENCY,
@@ -446,6 +491,7 @@ export async function startAuditMigration(
         await kv.delete(KV.audit, entry.id);
       },
     );
+    await kv.durability?.waitForKeys(kv, remaining.map(entry => ({ scope: KV.audit, key: entry.id })));
   } catch (err) {
     logger.warn(
       "audit migration stopped before finishing the delete pass; it resumes on the next boot",

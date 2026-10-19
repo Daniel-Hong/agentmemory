@@ -7,6 +7,7 @@ import {
   type GraphCompactScope,
 } from "./graph.js";
 import { safeAudit } from "./audit.js";
+import { backgroundPaused, backgroundTask } from "../ops/background-control.mjs";
 
 export const GRAPH_COMPACT_BOOT_VERSION = 1;
 export const GRAPH_COMPACT_BOOT_KEY = `graph-compact-on-boot:v${GRAPH_COMPACT_BOOT_VERSION}`;
@@ -57,6 +58,8 @@ export interface GraphCompactBootStatus {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  retryAttempts?: number;
+  nextRetryAt?: string;
 }
 
 export interface GraphCompactBootOptions {
@@ -68,12 +71,14 @@ export interface GraphCompactBootOptions {
   warn?: (msg: string) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
+  shouldStop?: () => boolean;
 }
 
 const DEFAULT_SLICE_SIZE = 100;
 const DEFAULT_PAUSE_MS = 200;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 2000;
+const INTERRUPTED = Symbol("graph compaction deferred");
 
 let current: GraphCompactBootStatus = { state: "pending" };
 let running: Promise<GraphCompactBootStatus> | null = null;
@@ -138,7 +143,10 @@ export function describeGraphCompactBoot(s: GraphCompactBootStatus): string {
       ? `${s.phase ?? "nodes"}`
       : `${s.phase} ${s.processed ?? 0} of ${s.total}`;
   if (s.state === "running") return `running, ${where}`;
-  if (s.state === "failed") return `failed at ${where}: ${s.error ?? "unknown error"}`;
+  if (s.state === "failed") {
+    const retry = s.nextRetryAt ? `; retry ${s.retryAttempts ?? 1} scheduled at ${s.nextRetryAt}` : "";
+    return `failed at ${where}: ${s.error ?? "unknown error"}${retry}`;
+  }
   return `done, ${s.trimmed ?? 0} records trimmed, ${s.idsRemoved ?? 0} ids removed`;
 }
 
@@ -151,6 +159,70 @@ export function runGraphCompactOnBoot(
     running = null;
   });
   return running;
+}
+
+export function createGraphCompactBootRecovery(kv: StateKV, opts: GraphCompactBootOptions = {}) {
+  let started = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let active: Promise<void> | null = null;
+  let failures = 0;
+  const shouldStop = () => stopped || backgroundPaused() || (opts.shouldStop?.() ?? false);
+  const schedule = (delay: number) => {
+    if (stopped) return;
+    timer = setTimeout(() => { timer = null; void tick().catch(() => {}); }, delay);
+    timer.unref();
+  };
+  const tick = (): Promise<void> => {
+    if (active) return active;
+    if (stopped) return Promise.resolve();
+    if (shouldStop()) {
+      current = { ...current, nextRetryAt: undefined };
+      schedule(30000);
+      return Promise.resolve();
+    }
+    active = Promise.resolve().then(async () => {
+      try {
+        await backgroundTask(() => {
+          current = { ...current, state: "running", error: undefined, nextRetryAt: undefined };
+          return runGraphCompactOnBoot(kv, { ...opts, shouldStop });
+        })();
+      } catch (err) {
+        current = { ...current, state: "failed", error: err instanceof Error ? err.message : String(err) };
+      } finally {
+        active = null;
+        if (!stopped && current.state !== "done" && current.state !== "off") {
+          let delay = 30000;
+          if (current.state === "failed") {
+            failures = Math.min(failures + 1, 16);
+            delay = Math.min(15 * 60000, 60000 * 2 ** (failures - 1));
+            current = {
+              ...current,
+              retryAttempts: failures,
+              nextRetryAt: new Date((opts.now?.() ?? new Date()).getTime() + delay).toISOString(),
+            };
+          } else {
+            failures = 0;
+          }
+          schedule(delay);
+        }
+      }
+    });
+    return active;
+  };
+  return {
+    start() {
+      if (!started && !stopped) { started = true; schedule(GRAPH_COMPACT_BOOT_DELAY_MS); }
+    },
+    async drain() { if (active) await active; },
+    async stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      current = { ...current, nextRetryAt: undefined };
+      if (active) await active;
+    },
+  };
 }
 
 async function runOnce(kv: StateKV, opts: GraphCompactBootOptions): Promise<GraphCompactBootStatus> {
@@ -166,6 +238,7 @@ async function runOnce(kv: StateKV, opts: GraphCompactBootOptions): Promise<Grap
   const attempt = async <T>(fn: () => Promise<T>): Promise<T> => {
     let lastErr: unknown;
     for (let i = 1; i <= maxAttempts; i++) {
+      if (opts.shouldStop?.() || backgroundPaused()) throw INTERRUPTED;
       try {
         return await fn();
       } catch (err) {
@@ -297,6 +370,10 @@ async function runOnce(kv: StateKV, opts: GraphCompactBootOptions): Promise<Grap
     );
     return getGraphCompactBootStatus();
   } catch (err) {
+    if (err === INTERRUPTED || opts.shouldStop?.() || backgroundPaused()) {
+      current = { ...current, state: "pending", nextRetryAt: undefined };
+      return getGraphCompactBootStatus();
+    }
     const msg = err instanceof Error ? err.message : String(err);
     if (progress) {
       progress.status = "failed";
@@ -309,7 +386,7 @@ async function runOnce(kv: StateKV, opts: GraphCompactBootOptions): Promise<Grap
       current = { state: "failed", error: msg };
     }
     warn(
-      `Graph provenance compaction failed (${describeGraphCompactBoot(current)}). It resumes on the next start; to run it now, POST /agentmemory/graph/compact.`,
+      `Graph provenance compaction failed (${describeGraphCompactBoot(current)}). Checkpoint retained for background recovery or the next start; to run it now, POST /agentmemory/graph/compact.`,
     );
     return getGraphCompactBootStatus();
   }

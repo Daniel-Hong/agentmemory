@@ -1,5 +1,10 @@
+import { SEMANTIC_MERGE_SYSTEM } from "../prompts/consolidation.js";
 import { operationalState } from "../ops/context.js";
 import { INCREMENTAL_SUMMARY_SYSTEM, INCREMENTAL_SUMMARY_FORMAT } from "../ops/long-session.mjs";
+import { STRUCTURED_COMPRESSION_SYSTEM, STRUCTURED_COMPRESSION_FORMAT } from "../ops/structured-compression.mjs";
+import { GRAPH_EXTRACTION_SYSTEM } from "../prompts/graph-extraction.js";
+import { buildGraphExtractionFormat, STRUCTURED_GRAPH_EXTRACTION_SYSTEM } from "../ops/background-enrichment.mjs";
+import { CONSERVATIVE_REFLECTION_SYSTEM, buildConservativeReflectionFormat } from "../ops/feature-lifecycle.mjs";
 import { providerDeferredError, readOllamaContent } from "../ops/provider-readiness.mjs";
 import type { MemoryProvider } from "../types.js";
 import { getEnvVar } from "../config.js";
@@ -12,7 +17,6 @@ import {
   normalizeBaseUrl,
 } from "./_openai-shared.js";
 
-const DEFAULT_MODEL = "gpt-5.6-luna";
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
@@ -83,12 +87,24 @@ export class OpenAIProvider implements MemoryProvider {
       const readiness = operationalState.providerReadiness;
       if (readiness && !await readiness.ensureReady()) throw providerDeferredError(readiness);
       const origin = new URL(this.baseUrl).origin;
+      const consolidation = systemPrompt === SEMANTIC_MERGE_SYSTEM;
       const body: Record<string, any> = {
         model: this.model, stream: false,
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-        options: { num_predict: systemPrompt === INCREMENTAL_SUMMARY_SYSTEM ? 768 : this.maxTokens },
+        options: { num_predict: systemPrompt === INCREMENTAL_SUMMARY_SYSTEM || consolidation ? 768 : this.maxTokens },
       };
       if (systemPrompt === INCREMENTAL_SUMMARY_SYSTEM) body.format = INCREMENTAL_SUMMARY_FORMAT;
+      if (systemPrompt.startsWith(STRUCTURED_COMPRESSION_SYSTEM)) body.format = STRUCTURED_COMPRESSION_FORMAT;
+      if (systemPrompt === GRAPH_EXTRACTION_SYSTEM || systemPrompt.startsWith(STRUCTURED_GRAPH_EXTRACTION_SYSTEM)) body.format = buildGraphExtractionFormat(userPrompt);
+      if (systemPrompt === CONSERVATIVE_REFLECTION_SYSTEM) body.format = buildConservativeReflectionFormat(userPrompt);
+      if (consolidation) {
+        body.format = { type: "object", additionalProperties: false, required: ["facts"], properties: {
+          facts: { type: "array", maxItems: 2, items: { type: "object", additionalProperties: false, required: ["confidence", "fact"], properties: {
+            confidence: { type: "number", minimum: 0, maximum: 1 }, fact: { type: "string", minLength: 1, maxLength: 120 },
+          } } },
+        } };
+        body.messages[0].content += '\nFor this structured request return JSON {"facts":[{"confidence":0.8,"fact":"short supported fact"}]} instead of XML. An empty facts array is valid only when no fact is supported by two episodes.';
+      }
       let response: Response;
       try {
         response = await fetchWithTimeout(`${origin}/api/chat`, {
@@ -105,7 +121,10 @@ export class OpenAIProvider implements MemoryProvider {
         }
         throw new Error(`Ollama native chat error (${response.status})`);
       }
-      const requestKind = systemPrompt === INCREMENTAL_SUMMARY_SYSTEM ? "summary" : "other";
+      const requestKind = systemPrompt === INCREMENTAL_SUMMARY_SYSTEM ? "summary"
+        : systemPrompt.startsWith(STRUCTURED_COMPRESSION_SYSTEM) ? "compression"
+        : systemPrompt === CONSERVATIVE_REFLECTION_SYSTEM ? "reflect"
+        : systemPrompt.startsWith("You are a memory consolidation engine.") ? "consolidation" : "graph";
       return readOllamaContent(await response.json(), readiness, requestKind);
     }
 

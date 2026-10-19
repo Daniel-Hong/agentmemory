@@ -485,3 +485,11 @@ export function registerSlotsFunctions(sdk: IIIClient, kv: StateKV): Promise<voi
   );
   return initialized;
 }
+
+export function parseSlotOwner(value: unknown): {project?:string;scope?:"project"|"global"}|null {
+ if(!value||typeof value!=="object"||Array.isArray(value))return null;
+ const data=value as Record<string,unknown>;
+ if(data.project!==undefined&&(typeof data.project!=="string"||!data.project.trim()))return null;
+ if(data.scope!==undefined&&data.scope!=="project"&&data.scope!=="global")return null;
+ return {...typeof data.project==="string"?{project:data.project.trim()}:{},...data.scope==="project"||data.scope==="global"?{scope:data.scope}:{}};
+}

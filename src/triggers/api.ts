@@ -1,3 +1,5 @@
+import {finishLongSession} from "../ops/long-session.mjs";
+import {operationalHealth,operationalState} from "../ops/context.js";
 import { InvocationError, TriggerAction, type IIIClient } from "iii-sdk";
 import { DEDUP_WINDOW_MS, getDedupSkippedCount } from "../functions/dedup.js";
 import type { HttpRequest } from "@iii-dev/helpers/http";
@@ -39,7 +41,7 @@ import {
 } from "../state/list-query.js";
 import { checkRequestGuard, configuredAllowedOrigins, timingSafeCompare } from "../auth.js";
 import { stripPrivateData } from "../functions/privacy.js";
-import { isSlotsEnabled, isReflectEnabled } from "../functions/slots.js";
+import { isSlotsEnabled, isReflectEnabled, parseSlotOwner } from "../functions/slots.js";
 import { renderViewerDocument } from "../viewer/document.js";
 import { getBoundViewerPort, getViewerSkipped } from "../viewer/server.js";
 import { MAX_FILES_UPPER_BOUND } from "../functions/replay.js";
@@ -599,7 +601,10 @@ export function registerApiTriggers(
       const circuitBreaker =
         provider && "circuitState" in provider ? provider.circuitState : null;
 
-      const status = health?.status || "healthy";
+      const ops = await operationalHealth();
+      const hostLevel=ops.memoryPressure?.level;
+      const backgroundStatus=ops.backgroundControl?.status;
+      const status = hostLevel==="critical"?"critical":hostLevel==="high"&&health?.status!=="critical"?"degraded":(backgroundStatus==="error"||ops.captureProgress?.stalled)&&health?.status!=="critical"?"degraded":health?.status||"healthy";
       const statusCode = status === "critical" ? 503 : 200;
 
       return {
@@ -611,6 +616,7 @@ export function registerApiTriggers(
           health: health || null,
           functionMetrics,
           circuitBreaker,
+          ...ops,
           ...instanceInfo(),
         },
       };
@@ -658,7 +664,7 @@ export function registerApiTriggers(
 
   sdk.registerFunction("api::observe",
     async (req: HttpRequest<HookPayload>): Promise<Response> => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const hookType = asNonEmptyString(body.hookType);
       const sessionId = asNonEmptyString(body.sessionId);
       const project = asNonEmptyString(body.project);
@@ -781,7 +787,7 @@ export function registerApiTriggers(
         agentId?: string;
       }>,
     ): Promise<Response> => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const sessionId = asNonEmptyString(body.sessionId);
       const project = asNonEmptyString(body.project);
       if (!sessionId || !project) {
@@ -848,7 +854,7 @@ export function registerApiTriggers(
         agentId?: string;
       }>,
     ): Promise<Response> => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const queryAgentId =
         typeof (req as { query_params?: Record<string, string> })
           .query_params?.["agentId"] === "string"
@@ -923,7 +929,7 @@ export function registerApiTriggers(
     async (req: HttpRequest<{ filePath: string }>): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const filePath = asNonEmptyString(body.filePath);
       if (!filePath) {
         return {
@@ -988,7 +994,7 @@ export function registerApiTriggers(
     ): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const payload: { path?: string; maxFiles?: number } = {};
       if (body.path !== undefined) {
         if (typeof body.path !== "string" || body.path.trim().length === 0) {
@@ -1032,7 +1038,7 @@ export function registerApiTriggers(
     async (
       req: HttpRequest<{ sessionId: string; project: string; cwd: string }>,
     ): Promise<Response> => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const sessionId = asNonEmptyString(body.sessionId);
       const project = asNonEmptyString(body.project);
       const cwd = asNonEmptyString(body.cwd);
@@ -1067,7 +1073,9 @@ export function registerApiTriggers(
       const session = await withKeyedLock(`obs:${sessionId}`, async () => {
         const existing = await kv.get<Session>(KV.sessions, sessionId);
         const merged: Session = {
+          ...existing,
           ...freshSession,
+          startedAt: existing?.startedAt ?? freshSession.startedAt,
           observationCount: existing?.observationCount ?? freshSession.observationCount,
           firstPrompt: freshSession.firstPrompt ?? existing?.firstPrompt,
           summary: freshSession.summary ?? existing?.summary,
@@ -1117,6 +1125,12 @@ export function registerApiTriggers(
           status_code: 400,
           body: { error: "sessionId is required and must be a non-empty string" },
         };
+      }
+      if(operationalState.featureLifecycle){
+        const realEnd=(req.body as Record<string,unknown>).hookEventName==="SessionEnd";
+        const found=await finishLongSession(kv,KV,withKeyedLock,sessionId,realEnd);
+        if(found)await operationalState.featureLifecycle.enqueue(sessionId);
+        return {status_code:200,body:{success:true,ended:realEnd&&found,queued:found}};
       }
       const endResult = await withKeyedLock(`obs:${sessionId}`, async () => {
         const session = await kv.get<Session>(KV.sessions, sessionId);
@@ -1186,7 +1200,7 @@ export function registerApiTriggers(
 
   sdk.registerFunction("api::session::commit",
     async (req: HttpRequest): Promise<Response> => {
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const sha = asNonEmptyString(body.sha);
       if (!sha) {
         return {
@@ -1373,7 +1387,7 @@ export function registerApiTriggers(
       // across chunks); the summaries array stays index-aligned with
       // `filtered`.
       const summaries: Array<SessionSummary | null> = [];
-      for (let batch = 0; batch < filtered.length; batch += 10) {
+      for (let batch = 0; req.query_params?.["includeSummary"] !== "false" && batch < filtered.length; batch += 10) {
         const chunk = filtered.slice(batch, batch + 10);
         const results = await Promise.all(
           chunk.map((s) =>
@@ -1382,9 +1396,10 @@ export function registerApiTriggers(
         );
         summaries.push(...results);
       }
-      const withSummary = filtered.map((s, i) =>
-        summaries[i] ? { ...s, summary: summaries[i] } : s,
-      );
+      const withSummary = filtered.map((s, i) => {
+        if(req.query_params?.["includeSummary"]==="false") {const {summary:_,...metadata}=s;return metadata;}
+        return summaries[i] ? { ...s, summary: summaries[i] } : s;
+      });
       return {
         status_code: 200,
         body: { sessions: withSummary, nextCursor, ...(facets ? { facets } : {}) },
@@ -1404,9 +1419,6 @@ export function registerApiTriggers(
       const sessionId = asNonEmptyString(req.query_params?.["sessionId"]);
       if (!sessionId)
         return { status_code: 400, body: { error: "sessionId required" } };
-      const observations = await kv.list<CompressedObservation>(
-        KV.observations(sessionId),
-      );
       const normalizedAgentId =
         typeof req.query_params?.["agentId"] === "string"
           ? req.query_params["agentId"].trim()
@@ -1418,6 +1430,13 @@ export function registerApiTriggers(
         ? undefined
         : explicitAgentId ??
           (isAgentScopeIsolated() ? getAgentId() : undefined);
+      if(kv.observationReader) {
+        try {
+          const page=await kv.observationReader.response(KV.observations(sessionId),req.query_params??{},filterAgentId);
+          return {status_code:200,body:{...page,observations:page.observations.map(withoutObservationSource)}};
+        } catch(e) {return {status_code:(e as any).status??503,body:{error:(e as any).code??'observation_page_unavailable'}};}
+      }
+      const observations=await kv.list<CompressedObservation>(KV.observations(sessionId));
       const listQuery = parseListQuery(req.query_params);
       let filtered = filterAgentId
         ? observations.filter((o) => o.agentId === filterAgentId)
@@ -2156,7 +2175,7 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const { scope, offset, limit } = body;
       if (scope !== undefined && !COMPACT_SCOPES.includes(scope as GraphCompactScope)) {
         return { status_code: 400, body: { error: "scope must be nodes, edges, history or snapshot" } };
@@ -2781,7 +2800,7 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const queryText = asNonEmptyString(body["queryText"]);
       const queryImageRef = asNonEmptyString(body["queryImageRef"]);
       const queryImageBase64 = asNonEmptyString(body["queryImageBase64"]);
@@ -2820,7 +2839,7 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const body = (req.body ?? {}) as Record<string, unknown>;
+      const body = (req.body ?? {}) as unknown as Record<string, unknown>;
       const imageRef = asNonEmptyString(body["imageRef"]);
       const sessionId = asNonEmptyString(body["sessionId"]);
       const observationId = asNonEmptyString(body["observationId"]);
@@ -2848,7 +2867,9 @@ export function registerApiTriggers(
     const authErr = checkAuth(req, secret);
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
-    const result = await sdk.trigger({ function_id: "mem::slot-list", payload: {} });
+    const owner = parseSlotOwner(req.body ?? req.query_params ?? {});
+    if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
+    const result = await sdk.trigger({ function_id: "mem::slot-list", payload: owner });
     return { status_code: 200, body: result };
   });
   sdk.registerTrigger({
@@ -2861,9 +2882,11 @@ export function registerApiTriggers(
     const authErr = checkAuth(req, secret);
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
+    const owner = parseSlotOwner(req.body ?? req.query_params ?? {});
+    if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
     const label = asNonEmptyString(req.query_params?.["label"]);
     if (!label) return { status_code: 400, body: { error: "label query param required" } };
-    const result = await sdk.trigger({ function_id: "mem::slot-get", payload: { label } });
+    const result = await sdk.trigger({ function_id: "mem::slot-get", payload: { label, ...owner } });
     const resp = result as { success?: boolean; error?: string };
     if (resp?.success === false) {
       return { status_code: resp.error?.includes("not found") ? 404 : 400, body: resp };
@@ -2880,7 +2903,9 @@ export function registerApiTriggers(
     const authErr = checkAuth(req, secret);
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const owner = parseSlotOwner(req.body ?? req.query_params ?? {});
+    if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
+    const body = (req.body ?? {}) as unknown as Record<string, unknown>;
     const label = asNonEmptyString(body["label"]);
     if (!label) return { status_code: 400, body: { error: "label required" } };
     // Reject malformed inputs instead of silently dropping them.
@@ -2907,7 +2932,7 @@ export function registerApiTriggers(
     if (sizeLimit !== undefined && sizeLimit > 20000) {
       return { status_code: 400, body: { error: "sizeLimit must be <= 20000" } };
     }
-    const payload: Record<string, unknown> = { label };
+    const payload: Record<string, unknown> = { label, ...owner };
     if (typeof body["content"] === "string") payload["content"] = body["content"];
     if (typeof body["description"] === "string") payload["description"] = body["description"];
     if (sizeLimit !== undefined) payload["sizeLimit"] = sizeLimit;
@@ -2930,11 +2955,13 @@ export function registerApiTriggers(
     const authErr = checkAuth(req, secret);
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const owner = parseSlotOwner(req.body ?? req.query_params ?? {});
+    if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
+    const body = (req.body ?? {}) as unknown as Record<string, unknown>;
     const label = asNonEmptyString(body["label"]);
     const text = typeof body["text"] === "string" ? body["text"] : null;
     if (!label || !text) return { status_code: 400, body: { error: "label and text required" } };
-    const result = await sdk.trigger({ function_id: "mem::slot-append", payload: { label, text } });
+    const result = await sdk.trigger({ function_id: "mem::slot-append", payload: { label, text, ...owner } });
     const resp = result as { success?: boolean; error?: string };
     if (resp?.success === false) {
       const notFound = resp.error?.includes("not found");
@@ -2953,13 +2980,15 @@ export function registerApiTriggers(
     const authErr = checkAuth(req, secret);
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const owner = parseSlotOwner(req.body ?? req.query_params ?? {});
+    if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
+    const body = (req.body ?? {}) as unknown as Record<string, unknown>;
     const label = asNonEmptyString(body["label"]);
     const content = body["content"];
     if (!label || typeof content !== "string") {
       return { status_code: 400, body: { error: "label and content (string) required" } };
     }
-    const result = await sdk.trigger({ function_id: "mem::slot-replace", payload: { label, content } });
+    const result = await sdk.trigger({ function_id: "mem::slot-replace", payload: { label, content, ...owner } });
     const resp = result as { success?: boolean; error?: string };
     if (resp?.success === false) {
       const notFound = resp.error?.includes("not found");
@@ -2978,9 +3007,11 @@ export function registerApiTriggers(
     const authErr = checkAuth(req, secret);
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
+    const owner = parseSlotOwner(req.body ?? req.query_params ?? {});
+    if (!owner) return {status_code:400,body:{error:"invalid_slot_owner"}};
     const label = asNonEmptyString(req.query_params?.["label"]);
     if (!label) return { status_code: 400, body: { error: "label query param required" } };
-    const result = await sdk.trigger({ function_id: "mem::slot-delete", payload: { label } });
+    const result = await sdk.trigger({ function_id: "mem::slot-delete", payload: { label, ...owner } });
     const resp = result as { success?: boolean; error?: string };
     if (resp?.success === false) {
       return { status_code: resp.error?.includes("not found") ? 404 : 400, body: resp };
@@ -2998,7 +3029,7 @@ export function registerApiTriggers(
     if (authErr) return authErr;
     if (!isSlotsEnabled()) return slotsDisabledResponse();
     if (!isReflectEnabled()) return reflectDisabledResponse();
-    const body = (req.body ?? {}) as Record<string, unknown>;
+    const body = (req.body ?? {}) as unknown as Record<string, unknown>;
     const sessionId = asNonEmptyString(body["sessionId"]);
     if (!sessionId) return { status_code: 400, body: { error: "sessionId required" } };
     const maxObservations = parseOptionalPositiveInt(body["maxObservations"]);

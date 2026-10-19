@@ -1,3 +1,12 @@
+import { createBackgroundControl, installBackgroundControl, controlBackgroundFunctions, registerBackgroundControlApi } from "./ops/background-control.mjs";
+import { createMemoryPressureGuard } from "./ops/memory-pressure.mjs";
+import { serializeLongSessionProvider } from "./ops/long-session.mjs";
+import { registerEnrichmentWorker } from "./ops/background-enrichment.mjs";
+import { createFeatureLifecycle, registerScopedSlotFunctions } from "./ops/feature-lifecycle.mjs";
+import { registerFeedbackRuntime } from "./feedback/feedback-runtime.mjs";
+import { registerCodexInspection, collectInspectionContext, codexInspectionArgs } from "./ops/codex-inspection.mjs";
+import { rawFromObservationSource } from "./functions/observation-source.js";
+import { recordAudit } from "./functions/audit.js";
 import { operationalState } from "./ops/context.js";
 import { createOllamaReadiness, type OllamaReadiness } from "./ops/provider-readiness.mjs";
 import type { MemoryProvider } from "./types.js";
@@ -48,7 +57,7 @@ import { registerCaptureFunctions } from "./functions/capture.js";
 import { seedViewerStreamTracker } from "./state/viewer-stream.js";
 import { registerImageQuotaCleanup } from "./functions/image-quota-cleanup.js";
 import { registerVisionSearchFunctions } from "./functions/vision-search.js";
-import { registerSlotsFunctions, isSlotsEnabled, isReflectEnabled } from "./functions/slots.js";
+import { DEFAULT_SLOTS, isSlotsEnabled, isReflectEnabled } from "./functions/slots.js";
 import { registerDiskSizeManager } from "./functions/disk-size-manager.js";
 import { registerCompressFunction } from "./functions/compress.js";
 import {
@@ -88,7 +97,7 @@ import { registerExportImportFunction } from "./functions/export-import.js";
 import { registerEnrichFunction } from "./functions/enrich.js";
 import { registerClaudeBridgeFunction } from "./functions/claude-bridge.js";
 import { registerGraphFunction } from "./functions/graph.js";
-import { GRAPH_COMPACT_BOOT_DELAY_MS, runGraphCompactOnBoot, setGraphCompactBootDisabled } from "./functions/graph-compact-boot.js";
+import { createGraphCompactBootRecovery, setGraphCompactBootDisabled } from "./functions/graph-compact-boot.js";
 import { registerGraphImportFunction } from "./functions/graph-import.js";
 import { registerConsolidationPipelineFunction } from "./functions/consolidation-pipeline.js";
 import { registerTeamFunction } from "./functions/team.js";
@@ -138,7 +147,7 @@ import { logger, bootLog, bootWarn } from "./logger.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
 import { ensureServerSecret, explicitSecret, secretFilePath } from "./secret-store.js";
 import { mkdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 function workerPidfilePath(): string {
   return runtimeMetadataPath("worker.pid");
@@ -206,13 +215,13 @@ async function main() {
   const embeddingConfig = loadEmbeddingConfig();
   const fallbackConfig = loadFallbackConfig();
 
-  const provider =
+  const provider = serializeLongSessionProvider(
     fallbackConfig.providers.length > 0
       ? createFallbackProvider(config.provider, fallbackConfig)
-      : createProvider(config.provider);
+      : createProvider(config.provider), withKeyedLock);
 
-  const embeddingProvider = createEmbeddingProvider();
-  const imageEmbeddingProvider = createImageEmbeddingProvider();
+  const embeddingProvider = serializeLongSessionProvider(createEmbeddingProvider(), withKeyedLock);
+  const imageEmbeddingProvider = serializeLongSessionProvider(createImageEmbeddingProvider(), withKeyedLock);
 
   bootLog(`Starting worker v${VERSION}...`);
   bootLog(`Engine: ${config.engineUrl}`);
@@ -264,11 +273,16 @@ async function main() {
   try {
     stateBackend = getStateBackend();
   } catch {}
+  if (!process.env["AGENTMEMORY_STATE_STORE_PATH"] && process.env["AGENTMEMORY_DATA_DIR"]) process.env["AGENTMEMORY_STATE_STORE_PATH"] = join(process.env["AGENTMEMORY_DATA_DIR"], "state_store.db");
   const kv = new StateKV(sdk, { backend: stateBackend });
   const secret = resolveWorkerSecret();
   const ingress = createShutdownIngress();
   const lifecycle = createBackgroundLifecycle(() => { ingress.close(); closeLongSessionInferenceAdmission(); });
   ingress.install(sdk, (req) => checkAuth(req, secret));
+  const control = createBackgroundControl();
+  const persistentBackground = kv.backend === "file" && !!kv.durability;
+  if (persistentBackground) installBackgroundControl(control);
+  operationalState.storageDurability = kv.durability;
   const resources: { health?: ReturnType<typeof registerHealthMonitor>; capture?: ReturnType<typeof registerCaptureFunctions>; index?: IndexPersistence; viewer?: ReturnType<typeof startViewerServer> } = {};
   let bootDone!: () => void, bootFailed = false;
   const bootGate = new Promise<void>(resolve => { bootDone = resolve; });
@@ -290,14 +304,19 @@ async function main() {
       work: async progress => {
         progress({ stage: "boot_gate" }); await bootGate;
         let disk: unknown = null;
-        await lifecycle.shutdown(async () => {
+        await lifecycle.shutdown(async ({ drained }) => {
           progress({ stage: "ingress" }); await ingress.drain();
+          progress({ stage: "control" }); await control.settled();
           progress({ stage: "index_save" }); await resources.index?.save();
           const index = resources.index?.status();
           if (index?.vector?.lastError || index?.pendingLogError || (index?.pendingChanges ?? 0) > 0)
             throw Object.assign(Error("index_save_unverified"), { code: "INDEX_SAVE_UNVERIFIED" });
           if (!kv.durability) throw Object.assign(Error("file_durability_unconfigured"), { code: "STATE_DURABILITY_UNCONFIGURED" });
           progress({ stage: "durability_drain" }); await kv.durability.drain();
+          progress({ stage: "disk_fence" });
+          const beforeGuard = await kv.durability.wait(kv);
+          if (beforeGuard.synced !== true || beforeGuard.mutationFailures !== 0) throw Object.assign(Error("shutdown_storage_unverified"), { code: "SHUTDOWN_NOT_VERIFIED" });
+          if (drained) { progress({ stage: "restart_guard" }); await control.commitCleanShutdown(); }
           progress({ stage: "freeze" }); kv.durability.freeze();
           progress({ stage: "final_disk_fence" }); disk = await kv.durability.wait(kv);
         }, progress);
@@ -314,6 +333,15 @@ async function main() {
   fatalShutdown = shutdown;
   function trackBoot<T>(promise: Promise<T>) { lifecycle.track({ drain: () => promise }); return promise; }
   try {
+  if (persistentBackground) {
+    await control.init(kv, () => lifecycle.drain());
+    operationalState.backgroundControl = control;
+    controlBackgroundFunctions(sdk);
+  }
+  const pressure = persistentBackground ? lifecycle.track(createMemoryPressureGuard({ control })) : null;
+  pressure?.install(sdk, (req) => checkAuth(req, secret));
+  operationalState.memoryPressure = pressure;
+  await pressure?.refresh();
   const metricsStore = new MetricsStore(kv);
   if (getEnvVar("AGENTMEMORY_OLLAMA_NATIVE_CHAT")?.toLowerCase() === "true" && fallbackConfig.providers.length > 0)
     throw new Error("ollama_native_fallback_unsupported");
@@ -344,10 +372,11 @@ async function main() {
   registerPrivacyFunction(sdk);
   registerObserveFunction(sdk, kv, dedupMap, config.maxObservationsPerSession);
   const capture = resources.capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort });
+  operationalState.captureProgress = { snapshot: () => capture.progress() };
   registerImageQuotaCleanup(sdk, kv);
   registerVisionSearchFunctions(sdk, kv, imageEmbeddingProvider);
   if (isSlotsEnabled()) {
-    await registerSlotsFunctions(sdk, kv);
+    await registerScopedSlotFunctions({sdk, kv, KV, withKeyedLock, defaults: DEFAULT_SLOTS, recordAudit});
   }
   registerDiskSizeManager(sdk, kv);
   registerCompressFunction(sdk, kv, provider, metricsStore);
@@ -470,26 +499,16 @@ async function main() {
 
   const snapshotConfig = loadSnapshotConfig();
   if (snapshotConfig.enabled) {
-    registerSnapshotFunction(sdk, kv, snapshotConfig.dir);
-    // The boot line promised "every <interval>s" but nothing ever fired
-    // mem::snapshot-create. Drive it on a periodic timer (unref'd so it
-    // never keeps the process alive), mirroring the auto-forget timer.
-    // mem::snapshot-create serializes overlapping runs internally (git-lock
-    // safety), so the timer can stay a simple fire-and-forget tick.
-    const snapshotTimer = registerBackgroundInterval(lifecycle, () => {
-      sdk
-        .trigger({
-          function_id: "mem::snapshot-create",
-          payload: {},
-        })
-        .catch(() => {});
-    }, snapshotConfig.interval * 1000);
-    snapshotTimer.unref();
+    operationalState.snapshotRecovery = lifecycle.track(registerSnapshotFunction(sdk, kv, snapshotConfig.dir, snapshotConfig.interval * 1000));
     bootLog(
       `Git snapshots: ${snapshotConfig.dir} (every ${snapshotConfig.interval}s)`,
     );
   }
 
+  const features = lifecycle.track(createFeatureLifecycle({sdk, kv, KV, withKeyedLock, provider, readiness: operationalState.providerReadiness, isSlotsEnabled, isReflectEnabled, logger}));
+  operationalState.featureLifecycle = features;
+  sdk.registerFunction("mem::slot-reflect", features.slotReflect);
+  lifecycle.track(registerEnrichmentWorker({kv, sdk, KV, withKeyedLock, isGraphEnabled: isGraphExtractionEnabled, isCompressEnabled: isAutoCompressEnabled, logger, metricsStore, readiness: operationalState.providerReadiness, rawFromObservationSource}));
   const bm25Index = getSearchIndex();
   const graphWeight = parseFloat(getEnvVar("AGENTMEMORY_GRAPH_WEIGHT") || "0.3");
   const hybridSearch = new HybridSearch(
@@ -510,6 +529,20 @@ async function main() {
 
   markKeywordRebuildPending();
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);
+  if (persistentBackground) registerBackgroundControlApi(sdk, secret, control);
+  if (getEnvVar("AGENTMEMORY_FEEDBACK_DIR")) {
+  const feedback = lifecycle.track(registerFeedbackRuntime(sdk, secret, {
+    root: getEnvVar("AGENTMEMORY_FEEDBACK_DIR"),
+    collect: () => collectInspectionContext(secret, {restPort: config.restPort}),
+    args: codexInspectionArgs, isPaused: () => persistentBackground && control.isPaused(), version: VERSION,
+    receiptRoot: getEnvVar("AGENTMEMORY_RECEIPT_DIR"),
+    receipts: {"personal-deployment": "activation.json"},
+  }));
+  await feedback.ready;
+  lifecycle.track(registerCodexInspection(sdk, secret, {restPort: config.restPort, onSnapshot: feedback.onSnapshot}));
+  } else {
+    lifecycle.track(registerCodexInspection(sdk, secret, {restPort: config.restPort}));
+  }
   registerEventTriggers(sdk, kv);
   registerViewerStreamTriggers(sdk, kv, { secret, metricsStore, provider });
   registerMcpEndpoints(sdk, kv, secret);
@@ -728,11 +761,9 @@ async function main() {
   );
 
   if (isGraphCompactOnBootEnabled()) {
-    const graphCompactTimer = setTimeout(() => {
-      if (!shuttingDown) void trackBoot(runGraphCompactOnBoot(kv, { log: bootLog, warn: bootWarn }).catch(() => {}));
-    }, GRAPH_COMPACT_BOOT_DELAY_MS);
-    graphCompactTimer.unref();
-    lifecycle.track({ stop: () => clearTimeout(graphCompactTimer) });
+    const graphCompaction = createGraphCompactBootRecovery(kv, {log: bootLog, warn: bootWarn});
+    lifecycle.track(graphCompaction);
+    graphCompaction.start();
   } else {
     setGraphCompactBootDisabled();
   }
@@ -758,7 +789,6 @@ async function main() {
         await sdk.trigger({ function_id: "mem::audit-retention-sweep", payload: {} });
       } catch {}
     };
-    void trackBoot(runAuditSweep());
     const auditRetentionTimer = registerBackgroundInterval(lifecycle, runAuditSweep, 86400000);
     auditRetentionTimer.unref();
     bootLog(
@@ -820,6 +850,10 @@ async function main() {
   }
 
   if (!shuttingDown) operationalState.embeddingRecovery?.start();
+  if (!shuttingDown) {
+    operationalState.snapshotRecovery?.start();
+    pressure?.start();
+  }
   if (kv.durability) registerBackgroundInterval(lifecycle, () => kv.durability!.flushStable(kv), 15000, false);
   } catch (error) { bootFailed = true; throw error; } finally { bootDone(); }
 }

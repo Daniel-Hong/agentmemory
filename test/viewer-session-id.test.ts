@@ -150,6 +150,7 @@ function loadViewerSandbox() {
     setTimeout: () => 0,
     clearTimeout: () => {},
     URLSearchParams,
+    AbortController,
     Date,
     Math,
     Promise,
@@ -232,4 +233,28 @@ describe("viewer session rendering", () => {
     expect(() => sandbox.switchTab("sessions")).not.toThrow();
     expect(tabButtons.some((button: any) => button.classList.contains("active"))).toBe(true);
   });
+  it("loads session lists as metadata and queries only a selected summary", async () => {
+    const { sandbox } = loadViewerSandbox();
+    const paths: string[] = [];
+    sandbox.fetch = async (url: string) => {
+      paths.push(url);
+      return { ok: true, json: async () => ({ sessions: [{ id: "selected", summary: { title: "One selected summary" } }] }) };
+    };
+    sandbox.bootGateOpen();
+    await sandbox.ensureLoaded("session");
+    expect(paths.some(path => path.includes("sessions?") && path.includes("includeSummary=false"))).toBe(true);
+    expect(sandbox.sessionQueryPath()).toContain("includeSummary=false");
+    sandbox.loadSessionObservations = async () => {};
+    sandbox.loadSessionProduced = async () => {};
+    sandbox.ensureLoaded = async () => {};
+    sandbox.store.entities.session.selected = { id: "selected" };
+    sandbox.ensureSessionDetail("selected");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(paths.filter(path => path.includes("q=selected"))).toHaveLength(1);
+    expect(sandbox.store.entities.session.selected.summary.title).toBe("One selected summary");
+    sandbox.replaceBucket("session", [{ id: "selected", observationCount: 12 }]);
+    expect(sandbox.store.entities.session.selected.summary.title).toBe("One selected summary");
+    expect(sandbox.store.entities.session.selected.observationCount).toBe(12);
+  });
+
 });

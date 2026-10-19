@@ -428,7 +428,7 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       level: "warn",
       code: "graph-compaction-failed",
       message: `The one-time graph provenance compaction stopped: ${compaction.error ?? "unknown error"}. Graph search can stay slow until it finishes.`,
-      fix: `It resumes on the next start. To run it now: ${graphCompactCommand(input.ports.rest)}`,
+      fix: compaction.nextRetryAt ? `Automatic recovery is scheduled at ${compaction.nextRetryAt}. Manual pause and shutdown defer it; no restart is required.` : 'Recovery waits for background admission or a later start. Check the background control state and storage/SDK errors before requesting a manual retry.',
     });
   }
 
@@ -532,12 +532,15 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
       fix: `List them with curl -s ${CURL_AUTH_HEADER} '${base}/capture?status=dead'. After fixing the cause, retry them with curl -X POST ${base}/capture/retry ${CURL_AUTH_HEADER} -H "Content-Type: application/json" -d '{"all":true}'.`,
     });
   }
+  if (capture.progress?.stalled) {
+    problems.push({level:'warn',code:'capture-stalled',message:'Accepted observations are not completing; the capture queue is stalled.',fix:'Check capture completion progress, embedding admission and SDK/storage errors. Keep pending records; do not reset or replay the whole queue.'});
+  }
   if (inbox && inbox.retrying + inbox.pending > 0) {
     problems.push({
       level: "info",
       code: "capture-retrying",
       message: `${plural(inbox.retrying + inbox.pending, "accepted observation")} ${inbox.retrying + inbox.pending === 1 ? "is" : "are"} waiting to be stored${inbox.lastError ? ` after a failure: ${inbox.lastError}` : ""}.`,
-      fix: `No action needed: the server retries every ${Math.round(capture.policy.retryIntervalMs / 1000)} s with backoff, up to ${capture.policy.maxAttempts} attempts, and again after a restart.`,
+      fix: capture.progress?.stalled ? 'Automatic retries have not restored completion. Check the capture-stalled warning and retain the inbox/spool.' : `The retry scheduler checks every ${Math.round(capture.policy.retryIntervalMs / 1000)} s with backoff, up to ${capture.policy.maxAttempts} attempts. This interval does not guarantee completion; monitor the completed counter.`,
     });
   }
   const waiting = capture.spool.reduce((n, s) => n + s.records, 0);

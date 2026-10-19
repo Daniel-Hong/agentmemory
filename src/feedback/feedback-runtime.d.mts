@@ -1,0 +1,2 @@
+import type { IIIClient } from "iii-sdk";
+export function registerFeedbackRuntime(sdk:IIIClient,secret:string,options:{root?:string;collect:()=>Promise<unknown>;args:(context:{model?:string;effort?:string},root:string)=>string[];isPaused:()=>boolean;version:string;receiptRoot?:string;receipts?:Record<string,string>}):{ready:Promise<void>;onSnapshot(job:unknown):Promise<unknown>;stop():Promise<void>;drain():Promise<void>};

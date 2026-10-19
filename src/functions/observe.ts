@@ -1,3 +1,4 @@
+import { publishViewerEvent } from "../state/viewer-stream.js";
 import { TriggerAction, type IIIClient } from "iii-sdk";
 import type { RawObservation, CompressedObservation, HookPayload, Origin, Session } from "../types.js";
 
@@ -10,7 +11,6 @@ import { indexObservationSession } from "../state/obs-index.js";
 import { stripPrivateData } from "./privacy.js";
 import { DedupMap, recordDedupSkip } from "./dedup.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
-import { isAutoCompressEnabled } from "../config.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { isCaptureKey } from "../capture/event-record.js";
 import { claimBackfillPrompt, isBackfillPrompt, recordLivePrompt } from "../capture/prompt-ledger.js";
@@ -293,6 +293,8 @@ export function registerObserveFunction(
           action: TriggerAction.Void(),
         });
 
+        publishViewerEvent("raw_observation", { type: "raw", observation: { id: obsId, sessionId: payload.sessionId, timestamp: raw.timestamp, hookType: raw.hookType }, sessionId: payload.sessionId });
+
         const session = existingSession;
         if (session) {
           const updates: Array<{ type: "set" | "remove"; path: string; value?: unknown }> = [
@@ -368,43 +370,22 @@ export function registerObserveFunction(
         scheduleIndexSave();
         await enqueueObservationEmbedding(synthetic.id, synthetic.sessionId);
 
-        // Per-observation LLM compression is opt-in as of 0.8.8.
-        // Default path: build a zero-LLM synthetic compression so recall
-        // and BM25 search still work without burning the user's Claude
-        // token allocation on every tool invocation.
-        if (isAutoCompressEnabled()) {
-          await sdk.trigger({
-            function_id: "mem::compress",
-            payload: {
-              observationId: obsId,
-              sessionId: payload.sessionId,
-              raw,
-            },
-            action: TriggerAction.Void(),
-          });
-        } else {
-          await sdk.trigger({
-            function_id: "stream::set",
-            payload: {
-              stream_name: STREAM.name,
-              group_id: STREAM.viewerGroup,
-              item_id: obsId,
-              data: {
-                type: "compressed",
-                observation: withoutObservationSource(synthetic),
-                sessionId: payload.sessionId,
-              },
-            },
-          });
-          trackViewerStreamItem(obsId);
-          void pruneViewerStreamIfDue(sdk).catch(() => {});
-        }
+        await sdk.trigger({
+          function_id: "stream::set",
+          payload: {
+            stream_name: STREAM.name, group_id: STREAM.viewerGroup, item_id: obsId,
+            data: { type: "compressed", observation: withoutObservationSource(synthetic), sessionId: payload.sessionId },
+          },
+        });
+        publishViewerEvent("compressed_observation", {type:"compressed",observation:withoutObservationSource(synthetic),sessionId:payload.sessionId});
+        trackViewerStreamItem(obsId);
+        void pruneViewerStreamIfDue(sdk).catch(() => {});
 
         logger.info("Observation captured", {
           obsId,
           sessionId: payload.sessionId,
           hook: payload.hookType,
-          compress: isAutoCompressEnabled() ? "llm" : "synthetic",
+          compress: "synthetic",
         });
         return { observationId: obsId };
       });

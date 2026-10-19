@@ -1438,6 +1438,16 @@
     .prof-cols > .card { margin-bottom: 0; min-width: 0; }
     @media (max-width: 900px) { .prof-cols { grid-template-columns: 1fr; } .hm-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+    .header-right { flex-wrap: wrap; min-width: 0; }
+    .refresh-controls, .operations-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .refresh-controls { font-size: 11px; }
+    .refresh-controls label { display: flex; align-items: center; gap: 4px; }
+    .refresh-controls select { width: auto; padding: 3px; color: var(--ink); background: var(--bg); border: 1px solid var(--border); }
+    .operations-card { margin-top: 16px; min-width: 0; overflow-wrap: anywhere; }
+    .operations-card summary { cursor: pointer; padding: 8px 0; }
+    .operations-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow-y: auto; font-size: 12px; }
+    .operations-card th, .operations-card td { white-space: normal; min-width: 110px; }
+    @media (max-width: 600px) { .refresh-controls { width: 100%; justify-content: flex-end; } .operations-actions .btn { min-height: 40px; } }
     :where(a, button, select, input, textarea, summary, [tabindex], [role="button"], [role="link"], [role="tab"]):focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 2px; }
     .tab-bar button:focus-visible, .graph-stage canvas:focus-visible, .stat-card[data-action]:focus-visible, .session-item:focus-visible, .memory-row:focus-visible, .lesson-row:focus-visible { outline-offset: -3px; }
   </style>
@@ -1455,6 +1465,7 @@
       <span class="dateline" id="dateline"></span>
       <span id="flags-chip"></span>
       <span id="ws-status" class="ws-status connecting" role="status" aria-live="polite">connecting</span>
+      <div class="refresh-controls"><label><input id="auto-refresh-toggle" type="checkbox" checked> 자동 새로고침</label><label class="sr-only" for="auto-refresh-interval">자동 새로고침 주기</label><select id="auto-refresh-interval"><option value="10">10초</option><option value="30" selected>30초</option><option value="60">60초</option><option value="120">120초</option><option value="300">300초</option></select></div>
       <button type="button" class="icon-btn" data-action="open-help" aria-label="Glossary and keyboard shortcuts" title="Glossary and keyboard shortcuts (?)">?</button>
       <button type="button" id="theme-toggle" class="icon-btn" data-action="toggle-theme">DARK</button>
     </div>
@@ -1542,6 +1553,11 @@
         ? wsProto + '//' + window.location.hostname + ':' + wsPort
         : wsProto + '//' + window.location.host;
       WS_DIRECT_URL = WS_URL + '/stream/mem-live/viewer';
+    }
+
+    if (!params.get('wsPort')) {
+      WS_URL = REST.replace(/^http/, 'ws') + '/agentmemory/viewer/stream';
+      WS_DIRECT_URL = WS_URL;
     }
 
     var dateEl = document.getElementById('dateline');
@@ -1656,7 +1672,7 @@
       health: { term: 'Health status', text: 'Healthy means everything is normal. Degraded means something needs attention but memory still works. Critical means a core part is failing.' },
       stateBackend: { term: 'State store', text: 'Where the engine keeps every record: file (local files on this machine, the default) or redis (a Redis server set by AGENTMEMORY_STATE_BACKEND and AGENTMEMORY_REDIS_URL). ok means a test write and read just succeeded; the number is how long it took.' },
       engineConnection: { term: 'Engine connection', text: 'Whether the agentmemory worker is connected to the iii engine that stores its data and runs its functions.' },
-      live: { term: 'Live updates', text: 'The viewer keeps one streaming connection open and updates every page the moment data changes. Nothing is refreshed on a timer.' },
+      live: { term: 'Live updates', text: '실시간 스트림 연결 시 변경 이벤트를 받습니다. 스트림 미연결 시 선택한 주기로 HTTP 현황을 조회하며, 마지막 조회 시각과 실패 여부를 별도로 표시합니다.' },
       flags: { term: 'Feature flags', text: 'Optional features that are on or off in this install. Off features leave some pages empty; each one lists the setting that turns it on.' },
       audit: { term: 'Audit log', text: 'A record of every change agentmemory made to stored data: saves, deletes, imports, consolidation runs. Use it to see who changed what and when.' },
       workers: { term: 'Workers', text: 'Processes connected to the iii engine. agentmemory runs as one worker.' },
@@ -1712,7 +1728,7 @@
     };
     var ENTITY_ENDPOINTS = {
       memory: { path: 'memories?latest=true&limit=100&facets=true', key: 'memories' },
-      session: { path: 'sessions?limit=100&facets=true', key: 'sessions' },
+      session: { path: 'sessions?limit=100&facets=true&includeSummary=false', key: 'sessions' },
       lesson: { path: 'lessons', key: 'lessons' },
       action: { path: 'actions', key: 'actions' },
       crystal: { path: 'crystals', key: 'crystals' },
@@ -2056,6 +2072,7 @@
     }
 
     async function api(path, opts) {
+      var controller, requestTimer;
       try {
         var url = REST + '/agentmemory/' + path;
         var headers = Object.assign({ 'Cache-Control': 'no-cache' }, (opts && opts.headers) || {});
@@ -2066,6 +2083,11 @@
         var fetchOpts = Object.assign({}, opts || {}, { headers: headers });
         var readErrorBody = fetchOpts.readErrorBody;
         delete fetchOpts.readErrorBody;
+        if (!fetchOpts.signal) {
+          controller = new AbortController();
+          fetchOpts.signal = controller.signal;
+          requestTimer = setTimeout(function() { controller.abort(); }, 15000);
+        }
         var res = await fetch(url, fetchOpts);
         if (!res.ok) {
           if (res.status === 401) showViewerAuthPrompt();
@@ -2083,6 +2105,8 @@
       } catch (err) {
         console.warn('[viewer] API error on ' + path + ':', err);
         return null;
+      } finally {
+        clearTimeout(requestTimer);
       }
     }
     async function apiGet(path) { return api(path); }
@@ -2255,6 +2279,7 @@
       if (tab === 'profile') ensureProfileData();
       if (tab === 'activity' && !state.activity.loaded) await loadActivity();
       if (tab === 'replay' && !state.replay.loaded) await loadReplay();
+      if ((tab === 'health' || tab === 'dashboard') && !operations.checkedAt && !operations.loading) loadOperations();
       if (opts.id) revealRouteEntity(tab, opts.id);
     }
 
@@ -2309,7 +2334,7 @@
       var bucket = {};
       (rows || []).forEach(function(row) {
         var id = entityKey(kind, row);
-        if (id) bucket[id] = row;
+        if (id) bucket[id] = kind === 'session' && row.summary === undefined && store.entities.session[id] ? Object.assign({}, store.entities.session[id], row) : row;
       });
       store.entities[kind] = bucket;
     }
@@ -2360,10 +2385,18 @@
 
     async function loadSnapshot() {
       var snap = await apiGet('viewer/snapshot');
-      if (!snap) return false;
+      store.snapshotError = !snap;
+      renderConnection();
+      if (!snap) {
+        updateFooter();
+        markDirty(['dashboard', 'health']);
+        if (state.activeTab === 'health' || state.activeTab === 'dashboard') renderTab(state.activeTab);
+        return false;
+      }
       var graphBefore = store.graph && store.graph.updatedAt;
       var reconnect = !!store.snapshotAt;
       applySnapshot(store, snap);
+      renderConnection();
       renderFlagsChip();
       renderFlagsPanel();
       updateCountBadges();
@@ -2392,6 +2425,292 @@
       s.indexes = snap.indexes || null;
       s.snapshotAt = Date.now();
       s.lastHealthAt = Date.now();
+    }
+
+    var operations = { health: {}, sessions: [], control: null, job: null, available: false, loading: false, checking: false, submitting: false, controlBusy: false, error: '', controlError: '', jobError: '', submitError: '', checkedAt: null, detailsOpen: false, requestId: null, refreshTimer: null, controlTimer: null, jobTimer: null, request: null, generation: 0, metrics: {}, metricPrevious: {} };
+    var autoRefresh = { enabled: true, seconds: 30 };
+    try {
+      var savedRefresh = JSON.parse(localStorage.getItem('agentmemory-refresh'));
+      if (savedRefresh && typeof savedRefresh.enabled === 'boolean' && [10,30,60,120,300].includes(savedRefresh.seconds)) autoRefresh = savedRefresh;
+    } catch (_) {}
+
+    function quarantineReason(record) {
+      var category = (record.diagnostics || {}).category;
+      return ({output_truncated:'출력 토큰 한도', output_invalid:'출력 형식 오류', metadata_oversized:'입력 메타데이터 크기 초과', input_oversized:'입력 크기 초과', input_invalid:'입력 메타데이터 형식·크기 오류'})[category] || '기타 처리 오류 · 로그 점검 필요';
+    }
+
+    function quarantineRecords(session) {
+      var enrichment = session.enrichmentProgress || {};
+      var stages = {summary:session.summaryProgress || {},compress:enrichment.compress || {},graph:enrichment.graph || {}};
+      var records = [];
+      Object.keys(stages).forEach(function(stage) {
+        var blocked = stages[stage].blockedObservations || {};
+        Object.keys(blocked).forEach(function(id) {
+          var record = blocked[id];
+          if (!record || record.status !== 'blocked') return;
+          var field = (record.diagnostics || {}).field;
+          records.push({id:id,stage:stage,reason:quarantineReason(record),field:typeof field === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(field) ? field : null,
+            attempts:Number.isInteger(record.singleAttempts) && record.singleAttempts >= 0 ? record.singleAttempts : Number.isInteger(record.attempts) && record.attempts >= 0 ? record.attempts : null,
+            at:typeof record.at === 'string' && !isNaN(Date.parse(record.at)) ? new Date(record.at).toISOString() : null});
+        });
+      });
+      return records;
+    }
+
+    function backgroundWorkSnapshot(sessions, health, available) {
+      var totals = {summary:0,compress:0,graph:0,embedding:null,features:null}, knownTotals = {summary:0,compress:0,graph:0,embedding:null,features:null};
+      var unknownStageCounts = {summary:0,compress:0,graph:0}, unknownSessionsCount = 0, knownCounts = {summary:0,compress:0,graph:0}, rows = [], quarantined = 0;
+      function pending(progress, empty) {
+        if (progress && progress.enabled === false) return 0;
+        if (progress && Number.isSafeInteger(progress.pendingCount) && progress.pendingCount >= 0) return progress.pendingCount;
+        return empty ? 0 : null;
+      }
+      (sessions || []).forEach(function(s) {
+        var enrichment = s.enrichmentProgress || {}, progress = [s.summaryProgress,enrichment.compress,enrichment.graph];
+        var empty = s.observationCount === 0 || s.observations === 0;
+        var counts = {summary:pending(progress[0],empty),compress:pending(progress[1],empty),graph:pending(progress[2],empty)};
+        Object.keys(counts).forEach(function(k) {
+          totals[k] = totals[k] === null || counts[k] === null ? null : totals[k]+counts[k];
+          if (counts[k] === null) unknownStageCounts[k]++;
+          else { knownTotals[k] += counts[k]; knownCounts[k]++; }
+        });
+        if (Object.keys(counts).some(function(k) { return counts[k] === null; })) unknownSessionsCount++;
+        var records = quarantineRecords(s); quarantined += records.length;
+        var statuses = progress.filter(Boolean).map(function(p) { return p.status; });
+        if (!records.length && !statuses.includes('blocked') && !statuses.includes('running') && Object.keys(counts).every(function(k) { return counts[k] === 0; })) return;
+        var unknownStatus = progress.filter(function(p) { return !p || p.enabled !== false && (typeof p.status !== 'string' || !p.status); }).length;
+        var status = records.length || statuses.includes('blocked') ? '점검 필요' : statuses.includes('running') ? '처리 중' : statuses.includes('waiting_provider') ? '공급자 대기' : statuses.some(function(v) { return /retry|error|failed/.test(v || ''); }) ? '재시도 대기' : unknownStatus ? '미확인' : '처리 대기';
+        rows.push({id:s.id,project:s.project || s.id,counts:counts,status:status,unknownStatus:unknownStatus,records:records});
+      });
+      ['summary','compress','graph'].forEach(function(k) {
+        if (!available) { totals[k] = knownTotals[k] = unknownStageCounts[k] = null; }
+        else if (unknownStageCounts[k] && !knownCounts[k]) knownTotals[k] = null;
+      });
+      if (!available) unknownSessionsCount = null;
+      var embedding = health.embeddingRecovery, feature = health.featureLifecycle;
+      if (embedding && Number.isSafeInteger(embedding.pendingCount) && embedding.pendingCount >= 0) totals.embedding = embedding.pendingCount;
+      if (feature && feature.enabled === false) totals.features = 0;
+      else if (feature && feature.enabled === true && Number.isSafeInteger(feature.pendingCount) && feature.pendingCount >= 0) totals.features = feature.pendingCount;
+      knownTotals.embedding = totals.embedding; knownTotals.features = totals.features;
+      return {totals:totals,knownTotals:knownTotals,unknownStageCounts:unknownStageCounts,unknownSessionsCount:unknownSessionsCount,rows:rows,quarantined:quarantined,sessionsAvailable:available};
+    }
+
+    function cpuDisplay(cpu) {
+      var capacity = Number.isFinite(cpu.percent) && cpu.percent >= 0 && Number.isFinite(cpu.capacityPercent) && cpu.capacityPercent >= 0 && Number.isFinite(cpu.capacityCores) && cpu.capacityCores > 0;
+      var value = capacity ? cpu.capacityPercent : cpu.percent;
+      return {percent:Number.isFinite(value) && value >= 0 ? value : null,label:capacity ? 'CPU (전체)' : 'CPU (1코어)',detail:capacity ? '사용 가능 '+cpu.capacityCores+'코어 · 1코어 기준 '+cpu.percent.toFixed(1)+'%' : '전체 용량 미확인 · 1코어 100% 기준'};
+    }
+    function memoryPressureStatus(pressure) {
+      var label = pressure && ({normal:'정상',high:'메모리 여유 부족 · 백그라운드 보류',critical:'메모리 위험 · 새 요청 재시도 필요'})[pressure.level];
+      var available = pressure && Number.isFinite(pressure.availableBytes) ? (pressure.availableBytes/1073741824).toFixed(1)+' GiB' : '미확인';
+      return '<p class="hnote" role="status">호스트 메모리: '+esc(label || '미확인')+' · 가용 '+esc(available)+'</p>';
+    }
+    function metricRecentFailures(metric, previous) {
+      if (!previous) return '다음 조회부터 새 실패 비교';
+      if (![metric.totalCalls,metric.failureCount,previous.totalCalls,previous.failureCount].every(function(v) { return Number.isSafeInteger(v) && v >= 0; })) return '집계 기준 확인 불가';
+      var calls = metric.totalCalls-previous.totalCalls, failures = metric.failureCount-previous.failureCount;
+      if (calls < 0 || failures < 0 || failures > calls) return '집계 기준 변경 · 다음 조회부터 비교';
+      return '직전 조회 이후 실패 +'+failures+'건 / 호출 +'+calls+'건';
+    }
+    function metricQuality(metric) {
+      var known = Number.isSafeInteger(metric.qualitySampleCount) && metric.qualitySampleCount > 0, score = metric.avgQualityScore;
+      var epoch = new Date(metric.qualityEpochAt);
+      return {value:Number.isFinite(score) && (known || score > 0) ? score.toFixed(2) : '-',detail:known ? '품질 표본 '+metric.qualitySampleCount+'건 · 집계 시작 '+(metric.qualityEpochAt && !isNaN(epoch.getTime()) ? epoch.toLocaleString() : '미확인') : '과거 품질 평균 · 표본 수/집계 기간 미확인'};
+    }
+    function snapshotStatus(snapshot) {
+      if (!snapshot) return '<p class="hnote">스냅샷: 미확인 · 부분 내보내기(전체 데이터 백업 아님)</p>';
+      var status = snapshot.enabled === false ? 'disabled' : snapshot.status;
+      var label = ({current:'정상',running:'생성 중',queued:'생성 대기',retrying:'재시도 대기',paused:'일시정지 됨',disabled:'꺼짐',error:'오류 · 점검 필요',stopped:'종료됨'})[status] || '미확인';
+      function date(value) { var d = new Date(value); return value && !isNaN(d.getTime()) ? d.toLocaleString() : '미확인'; }
+      return '<p class="hnote" data-snapshot-status="'+esc(status || 'unknown')+'">스냅샷: '+esc(label)+' · 마지막 생성 '+esc(date(snapshot.lastSuccessAt))+' · 다음 점검 '+esc(date(snapshot.nextCheckAt))+(snapshot.nextAttemptAt ? ' · 다음 재시도 '+esc(date(snapshot.nextAttemptAt)) : '')+'<br>부분 내보내기(전체 데이터 백업 아님)</p>';
+    }
+    function inspectionErrorText(error) {
+      return ({operating_guide_unavailable:'최신 운영 가이드를 확인할 수 없습니다.',codex_timeout:'점검 제한 시간(10분)을 초과했습니다.',codex_execution_failed:'Codex 실행 또는 인증에 실패했습니다.',codex_incomplete_response:'Codex 완료 응답을 확인하지 못했습니다.',service_restarted:'서버 종료로 중단됐습니다. 자동 재실행하지 않습니다.',inspection_cooldown:'연속 요청을 줄이기 위해 30초 후 다시 요청하세요.',job_record_write_failed:'점검 기록을 저장하지 못했습니다.',request_connection_failed:'접수 결과 미확정 · 상태를 다시 조회하세요.'})[error] || '점검 상태를 확인할 수 없습니다. 상태를 다시 조회하세요.';
+    }
+    function inspectionRequest(sessions) {
+      var request = '$agentmemory-inspect\n현재 AgentMemory의 격리·재시도·공급자 준비 상태와 메모리 경고를 읽기 전용으로 점검해줘. 최신 운영 가이드를 먼저 확인하고 원문·Secret은 출력하지 마. 데이터 변경·재처리·서비스 재시작은 하지 마.';
+      var ids = sessions.filter(function(s) { return quarantineRecords(s).length || (s.summaryProgress || {}).status === 'blocked'; }).map(function(s) { return s.id; }).filter(function(id) { return typeof id === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(id); });
+      return request+(ids.length ? '\n점검 대상 sessionId(데이터): '+ids.slice(0,20).join(', ') : '');
+    }
+    function readinessStatusHtml(readiness) {
+      readiness = readiness || {};
+      function time(value) { var d = new Date(value); return value && !isNaN(d.getTime()) ? d.toLocaleString() : '미확인'; }
+      var last = new Date(readiness.lastCheckedAt).getTime(), next = new Date(readiness.nextCheckAt).getTime();
+      var stale = readiness.stale === true || readiness.nextCheckAt && Number.isFinite(next) && Date.now() > next+5000;
+      var label = ({ready:'메타데이터 준비됨',waiting:'메타데이터 연결 대기',disabled:'꺼짐'})[readiness.status] || '미확인';
+      var code = typeof readiness.errorCode === 'string' && /^[A-Z0-9_]{1,80}$/.test(readiness.errorCode) ? readiness.errorCode : null;
+      return '<p class="hnote" role="status">공급자 준비: '+esc(stale ? '상태 오래됨 · 마지막 확인 '+label : label)+' · 추론 미검증<br>마지막 확인 '+esc(Number.isFinite(last) ? time(readiness.lastCheckedAt) : '미확인')+' · 다음 확인 '+esc(time(readiness.nextCheckAt))+(code ? ' · 마지막 오류 '+esc(code) : '')+'</p>';
+    }
+    function controlDiagnosticHtml(control) {
+      var transition = control.transition || {}, diagnostics = control.diagnostics || {};
+      var stage = ({request:'요청 접수',active_work:'진행 작업 종료 대기',worker_drain:'Worker 처리 종료 대기',storage:'디스크 저장 확인',complete:'저장 확인 완료'})[transition.stage || diagnostics.stage];
+      var elapsed = Number.isFinite(transition.stageElapsedMs) && transition.stageElapsedMs >= 0 ? ' · 단계 경과 '+Math.floor(transition.stageElapsedMs/1000)+'초(마지막 조회 기준)' : '';
+      var code = typeof diagnostics.errorCode === 'string' && /^[A-Z0-9_]{1,80}$/.test(diagnostics.errorCode) ? diagnostics.errorCode : null;
+      var cause = typeof diagnostics.causeCode === 'string' && /^[A-Z0-9_]{1,80}$/.test(diagnostics.causeCode) ? diagnostics.causeCode : null;
+      return stage || code ? '<p class="hnote" role="status">'+esc(stage || '진행 단계 미확인')+esc(elapsed)+(code ? ' · 오류 코드 '+esc(code) : '')+(cause ? ' / '+esc(cause) : '')+'</p>' : '';
+    }
+    function operationsPanelHtml() {
+      var h = operations.health || {}, control = operations.control || {}, job = operations.job || {};
+      var work = backgroundWorkSnapshot(operations.sessions,h,operations.available);
+      var labels = {running:'실행 중',pausing:'일시정지 중',resuming:'재개 중',paused:'일시정지 됨',error:'처리 보류 · 저장 확인 필요'};
+      var pending = Object.keys(work.totals).map(function(k) { return work.totals[k]; });
+      var total = pending.includes(null) ? null : pending.reduce(function(a,b) { return a+b; },0);
+      var known = Object.values(work.knownTotals).filter(function(n) { return n !== null; });
+      var minimum = known.length ? known.reduce(function(a,b) { return a+b; },0) : null;
+      var unknownStages = operations.available ? Object.values(work.unknownStageCounts).reduce(function(a,b) { return a+b; },0) : null;
+      var resume = control.status === 'paused';
+      var disabled = operations.controlBusy || !!operations.controlError || !['running','paused','error'].includes(control.status);
+      var jobLabels = {idle:'분석 요청 없음',queued:'점검 접수됨',running:'Codex 분석 중',completed:'점검 완료',failed:'점검 실패',interrupted:'점검 중단됨'};
+      var jobBusy = operations.submitting || ['queued','running'].includes(job.status);
+      var controlLabel = operations.controlBusy ? operations.controlAction === 'resume' ? '재개 중' : '일시정지 요청 중' : labels[control.status] || '미확인';
+      var html = '<section class="card operations-card" id="health-operations" aria-labelledby="operations-title"><div class="card-title" id="operations-title">운영 상태와 점검</div>';
+      html += '<div class="operations-actions"><strong role="status">백그라운드: '+esc(operations.controlError ? '미확인 · 마지막 확인 '+controlLabel : controlLabel)+'</strong><button type="button" class="btn" data-action="'+(resume ? 'resume-background' : 'pause-background')+'"'+(disabled ? ' disabled' : '')+'>'+(operations.controlBusy ? controlLabel+'…' : resume ? '재개' : control.status === 'error' ? '저장 상태 다시 확인' : '일시정지')+'</button><button type="button" class="btn" data-action="refresh-operations"'+(operations.loading ? ' disabled' : '')+'>'+(operations.loading ? '조회 중…' : '현황 새로고침')+'</button></div>';
+      html += operations.controlBusy && (control.transition || {}).action !== operations.controlAction ? '<p class="hnote" role="status">요청 전달 중 · 서버의 진행 단계를 확인하고 있습니다.</p>' : controlDiagnosticHtml(control);
+      html += '<p class="hnote">일시정지는 신규 백그라운드 처리를 보류합니다. 진행 작업과 저장을 확인한 뒤 완료되며, 기록 수집·색인 저장은 계속됩니다. 재개는 직접 눌러야 합니다.</p>';
+      if (control.status === 'error') html += '<p role="alert" class="mem-note err">처리는 보류 중입니다. 저장 확인이 끝나지 않아 재개할 수 없습니다.</p>';
+      [operations.error,operations.controlError,operations.controlRequestError].filter(Boolean).forEach(function(error) { html += '<p role="alert" class="mem-note err">'+esc(error)+'</p>'; });
+      html += '<p class="hnote">남은 처리 단계: '+(total === null ? minimum === null ? '미확인' : '확인된 최소 '+minimum.toLocaleString()+'건 · 전체 잔여량 미확인' : total.toLocaleString()+'건')+' · 활성 격리: '+(operations.available ? work.quarantined+'건' : '미확인')+' · 마지막 조회 '+esc(operations.checkedAt ? new Date(operations.checkedAt).toLocaleString() : '미확인')+'</p>';
+      var unknownKinds = [['embedding','임베딩'],['features','기억 정리']].filter(function(pair) { return work.totals[pair[0]] === null; }).map(function(pair) { return pair[1]; });
+      if (total === null) html += '<p class="hnote">'+(operations.available ? '미확인 세션 '+work.unknownSessionsCount+'개 / 단계 '+unknownStages+'개' : '미확인 세션 / 단계 수: 조회 실패로 확인 불가')+(unknownKinds.length ? ' · '+unknownKinds.join('·')+' 잔여량 미확인' : '')+'</p>';
+      if (!operations.available) html += '<p role="status" class="hnote">세션 조회 실패 또는 조회 전 · 대기 작업 수 미확인</p>';
+      html += memoryPressureStatus(h.memoryPressure)+snapshotStatus(h.snapshotRecovery);
+      html += readinessStatusHtml(h.providerReadiness);
+      html += '<div class="operations-actions"><button type="button" class="btn" data-action="submit-codex-inspection"'+(jobBusy || !!operations.jobError || !jobLabels[job.status] ? ' disabled' : '')+'>'+(jobBusy ? 'Codex 점검 중…' : 'Codex로 읽기 전용 분석')+'</button><span class="hnote">수동 실행 · Codex 사용량 발생 · 데이터 변경 없이 메타데이터 분석</span></div>';
+      html += '<p role="status" aria-live="polite">'+esc(jobLabels[job.status] || 'Codex 연결 확인 불가')+(operations.jobError ? ' · '+esc(operations.jobError) : '')+(job.error ? ' · '+esc(inspectionErrorText(job.error)) : '')+'</p>';
+      if (operations.submitError) html += '<p role="alert" class="mem-note err">'+esc(operations.submitError)+'</p>';
+      html += '<details id="operations-details"'+(operations.detailsOpen ? ' open' : '')+'><summary>세션·격리·점검 결과 상세</summary><div class="hnote">같은 기록이 여러 처리 단계에 포함될 수 있습니다. 세션 종료와 요약 완료는 다릅니다. 격리 기록은 자동 재처리하지 않습니다.</div>';
+      [['summary','요약'],['compress','압축'],['graph','그래프'],['embedding','임베딩'],['features','기억 정리(Slots·반성)']].forEach(function(pair) { var n = work.totals[pair[0]], confirmed = work.knownTotals[pair[0]], missing = work.unknownStageCounts[pair[0]]; html += '<div class="hnote">'+pair[1]+': '+(n === null ? confirmed === null ? '미확인' : '확인된 최소 '+confirmed.toLocaleString()+'건' : n.toLocaleString()+'건')+(missing ? ' · 미확인 '+missing+'세션' : '')+'</div>'; });
+      if (work.rows.length) {
+        html += '<div class="table-wrap"><table class="metric-table"><thead><tr><th>프로젝트 / 세션</th><th>상태 / 오류 필드</th><th>요약·압축·그래프</th></tr></thead><tbody>';
+        work.rows.slice(0,100).forEach(function(row) {
+          html += '<tr><td>'+esc(row.project)+'<div class="hnote">'+esc(row.id)+'</div></td><td>'+esc(row.status)+(row.unknownStatus && row.status !== '미확인' ? ' · 일부 상태 미확인' : '');
+          row.records.slice(0,20).forEach(function(record) { html += '<div class="hnote">'+esc(record.stage)+' · '+esc(record.reason)+(record.field ? ' · 필드 '+esc(record.field) : '')+' · 시도 '+(record.attempts === null ? '미확인' : record.attempts)+'<br>'+esc(record.id)+' · '+esc(record.at || '시각 미확인')+'</div>'; });
+          html += '</td><td>'+['summary','compress','graph'].map(function(k) { return row.counts[k] === null ? '미확인' : row.counts[k]; }).join(' / ')+'</td></tr>';
+        });
+        html += '</tbody></table></div><p class="hnote">최대 100세션 · 세션당 격리 20건 표시</p>';
+      } else if (operations.available) html += '<p class="hnote">조회 가능한 요약·압축·그래프 대기 세션 없음</p>';
+      if (typeof job.result === 'string') html += '<pre class="operations-result">'+esc(job.result.slice(0,24000))+'</pre>';
+      if (job.threadId && /^[A-Za-z0-9_-]{1,100}$/.test(job.threadId)) html += '<p class="hnote">Codex 대화 ID: <code>'+esc(job.threadId)+'</code></p>';
+      html += '<div class="operations-actions"><button type="button" class="btn" data-action="refresh-codex-inspection">분석 상태 다시 조회</button><button type="button" class="btn" data-action="copy-inspection-request">다른 Codex에 전달할 요청 복사</button><span id="inspection-copy-status" role="status"></span></div>';
+      html += '<p class="hnote">점검을 시작한 후 이 화면을 닫아도 실행은 계속됩니다. 정상 종료 시 작업·저장 확인은 서버에서 수행합니다. 대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details></section>';
+      return html;
+    }
+
+    function renderOperations() {
+      markDirty(['health','dashboard']);
+      if (state.activeTab === 'health') renderTab('health');
+    }
+    async function loadOperations() {
+      if (operations.request) return operations.request;
+      var generation = operations.generation;
+      operations.loading = true; renderOperations();
+      operations.request = (async function() {
+        try {
+          var results = await Promise.all([apiGet('health'),apiGet('sessions?includeSummary=false'),apiGet('background/control'),apiGet('diagnostics/codex-inspection')]);
+          if (generation !== operations.generation) return;
+          var h = results[0], sessions = results[1], control = results[2], job = results[3];
+          operations.error = h ? '' : 'Health 조회 실패 · 이전 상태는 최신 상태가 아닐 수 있습니다.';
+          if (h) {
+            operations.metricPrevious = operations.metrics; operations.metrics = {};
+            (h.functionMetrics || []).forEach(function(m) { operations.metrics[m.functionId] = {totalCalls:m.totalCalls,failureCount:m.failureCount}; });
+            operations.health = h;
+          }
+          operations.available = !!(sessions && Array.isArray(sessions.sessions));
+          if (operations.available) operations.sessions = sessions.sessions;
+          if (control && control.success && control.control) { operations.control = control.control; operations.controlError = ''; }
+          else operations.controlError = '백그라운드 상태 조회 실패 · 조작 전 현황을 확인하세요.';
+          if (job && ['idle','queued','running','completed','failed','interrupted'].includes(job.status)) { operations.job = job; operations.jobError = ''; }
+          else operations.jobError = 'Codex 상태 조회 실패';
+          operations.checkedAt = Date.now();
+        } finally {
+          operations.loading = false; operations.request = null; renderOperations();
+        }
+      })();
+      return operations.request;
+    }
+    async function checkBackgroundControl() {
+      clearTimeout(operations.controlTimer); operations.controlTimer = null;
+      var result = await apiGet('background/control');
+      if (result && result.success && result.control) { operations.control = result.control; operations.controlError = ''; }
+      else operations.controlError = '상태 조회 실패 · 요청 결과 미확정입니다. 현황 새로고침으로 다시 확인하세요.';
+      renderOperations();
+      if (result && result.control && ['pausing','resuming'].includes(result.control.status)) operations.controlTimer = setTimeout(checkBackgroundControl,2000);
+    }
+    async function changeBackgroundControl(action) {
+      if (operations.controlBusy || operations.controlError || !operations.control || action === 'resume' && operations.control.status !== 'paused' || action === 'pause' && !['running','error'].includes(operations.control.status)) return;
+      operations.controlBusy = true; operations.controlAction = action; operations.controlError = ''; operations.controlRequestError = ''; renderOperations();
+      try {
+        var result = await api('background/control',{method:'POST',readErrorBody:true,headers:{'Content-Type':'application/json','X-AgentMemory-Background':'1'},body:JSON.stringify({action:action})});
+        if (result && result.control) operations.control = result.control;
+        if (!result) operations.controlError = '요청 결과 미확정 · 서버 상태를 다시 조회합니다.';
+        else if (!result.success) operations.controlRequestError = '마지막 요청 실패: '+(({memory_pressure:'호스트 메모리 보호로 요청이 보류됐습니다.',background_draining:'진행 작업·저장 종료를 기다려야 합니다.',background_storage_unavailable:'저장 확인 실패 · 처리는 보류 중입니다.'})[result.error] || '서버 상태를 다시 조회합니다.');
+      } finally { operations.controlBusy = false; operations.controlAction = null; renderOperations(); }
+      checkBackgroundControl();
+    }
+    function newInspectionRequestId() {
+      var bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6]=(bytes[6]&15)|64; bytes[8]=(bytes[8]&63)|128;
+      var hex=Array.from(bytes,function(b) { return b.toString(16).padStart(2,'0'); }).join('');
+      return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
+    }
+    async function checkCodexInspection() {
+      clearTimeout(operations.jobTimer); operations.jobTimer = null;
+      if (operations.checking) return;
+      operations.checking = true;
+      try {
+        var job = await apiGet('diagnostics/codex-inspection');
+        if (job && ['idle','queued','running','completed','failed','interrupted'].includes(job.status)) { operations.job = job; operations.jobError = ''; }
+        else operations.jobError = 'Codex 상태 조회 실패 · 다시 조회하세요.';
+      } finally { operations.checking = false; renderOperations(); }
+      if (job && ['queued','running'].includes(job.status)) operations.jobTimer = setTimeout(checkCodexInspection,3000);
+    }
+    async function submitCodexInspection() {
+      if (operations.submitting || !operations.job || ['queued','running'].includes(operations.job.status)) return;
+      operations.submitting = true; operations.submitError = ''; operations.detailsOpen = true; renderOperations();
+      try {
+        if (!operations.requestId) operations.requestId = newInspectionRequestId();
+        var job = await api('diagnostics/codex-inspection',{method:'POST',readErrorBody:true,headers:{'Content-Type':'application/json','X-AgentMemory-Inspection':'1'},body:JSON.stringify({requestId:operations.requestId})});
+        if (job && job.id) { operations.job = job; operations.requestId = null; }
+        else operations.submitError = inspectionErrorText(job && job.error || 'request_connection_failed');
+      } finally { operations.submitting = false; renderOperations(); }
+      checkCodexInspection();
+    }
+    async function copyInspectionRequest() {
+      var status = document.getElementById('inspection-copy-status'), request = inspectionRequest(operations.sessions);
+      try { await navigator.clipboard.writeText(request); if (status) status.textContent = '복사했습니다.'; }
+      catch (_) { if (status) { status.textContent = '자동 복사 불가 · 아래 요청을 선택해 직접 복사하세요.'; var pre = document.createElement('pre'); pre.className = 'operations-result'; pre.textContent = request; status.appendChild(pre); } }
+    }
+    function updateRefreshControls() {
+      var toggle = document.getElementById('auto-refresh-toggle'), interval = document.getElementById('auto-refresh-interval');
+      if (toggle) toggle.checked = autoRefresh.enabled;
+      if (interval) { interval.value = String(autoRefresh.seconds); interval.disabled = !autoRefresh.enabled; }
+    }
+    function scheduleOperationsRefresh() {
+      clearTimeout(operations.refreshTimer); operations.refreshTimer = null;
+      if (!autoRefresh.enabled) return;
+      operations.refreshTimer = setTimeout(async function() {
+        operations.refreshTimer = null;
+        if (!autoRefresh.enabled) return;
+        if (!document.hidden) {
+          if (conn.state !== 'live') await loadSnapshot();
+          if (['health','dashboard'].includes(state.activeTab)) await loadOperations();
+        }
+        scheduleOperationsRefresh();
+      },autoRefresh.seconds*1000);
+    }
+    function setAutoRefresh(enabled, seconds) {
+      autoRefresh = {enabled:!!enabled,seconds:[10,30,60,120,300].includes(seconds) ? seconds : 30};
+      try { localStorage.setItem('agentmemory-refresh',JSON.stringify(autoRefresh)); } catch (_) {}
+      clearTimeout(wsReconnectTimer); wsReconnectTimer = null;
+      clearTimeout(pendingLiveRender); pendingLiveRender = null;
+      clearTimeout(operations.refreshTimer); operations.refreshTimer = null;
+      operations.generation++;
+      var ws = state.ws; state.ws = null;
+      if (ws) { try { ws.close(); } catch (_) {} }
+      updateRefreshControls();
+      setConnection(autoRefresh.enabled ? 'connecting' : 'paused');
+      if (autoRefresh.enabled) { connectWs(); scheduleOperationsRefresh(); }
+      renderOperations();
     }
 
     var consolidationStatusRequest = null;
@@ -2556,6 +2875,7 @@
       html += '</div>';
 
       html += '<div class="section-head"><h2>Is it healthy</h2><span class="section-sub">' + (store.lastHealthAt ? 'checked ' + relTime(new Date(store.lastHealthAt).toISOString()) : '') + '</span></div>';
+      html += '<p class="hnote"><a class="empty-link" href="#health/operations">운영 상태 · 일시정지 · 읽기 전용 점검 &rarr;</a></p>';
       html += '<div class="stats-grid">';
       var verdict = store.report ? store.report.status : healthStatus;
       var verdictDot = { ok: 'healthy', info: 'healthy', warn: 'degraded', error: 'critical' }[verdict] || healthDotClass(verdict);
@@ -5328,7 +5648,7 @@
 
     function sessionQueryPath(extra) {
       var f = state.sessions.filters;
-      var p = 'sessions?limit=50';
+      var p = 'sessions?limit=50&includeSummary=false';
       if (f.project) p += '&project=' + encodeURIComponent(f.project);
       if (f.agent) p += '&agentId=' + encodeURIComponent(f.agent);
       if (f.status) p += '&status=' + encodeURIComponent(f.status);
@@ -5394,7 +5714,7 @@
       if (!cursor || s.loadingMore) return;
       s.loadingMore = true;
       renderTab(state.activeTab);
-      var res = await apiGet(q ? q.path + '&cursor=' + encodeURIComponent(cursor) : 'sessions?limit=100&cursor=' + encodeURIComponent(cursor));
+      var res = await apiGet(q ? q.path + '&cursor=' + encodeURIComponent(cursor) : 'sessions?limit=100&includeSummary=false&cursor=' + encodeURIComponent(cursor));
       s.loadingMore = false;
       if (res) {
         mergeSessionRows(res.sessions);
@@ -5673,6 +5993,7 @@
         s.pendingObs = null;
       }
       s.detail = d;
+      lookupSession(id);
       Promise.all([ensureLoaded('lesson'), ensureLoaded('crystal')]).then(function() { if (state.sessions.detail === d) renderSessionProduced(); });
       loadSessionObservations(d, false);
       loadSessionProduced(d);
@@ -7072,6 +7393,7 @@
 
     function healthStaleHtml(r) {
       var last = store.lastHealthAt ? new Date(store.lastHealthAt).toLocaleTimeString() : '';
+      if (conn.state !== 'live' && hasFreshHttpSnapshot()) return '<div class="hstale"><strong>실시간 스트림 미연결</strong> HTTP 현황을 ' + autoRefresh.seconds + '초 주기로 조회합니다. 서버 진단 보고서의 생성 시각은 아래 Report를 확인하세요.</div>';
       if (conn.state === 'reconnecting' || conn.state === 'offline') {
         return '<div class="hstale offline" id="health-live-state"><strong>Offline: live updates are paused.</strong> The viewer lost its connection to agentmemory' + (conn.lostAt ? ' at ' + esc(new Date(conn.lostAt).toLocaleTimeString()) : '') + '. Everything on this page is the last report' + (last ? ' from ' + esc(last) : '') + ' and may be out of date. It refreshes by itself when the connection returns.' +
           '<div style="margin-top:6px;">Check that the server is running:</div>' + cmdBlock('npx @agentmemory/agentmemory status') +
@@ -7096,16 +7418,16 @@
       var text = r ? (r.headline || (r.status === 'ok' ? 'Every check passed.' : 'Some checks need attention.')) : 'Waiting for the first health report from the server.';
       var html = '<div class="card" style="margin-top:0;">';
       var badgeText = level === 'unknown' ? 'waiting' : level;
-      var paused = conn.state === 'reconnecting' || conn.state === 'offline';
+      var paused = !autoRefresh.enabled || conn.state !== 'live' && !hasFreshHttpSnapshot();
       var quiet = !paused && store.lastHealthAt && Date.now() - store.lastHealthAt > HEALTH_STALE_MS;
       if (r && (paused || quiet)) {
-        badgeText = paused ? 'offline' : 'stale';
+        badgeText = !autoRefresh.enabled ? 'refresh OFF' : paused ? 'offline' : 'stale';
         level = 'unknown';
         text = 'Last known state: ' + text;
       }
       html += '<div class="verdict"><span class="verdict-badge ' + esc(level) + '">' + esc(badgeText) + '</span><div style="min-width:0;flex:1;">' +
         '<div class="verdict-text">' + esc(text) + '</div>' +
-        '<div class="verdict-meta">' + (r ? 'Report ' + relTime(r.checkedAt) + ' · ' : '') + 'updates every 30 s over the live stream, no refresh needed ' + help('live') + '</div></div></div>';
+        '<div class="verdict-meta">' + (r ? 'Report ' + relTime(r.checkedAt) + ' · ' : '') + 'server reports every 30 s · '+(autoRefresh.enabled ? '표시 갱신 '+autoRefresh.seconds+'초' : '자동 새로고침 OFF')+' ' + help('live') + '</div></div></div>';
       html += healthStaleHtml(r);
       if (state.health.error) html += '<div class="mem-note err" style="margin-top:10px;">' + esc(state.health.error) + '</div>';
       if (r && r.problems.length) {
@@ -7128,7 +7450,7 @@
       return '<div class="card"><div class="card-title">Engine and connection ' + help('engineConnection') + '</div>' +
         hrow('Engine connection', esc(snap.connectionState || 'unknown'), 'engineConnection', 'The worker\'s link to the iii engine, which stores the data and runs the functions.') +
         ((kv || backend) ? hrow('State store', esc((backend ? backend + (kv ? ' · ' : '') : '') + (kv ? kv.status + (kv.latencyMs !== undefined ? ' · ' + kv.latencyMs + ' ms' : '') + (kv.error ? ' · ' + kv.error : '') : '')), 'stateBackend', backend === 'redis' ? 'Stored in Redis (AGENTMEMORY_STATE_BACKEND=redis). If Redis restarts, restart agentmemory so the live stream resumes.' : 'Stored in the engine\'s local files (the default). Set AGENTMEMORY_STATE_BACKEND=redis to use Redis.') : '') +
-        hrow('Viewer stream', esc(streamText), 'live', 'This page\'s own connection. Offline means the numbers here stop changing.') +
+        hrow('Viewer stream', esc(streamText), 'live', '실시간 스트림 상태입니다. 미연결이어도 HTTP 현황 갱신은 별도로 동작하며 마지막 성공 시각을 표시합니다.') +
         (snap.streamRelay ? hrow('Redis event relay', esc(snap.streamRelay), 'live', snap.streamRelay === 'down' ? 'The engine stopped relaying live events through Redis, usually after Redis restarted. Data is still saved. Restart agentmemory to resume live updates.' : 'A test event sent through Redis every 30 seconds came back to the worker.') : '') +
         hrow('Uptime', esc(formatUptime(snap.uptimeSeconds)), 'uptime') +
         hrow('Version', esc('v' + (store.version || (r && r.service.version) || '?') + (r ? ' · engine ' + r.service.engineVersion : ''))) +
@@ -7231,7 +7553,7 @@
       html += hrow('RSS', esc(mb(m.rss) + ' MB'), 'rss', 'Everything the process holds from the operating system, including code and buffers.');
       var lag = snap.eventLoopLagMs;
       html += hrow('Event loop delay', lag !== undefined ? esc(Number(lag).toFixed(1) + ' ms') : '-', 'eventLoop', 'How far behind the worker is. Under 100 ms is fine; above that requests answer slowly.');
-      if (snap.cpu) html += hrow('CPU', esc(Math.round(snap.cpu.percent || 0) + '%'), null, 'Share of one core used since the last report. Short bursts during imports are normal.');
+      if (snap.cpu) { var cpu = cpuDisplay(snap.cpu); html += hrow(cpu.label, esc(cpu.percent === null ? '미확인' : cpu.percent.toFixed(1)+'%'), null, esc(cpu.detail)); }
       (snap.notes || []).forEach(function(n) { html += '<div class="hnote" style="margin-top:6px;">' + esc(humanizeHealthFlag(n)) + '</div>'; });
       return html + '</div>';
     }
@@ -7276,7 +7598,7 @@
     }
 
     function functionsCardHtml(r) {
-      var fns = ((r && r.functions) || store.functionMetrics || []).slice().sort(function(a, b) { return (b.totalCalls || 0) - (a.totalCalls || 0); });
+      var fns = (operations.health.functionMetrics || (r && r.functions) || store.functionMetrics || []).slice().sort(function(a, b) { return (b.totalCalls || 0) - (a.totalCalls || 0); });
       var html = '<div class="card" style="margin-top:16px;"><div class="card-title">Functions ' + help('functionCalls') + '</div>';
       if (!fns.length) {
         return html + emptyState({ compact: true, title: 'No function has run since the worker started',
@@ -7284,15 +7606,21 @@
           why: 'Nothing has called the worker yet in this process. Rows appear here live as agents observe, search and save.',
           steps: [{ label: 'Make a first call from a terminal:', cmd: curlPost('smart-search', { query: 'test' }) }] }) + '</div>';
       }
-      html += '<div class="table-wrap"><table class="metric-table"><tr><th>Function</th><th style="text-align:right">Calls</th><th style="text-align:right">Failed</th><th style="text-align:right">Failure rate ' + help('failureRate') + '</th><th style="text-align:right">Avg latency ' + help('latency') + '</th></tr>';
+      html += '<p class="hnote">누적 실패는 과거 이력입니다. 새 실패는 직전 운영 현황 조회와 비교하며, 집계가 초기화되면 다음 조회부터 다시 비교합니다.</p>';
+      html += '<div class="table-wrap"><table class="metric-table"><tr><th>Function</th><th style="text-align:right">Calls</th><th style="text-align:right">누적 실패</th><th>직전 조회 이후</th><th>품질 / 표본 기간</th><th style="text-align:right">누적 실패율 ' + help('failureRate') + '</th><th style="text-align:right">Avg latency ' + help('latency') + '</th></tr>';
       fns.forEach(function(f) {
         var total = f.totalCalls || 0;
         var rate = total > 0 ? (f.failureCount || 0) / total : 0;
-        var off = !!f.offWithoutLlm;
-        var bad = !off && total >= 5 && rate >= 0.2;
+        var reported = r && (r.functions || []).find(function(row) { return row.functionId === f.functionId; });
+        var off = !!(f.offWithoutLlm || reported && reported.offWithoutLlm);
+        var previous = operations.metricPrevious[f.functionId], quality = metricQuality(f);
+        var recent = metricRecentFailures(f,previous);
+        var bad = !off && previous && f.totalCalls >= previous.totalCalls && f.failureCount > previous.failureCount;
         html += '<tr><td class="metric-fn">' + esc(f.functionId) + (off ? ' <span class="badge badge-muted">off, no LLM</span>' : '') + '</td>' +
           '<td class="metric-num">' + fmtNum(total) + '</td>' +
-          '<td class="metric-num" style="color:' + ((f.failureCount || 0) > 0 && !off ? 'var(--red)' : 'var(--ink-faint)') + '">' + (off ? '-' : fmtNum(f.failureCount || 0)) + '</td>' +
+          '<td class="metric-num" style="color:var(--ink-muted)">' + (off ? '-' : fmtNum(f.failureCount || 0)) + '</td>' +
+          '<td style="color:'+(bad ? 'var(--red)' : 'var(--ink-muted)')+'">'+esc(recent)+'</td>' +
+          '<td>'+esc(quality.value)+'<div class="hnote">'+esc(quality.detail)+'</div></td>' +
           '<td class="metric-num" style="color:' + (bad ? 'var(--red)' : 'var(--ink-muted)') + '">' + (off ? 'off' : Math.round(rate * 100) + '%') + '</td>' +
           '<td class="metric-num">' + Math.round(f.avgLatencyMs || 0) + ' ms</td></tr>';
       });
@@ -7383,7 +7711,7 @@
       renderTab('health');
       try {
         var res = await apiPost('consolidate-pipeline', { tier: 'all' });
-        state.health.error = res && res.success === false && res.reason ? res.reason : null;
+        state.health.error = !res ? '요청 결과 확인 불가 · 실행 여부가 미확정입니다. 상태를 다시 조회하세요.' : res.success === false || res.error ? '정리를 실행하지 못했습니다. 상태와 설정을 확인하세요.' : null;
       } finally {
         state.health.consolidating = false;
         markDirty(['health']);
@@ -7393,6 +7721,8 @@
 
     function renderHealth() {
       var el = document.getElementById('view-health');
+      var focused = document.activeElement, insideOperations = focused && focused.closest('#health-operations');
+      var focusedAction = insideOperations && focused.getAttribute('data-action');
       if (!store.snapshot) {
         setViewHtml(el, skeleton(10));
         return;
@@ -7403,10 +7733,18 @@
       var c = store.counts || {};
       var html = '<div class="inline-note"><strong>Health</strong> ' + help('health') + ' is the live version of the <a class="empty-link" href="' + esc(REST) + '/agentmemory/status" target="_blank" rel="noopener">/agentmemory/status</a> page: the same checks and verdict, pushed over the stream every 30 seconds. Every problem says what to do. Scroll down for how consolidation works.</div>';
       html += healthVerdictHtml(r);
+      html += operationsPanelHtml();
       html += '<div class="hgrid">' + engineCardHtml(r, snap) + indexCardHtml(r, idx, c) + captureCardHtml(r) + llmCardHtml(r) + flagsCardHtml(r) + processCardHtml(snap) + recordsCardHtml(c) + '</div>';
       html += consolidationPanelHtml(store.consolidationStatus, c);
       html += functionsCardHtml(r);
       setViewHtml(el, html);
+      var operationDetails = el.querySelector('#operations-details');
+      if (operationDetails) operationDetails.addEventListener('toggle', function() { operations.detailsOpen = operationDetails.open; });
+      if (insideOperations && operationDetails) {
+        var nextFocus = focusedAction && /^[a-z-]+$/.test(focusedAction) ? el.querySelector('#health-operations [data-action="'+focusedAction+'"]') : null;
+        if (!nextFocus || nextFocus.disabled) nextFocus = operationDetails.querySelector('summary');
+        nextFocus.focus({preventScroll:true});
+      }
       var reveal = state.health.reveal && document.getElementById('health-' + state.health.reveal);
       if (reveal) {
         state.health.reveal = '';
@@ -7644,7 +7982,25 @@
       }
     }
 
+    function hasFreshHttpSnapshot() {
+      return autoRefresh.enabled && !store.snapshotError && store.snapshotAt > 0 && Date.now() - store.snapshotAt <= Math.max(90000, autoRefresh.seconds * 2000);
+    }
+
     function renderConnection() {
+      if (!autoRefresh.enabled) {
+        setWsStatus('자동 새로고침 OFF', 'disconnected');
+        var pausedBanner = document.getElementById('offline-banner');
+        if (pausedBanner) { pausedBanner.hidden = false; pausedBanner.innerHTML = '<strong>자동 새로고침 OFF</strong><span>현재 화면은 마지막 조회 상태입니다. 현황 새로고침으로 직접 조회하거나 자동 새로고침을 켜세요.</span>'; }
+        return;
+      }
+      if (conn.state !== 'live' && hasFreshHttpSnapshot()) {
+        setWsStatus('HTTP 현황 갱신 · ' + autoRefresh.seconds + '초', 'stale-health');
+        document.body.classList.toggle('is-stale', false);
+        var httpBanner = document.getElementById('offline-banner');
+        if (httpBanner) { httpBanner.hidden = false; httpBanner.innerHTML = '<strong>실시간 스트림 미연결 · HTTP 현황 조회 정상</strong><span>전체 현황은 ' + autoRefresh.seconds + '초 주기로 조회합니다. 마지막 성공: ' + esc(new Date(store.snapshotAt).toLocaleTimeString()) + '. 목록의 개별 변경은 실시간 반영되지 않습니다.</span>'; }
+        return;
+      }
+      document.body.classList.toggle('is-stale', conn.state !== 'live');
       var secs = conn.nextRetryAt ? Math.max(0, Math.ceil((conn.nextRetryAt - Date.now()) / 1000)) : 0;
       var healthStale = conn.state === 'live' && store.lastHealthAt && Date.now() - store.lastHealthAt > HEALTH_STALE_MS;
       if (conn.state === 'live') setWsStatus(healthStale ? 'live · health quiet' : 'live', healthStale ? 'stale-health' : 'connected');
@@ -7692,6 +8048,7 @@
     }
 
     function scheduleReconnect() {
+      if (!autoRefresh.enabled) return;
       wsRetries++;
       var delay = reconnectDelay(wsRetries);
       conn.nextRetryAt = Date.now() + delay;
@@ -7715,9 +8072,10 @@
     var WS_CONNECT_TIMEOUT_MS = 5000;
 
     function connectWs() {
+      if (!autoRefresh.enabled) return;
       wsReconnectTimer = null;
       conn.nextRetryAt = 0;
-      var useDirect = !directFailed;
+      var useDirect = !directFailed || WS_URL === WS_DIRECT_URL;
       var ws;
       try {
         ws = new WebSocket(useDirect ? WS_DIRECT_URL : WS_URL);
@@ -8007,15 +8365,14 @@
       if (state.activeTab === 'dashboard') markDirty(['dashboard']);
     }
 
-    var LIVE_RENDER_THROTTLE_MS = 250;
     var pendingLiveRender = null;
     function scheduleLiveRender() {
-      if (pendingLiveRender) return;
+      if (pendingLiveRender || !autoRefresh.enabled) return;
       pendingLiveRender = setTimeout(function() {
         pendingLiveRender = null;
         if (tabDirty[state.activeTab]) renderTab(state.activeTab);
         if (state.activeTab === 'actions') ensureFrontier();
-      }, LIVE_RENDER_THROTTLE_MS);
+      }, autoRefresh.seconds * 1000);
     }
 
     function updateCountBadges() {
@@ -8031,9 +8388,9 @@
       var observation;
       if (!evt) return;
       if (evt.type === 'event' && evt.event && evt.event.type) {
-        if (evt.event.type === 'raw_observation') {
+        if (evt.event.type === 'raw_observation' || evt.event.type === 'compressed_observation') {
           observation = evt.event.data && (evt.event.data.observation || evt.event.data);
-          if (looksLikeObservation(observation)) routeWsMessage({ observation: observation });
+          if (looksLikeObservation(observation)) routeWsMessage({ observation: observation, fresh: evt.event.type === 'compressed_observation' });
           return;
         }
         handleLiveEvent(evt.event.type, evt.event.data || {});
@@ -8226,7 +8583,7 @@
       var sync = document.getElementById('footer-sync');
       if (sync) {
         var syncText = store.snapshotAt ? 'full sync ' + new Date(store.snapshotAt).toLocaleTimeString() : 'waiting for first sync';
-        if (store.snapshotAt) syncText += wsOpenedAt ? ', streaming since ' + new Date(wsOpenedAt).toLocaleTimeString() : ', stream reconnecting';
+        if (store.snapshotAt) syncText += conn.state === 'live' && wsOpenedAt ? ', streaming since ' + new Date(wsOpenedAt).toLocaleTimeString() : hasFreshHttpSnapshot() ? ', HTTP 현황 갱신 · 스트림 미연결' : ', stream reconnecting';
         sync.textContent = syncText;
       }
       var fbEl = document.getElementById('footer-feedback');
@@ -8323,7 +8680,7 @@
       var modal = document.getElementById('modal');
       var overlay = document.getElementById('modal-overlay');
       var html = '<h3>How to read this viewer</h3>';
-      html += '<p style="margin-bottom:8px;">Everything on these pages updates live over one streaming connection; nothing refreshes on a timer. Click any <span class="help" style="cursor:default;">?</span> for a short explanation, or use the keys below.</p>';
+      html += '<p style="margin-bottom:8px;">변경 사항은 실시간 연결로 수신하고 헤더에서 선택한 주기로 표시합니다. 추가 운영 현황도 같은 주기로 조회합니다. 자동 새로고침 OFF에서는 직접 조회만 합니다. Click any <span class="help" style="cursor:default;">?</span> for a short explanation, or use the keys below.</p>';
       html += '<div class="kbd-list">' +
         '<div><kbd>/</kbd> focus search on this page</div>' +
         '<div><kbd>?</kbd> open this help</div>' +
@@ -8467,6 +8824,13 @@
       if (!target) return;
       var action = target.getAttribute('data-action');
       if (!action) return;
+      if (target.disabled) return;
+      if (action === 'pause-background') { changeBackgroundControl('pause'); return; }
+      if (action === 'resume-background') { changeBackgroundControl('resume'); return; }
+      if (action === 'refresh-operations') { loadOperations(); return; }
+      if (action === 'submit-codex-inspection') { submitCodexInspection(); return; }
+      if (action === 'refresh-codex-inspection') { checkCodexInspection(); return; }
+      if (action === 'copy-inspection-request') { copyInspectionRequest(); return; }
 
       if (action === 'toggle-theme') {
         toggleTheme();
@@ -8893,17 +9257,12 @@
     });
 
     var bootRoute = parseRoute(window.location.hash);
+    updateRefreshControls();
+    scheduleOperationsRefresh();
+    document.getElementById('auto-refresh-toggle').addEventListener('change', function(e) { setAutoRefresh(e.target.checked, autoRefresh.seconds); });
+    document.getElementById('auto-refresh-interval').addEventListener('change', function(e) { setAutoRefresh(autoRefresh.enabled,Number(e.target.value)); });
     switchTab(bootRoute.tab, { replaceRoute: true, skipRoute: !!bootRoute.obs && !bootRoute.redirect, id: bootRoute.id, obs: bootRoute.obs });
-    (async function initWs() {
-      try {
-        var live = await api('livez', { signal: AbortSignal.timeout(5000) });
-        if (live && typeof live.streamsPort === 'number' && live.streamsPort > 0) {
-          WS_URL = wsProto + '//' + window.location.hostname + ':' + live.streamsPort;
-          WS_DIRECT_URL = WS_URL + '/stream/mem-live/viewer';
-        }
-      } catch (_) {}
-      connectWs();
-    })();
+    connectWs();
     setTimeout(function() {
       if (wsHasConnected) return;
       openBootGate();
@@ -8912,6 +9271,7 @@
     }, 4000);
 
     document.addEventListener('visibilitychange', function() {
+      if (!autoRefresh.enabled) return;
       if (document.visibilityState !== 'visible') return;
       var ws = state.ws;
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -8998,5 +9358,6 @@
       });
     })();
   </script>
+<!-- AGENTMEMORY_FEEDBACK_VIEWER -->
 </body>
 </html>

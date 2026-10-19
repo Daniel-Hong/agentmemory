@@ -18,9 +18,9 @@ async function fixture({configured=true,indexFailed=false,bootFailed=false}={}) 
  const kv={durability:configured?{drain:async()=>{events.push('drain');},freeze:()=>{events.push('freeze');},wait:async()=>{events.push('disk');return {synced:true,mutationFailures:0};}}:null};
  const source=readFileSync('src/index.ts','utf8');
  const start=source.indexOf('  const ingress = createShutdownIngress();');
- const end=source.indexOf('  try {\n  const metricsStore',start);
+ const end=source.indexOf('  try {\n  if (persistentBackground)',start);
  const body=source.slice(start,end);
- const deps={createShutdownIngress,createBackgroundLifecycle,verifiedShutdown,closeLongSessionInferenceAdmission:()=>events.push('close-model'),checkAuth:()=>null,kv,sdk,secret:'fixture-secret',dirname,runtimeMetadataPath:(name:string)=>join(dir,name),readFileSync,settleWithin,SHUTDOWN_FLUSH_TIMEOUT_MS,
+ const deps={createBackgroundControl:()=>({settled:async()=>{},commitCleanShutdown:async()=>{events.push("restart-guard");}}),installBackgroundControl:()=>{},operationalState:{},createShutdownIngress,createBackgroundLifecycle,verifiedShutdown,closeLongSessionInferenceAdmission:()=>events.push('close-model'),checkAuth:()=>null,kv,sdk,secret:'fixture-secret',dirname,runtimeMetadataPath:(name:string)=>join(dir,name),readFileSync,settleWithin,SHUTDOWN_FLUSH_TIMEOUT_MS,
  clearWorkerPidfile:()=>events.push('clear-pid'),process:{on:vi.fn(),kill:()=>{},exit:(code:number)=>{events.push('exit:'+code);throw Error('exit:'+code);}}};
  const js=transpileModule(body,{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ES2022}}).outputText;
  const load=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;let fatalShutdown;${js};return {shutdown,bootDone,resources,lifecycle,trackBoot,failBoot:()=>{bootFailed=true;}};`);
@@ -38,7 +38,7 @@ it('waits for initialization and admitted work before freeze and clears PID only
  f.bootDone();await Promise.resolve();expect(f.events).not.toContain('freeze');
  boot.release();await expect(stopping).rejects.toThrow('exit:0');
  expect(drained).toBe(true);
- expect(f.events).toEqual(['close-model','stop-capture','stop-index','close-model','save-index','drain','freeze','disk','sdk','clear-pid','exit:0']);
+ expect(f.events).toEqual(['close-model','stop-capture','stop-index','close-model','save-index','drain','disk','restart-guard','freeze','disk','sdk','clear-pid','exit:0']);
  expect(JSON.parse(await readFile(join(f.dir,'shutdown-receipt.json'),'utf8'))).toMatchObject({verified:true});
 });
 it.each([{configured:false,indexFailed:false,code:'STATE_DURABILITY_UNCONFIGURED'},{configured:true,indexFailed:true,code:'INDEX_SAVE_UNVERIFIED'}])('keeps PID and refuses success for $code',async({configured,indexFailed,code})=>{

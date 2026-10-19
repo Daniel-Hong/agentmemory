@@ -1,0 +1,1 @@
+export function replacementDecision({evidence,functions,data,regression}){if(!evidence)return 'unverified';if(data!==true||regression!==true)return 'retain';return functions===true?'replace':functions==='partial'?'partial':'retain';}

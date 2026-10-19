@@ -2,6 +2,8 @@ import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
 import { getEnvVar } from '../config.js'
 import { createStateDurabilityFence } from '../ops/state-durability.mjs'
+import { createObservationReader } from '../ops/observation-pages.mjs'
+import { createAuditReader } from '../ops/audit-reader.mjs'
 
 export type StateBackend = 'file' | 'redis'
 
@@ -107,6 +109,8 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
 export class StateKV {
   readonly backend: StateBackend
   readonly durability: ReturnType<typeof createStateDurabilityFence> | null
+  readonly observationReader: ReturnType<typeof createObservationReader> | null
+  readonly auditReader: ReturnType<typeof createAuditReader> | null
 
   constructor(
     private sdk: IIIClient,
@@ -117,10 +121,17 @@ export class StateKV {
     this.durability = this.backend === 'file'
       ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath }) : null)
       : null
+    this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this }) : null
+    this.auditReader = this.backend === 'file' && storePath ? createAuditReader({ storePath, kv: this }) : null
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
     return this.durability ? this.durability.mutate(scope, key, fn) : fn()
+  }
+
+  private record(scope: string, key: string, value: unknown, deletedExisting = false): void {
+    this.observationReader?.record(scope, key, value, deletedExisting)
+    this.auditReader?.record(scope, key, value)
   }
 
   async get<T = unknown>(scope: string, key: string): Promise<T | null> {
@@ -131,10 +142,12 @@ export class StateKV {
   }
 
   async set<T = unknown>(scope: string, key: string, value: T): Promise<T> {
-    return this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
+    const result = await this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
       function_id: 'state::set',
       payload: { scope, key, value },
     }))
+    this.record(scope, key, value)
+    return result
   }
 
   async update<T = unknown>(scope: string, key: string, ops: UpdateOp[]): Promise<T> {
@@ -147,20 +160,25 @@ export class StateKV {
         return result as T
       })
     }
-    return this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string; ops: UpdateOp[] }, T>({
+    const result = await this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string; ops: UpdateOp[] }, T>({
       function_id: 'state::update',
       payload: { scope, key, ops },
     }))
+    const updated = result as UpdateResult
+    if (updated && Object.hasOwn(updated, 'new_value')) this.record(scope, key, updated.new_value)
+    return result
   }
 
   async delete(scope: string, key: string): Promise<void> {
-    return this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string }, void>({
+    const result = await this.mutate(scope, key, () => this.sdk.trigger<{ scope: string; key: string }, unknown>({
       function_id: 'state::delete',
       payload: { scope, key },
     }))
+    this.record(scope, key, null, !!result)
   }
 
   async list<T = unknown>(scope: string): Promise<T[]> {
+    if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope)
     const values = await this.sdk.trigger<{ scope: string }, T[]>({
       function_id: 'state::list',
       payload: { scope },

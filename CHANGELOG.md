@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Personal fork PORT-06..08 — implementation and deployment preparation (2026-10-19)
+
+- Bounded observation/Audit readers and durable Audit copy certification replace full-namespace read-then-slice; Viewer adds actual operation progress, read-only live events and CPU capacity normalization.
+- Persistent file pause/host pressure, enrichment/graph/snapshot recovery and conservative project reflection are connected to stop/drain. Project slot ownership reaches REST/MCP/context; legacy unowned slots stay preserved. Redis boot and independent embedding readiness are retained.
+- Source-native personal feedback adds authenticated submission, manual/opt-in scheduled bounded analysis, immutable history, restricted Codex execution and receipt-verified application events. Safe report relations and latest-decision exception review preserve both originals; durable memory stays manual-review-only.
+- Regression investigation restored legacy root raw preservation, narrowed native consolidation grammar to its actual prompt, corrected single reflection registration against real iii-sdk, and repaired remote Viewer auth and candidate lookup.
+- Validation: targeted tests, Chromium desktop/mobile/keyboard and feedback flow, real isolated CLI/iii capture/dedup/analysis/shutdown/restart passed; final aggregate counts and artifact hashes are recorded in the deployment preparation receipt. Existing TypeScript diagnostics are compared to the baseline, not claimed passing.
+- Deployment: NOT applied; production/client configuration and data unchanged. Existing production guard is blocked by absent ~/.agentmemory/preferences.json; exact operating guide, real Windows events and actual model quality remain live checks. No code rollback rewinds current data. Durable-memory record pending separate manual review.
+- Source commit/candidate SHA and final checks are recorded by the matching deployment candidate receipt. Prior port entries and immutable evidence bundles remain unchanged.
+
+
 ### Personal fork — PORT-05 async embedding and verified publication (not deployed)
 
 - Capture now retains synthetic/BM25 content and a recoverable embedding intent before acknowledging, without calling the embedding model. File-backed new/duplicate intents and canonical content require a disk fence; failed storage leaves the capture inbox/retry intact. Keep configured observation limits and the existing auto-compression Void dispatch.

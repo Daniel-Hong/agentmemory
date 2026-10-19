@@ -534,3 +534,15 @@ describe("vector durability rows", () => {
     expect(html).toContain("paused, retried on the next start");
   });
 });
+
+describe('capture stall warning',()=>{
+ it('does not claim no action needed when accepted captures make no progress',()=>{
+  const report=evaluateStatus(inputs({capture:{policy:{retryIntervalMs:10000,maxAttempts:5},inbox:{pending:1,retrying:2,dead:0,lastError:'TIMEOUT'},progress:{stalled:true,pending:3,lastCompletedAt:null},spool:[],sinceStart:{}} as never}));
+  expect(report.problems).toContainEqual(expect.objectContaining({code:'capture-stalled',level:'warn'}));
+  expect(report.problems.find(p=>p.code==='capture-retrying')?.fix).not.toContain('No action needed');
+ });
+ it('shows the next graph recovery attempt rather than prescribing an unnecessary restart',()=>{
+  const report=evaluateStatus(inputs({graphCompaction:{state:'failed',error:'TIMEOUT',nextRetryAt:'2026-10-15T01:00:00Z',retryAttempts:1}}));
+  expect(report.problems.find(p=>p.code==='graph-compaction-failed')?.fix).toContain('2026-10-15T01:00:00Z');
+ });
+});

@@ -112,7 +112,7 @@ describe("viewer streams instead of polling", () => {
     expect(viewer).toMatch(/ws\.onopen = function\(\) \{[\s\S]{0,700}resyncAfterConnect\(firstConnect\);/);
   });
 
-  it("reconnects with capped exponential backoff and never falls back to polling", () => {
+  it("reconnects with capped exponential backoff while keeping stream retries separate from HTTP refresh", () => {
     const delay = load<(n: number) => number>("reconnectDelay");
     expect([1, 2, 3, 4, 5, 6, 7, 10].map(delay)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
     expect(extractFunction("scheduleReconnect")).toMatch(/wsReconnectTimer = setTimeout\(connectWs, delay\);/);

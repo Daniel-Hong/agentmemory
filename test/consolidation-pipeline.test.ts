@@ -6,6 +6,7 @@ vi.mock("../src/logger.js", () => ({
 
 vi.mock("../src/config.js", () => ({
   getConsolidationDecayDays: () => 30,
+  getEnvVar: () => undefined,
   isConsolidationEnabled: vi.fn(() => true),
 }));
 
@@ -59,7 +60,7 @@ function makeSummary(i: number): SessionSummary {
     project: "test-project",
     createdAt: new Date(Date.now() - i * 86400000).toISOString(),
     title: `Session ${i} summary`,
-    narrative: `Worked on feature ${i}`,
+    narrative: `TypeScript is the primary language. Worked on feature ${i}`,
     keyDecisions: [`Decision ${i}`],
     filesModified: [`src/file${i}.ts`],
     concepts: ["typescript", "testing"],
@@ -201,6 +202,25 @@ describe("Consolidation Pipeline", () => {
     expect(stored[0].confidence).toBe(0.9);
   });
 
+  it("accepts native facts JSON, grounds provenance and skips unchanged corpus", async () => {
+    const provider = {name:"test",compress:vi.fn(),summarize:vi.fn().mockResolvedValue(JSON.stringify({facts:[{confidence:0.9,fact:"TypeScript is the primary language"},{confidence:0.8,fact:"Mars runs a golden database"}]}))};
+    for(let i=0;i<6;i++)await kv.set("mem:summaries",`ses_${i}`,makeSummary(i));
+    registerConsolidationPipelineFunction(sdk as never,kv as never,provider as never);
+    const first:any=await sdk.trigger("mem::consolidate-pipeline",{tier:"semantic"});
+    expect(first.success).toBe(true);expect(first.results.semantic.newFacts).toBe(1);
+    const facts=await kv.list<SemanticMemory>("mem:semantic");expect(facts[0].sourceSessionIds).toHaveLength(6);
+    await sdk.trigger("mem::consolidate-pipeline",{tier:"semantic"});expect(provider.summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalid semantic output reports partial failure without checkpoint or data write", async () => {
+    const provider={name:"test",compress:vi.fn(),summarize:vi.fn().mockResolvedValue('{"facts":[{"confidence":4,"fact":"TypeScript is the primary language"}]}')};
+    for(let i=0;i<5;i++)await kv.set("mem:summaries",`ses_${i}`,makeSummary(i));
+    registerConsolidationPipelineFunction(sdk as never,kv as never,provider as never);
+    const result:any=await sdk.trigger("mem::consolidate-pipeline",{tier:"semantic"});
+    expect(result.success).toBe(false);expect(await kv.list("mem:semantic")).toEqual([]);
+    expect(await kv.get("mem:config","consolidation:semanticFingerprint:v2")).toBeNull();
+  });
+
   it("with enough patterns, creates procedural memories from provider response", async () => {
     const provider = {
       name: "test",
@@ -228,6 +248,51 @@ describe("Consolidation Pipeline", () => {
     expect(stored[0].name).toBe("Test Workflow");
     expect(stored[0].steps.length).toBe(2);
     expect(stored[0].triggerCondition).toBe("when writing tests");
+  });
+
+  it("skips unchanged procedural input after restart even when pattern order changes", async () => {
+    const provider = { name: "test", compress: vi.fn(), summarize: vi.fn(async () =>
+      '<procedures><procedure name="Test Workflow" trigger="testing"><step>Write assertions</step></procedure></procedures>') };
+    const originalList = kv.list;
+    let reversed = false;
+    kv.list = async <T>(scope: string) => {
+      const rows = await originalList<T>(scope);
+      return scope === "mem:memories" && reversed ? rows.reverse() : rows;
+    };
+    for (let i = 0; i < 2; i++) await kv.set("mem:memories", `mem_${i}`, makePattern(i));
+    registerConsolidationPipelineFunction(sdk as never, kv as never, provider as never);
+    await sdk.trigger("mem::consolidate-pipeline", { tier: "procedural" });
+    const saved = structuredClone(await kv.list<ProceduralMemory>("mem:procedural"));
+    reversed = true;
+    registerConsolidationPipelineFunction(sdk as never, kv as never, provider as never);
+    const unchanged: any = await sdk.trigger("mem::consolidate-pipeline", { tier: "procedural" });
+    expect(unchanged.results.procedural).toMatchObject({ skipped: true, reason: "patterns unchanged" });
+    expect(await kv.list("mem:procedural")).toEqual(saved);
+    expect(provider.summarize).toHaveBeenCalledOnce();
+    await kv.set("mem:memories", "mem_0", { ...makePattern(0), content: "Changed recurring workflow" });
+    await sdk.trigger("mem::consolidate-pipeline", { tier: "procedural" });
+    expect(provider.summarize).toHaveBeenCalledTimes(2);
+    expect((await kv.list<ProceduralMemory>("mem:procedural"))[0].frequency).toBe(2);
+  });
+
+  it("retries malformed procedural output without writing procedures or a fingerprint", async () => {
+    const provider = { name: "test", compress: vi.fn(), summarize: vi.fn()
+      .mockResolvedValueOnce("invalid fixture")
+      .mockResolvedValueOnce("<procedures></procedures>") };
+    for (let i = 0; i < 2; i++) await kv.set("mem:memories", `mem_${i}`, makePattern(i));
+    const original = makeProceduralMemory();
+    await kv.set("mem:procedural", original.id, structuredClone(original));
+    registerConsolidationPipelineFunction(sdk as never, kv as never, provider as never);
+    const failed: any = await sdk.trigger("mem::consolidate-pipeline", { tier: "procedural" });
+    expect(failed).toMatchObject({ success: false, results: { procedural: { error: "procedural_extraction_invalid_xml" } } });
+    expect(await kv.list("mem:procedural")).toEqual([original]);
+    expect(await kv.get("mem:config", "consolidation:proceduralFingerprint:v1")).toBeNull();
+    expect(await sdk.trigger("mem::consolidate-pipeline", { tier: "procedural" })).toMatchObject({ success: true });
+    expect(await kv.get("mem:config", "consolidation:proceduralFingerprint:v1")).not.toBeNull();
+    const skipped: any = await sdk.trigger("mem::consolidate-pipeline", { tier: "procedural" });
+    expect(skipped.results.procedural.skipped).toBe(true);
+    expect(provider.summarize).toHaveBeenCalledTimes(2);
+    expect(await kv.list("mem:procedural")).toEqual([original]);
   });
 
   it("consolidation records an audit entry", async () => {
