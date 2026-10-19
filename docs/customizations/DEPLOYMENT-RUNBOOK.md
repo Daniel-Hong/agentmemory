@@ -1,5 +1,7 @@
 # Personal fork 배포 준비·적용 절차
 
+개인 배포 버전은 `0.9.30-daniel.1`이다. 앞부분은 순정 기반, `daniel.N`은 해당 기반에서의 개인 배포 차수다. 동일 기반 후속 배포는 N을 증가시키고 순정 기반을 올리면 `daniel.1`부터 시작한다. `package.json` 변경 후 기존 docs:sync로 CLI/health/Viewer/plugin 버전을 동기화한다. 커스텀은 검증한 포크 artifact로 설치하며 공식 npm의 동일 버전 존재를 전제하지 않는다. 버전 반영 v3 후보는 새로 빌드·검증·고정하고 과거 v2는 보존한다.
+
 이 묶음은 배포 준비 후보이며 실행 중인 서버/클라이언트에 적용하지 않았다. `release.json`의 `deployable=false`를 임의로 true로 바꾸지 않는다. 적용 전 최신 운영 가이드의 정상 GET, 현재 활성 manifest/activation/preservation, 실제 파일 해시, 현재 서비스·capture/retry 상태를 다시 확인해야 한다. 기존 guard 실패를 무시하고 서비스를 중지하지 않는다.
 
 ## 서버 적용 전 확인

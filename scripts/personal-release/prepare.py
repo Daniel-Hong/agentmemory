@@ -50,7 +50,7 @@ def prepare(package, out, baseline_activation, source_root):
         raise RuntimeError('BASELINE_RECEIPT_UNVERIFIED')
     package_files = {str(p.relative_to(target)): sha(p) for p in target.rglob('*') if p.is_file()}
     artifacts = {str(p.relative_to(out)): sha(p) for p in out.rglob('*') if p.is_file()}
-    manifest = {'sourceCommit': commit, 'sourceTree': tree, 'revision': 'personal-source-deployment-preparation-v2', 'packageVersion': json.loads((target / 'package.json').read_text())['version'], 'applied': False, 'deployable': False, 'blockers': ['fresh_operating_guide_and_live_preflight_required', 'existing_preservation_guard_requires_reconciliation'], 'artifactHashes': artifacts, 'verificationFiles': artifacts.copy(), 'packageFiles': package_files, 'baselineHashes': hashes, 'baselineActivationHash': sha(baseline_activation), 'memoryPolicy': 'manual_review_only', 'rollback': 'code_only_keep_latest_data'}
+    manifest = {'sourceCommit': commit, 'sourceTree': tree, 'revision': 'personal-source-deployment-preparation-v3', 'packageVersion': json.loads((target / 'package.json').read_text())['version'], 'applied': False, 'deployable': False, 'blockers': ['fresh_operating_guide_and_live_preflight_required', 'existing_preservation_guard_requires_reconciliation'], 'artifactHashes': artifacts, 'verificationFiles': artifacts.copy(), 'packageFiles': package_files, 'baselineHashes': hashes, 'baselineActivationHash': sha(baseline_activation), 'memoryPolicy': 'manual_review_only', 'rollback': 'code_only_keep_latest_data'}
     (out / 'release.json').write_text(json.dumps(manifest, indent=2) + '\n')
     verify(out)
     receipt = preserve(out, out.parent / (out.name + '-archives'))

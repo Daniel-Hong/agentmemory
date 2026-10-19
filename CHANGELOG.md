@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.1] — 2026-10-19
+
+### Personal distribution version (not deployed)
+
+- Identify this personal fork as `0.9.30-daniel.1`: upstream base `0.9.30`, personal release counter `1`. Increase `daniel.N` for subsequent releases on the same upstream base; after an upstream rebase, start the new base at `daniel.1`. Keep the upstream main branch and historical bundles unchanged.
+- Use the existing package-version/docs-sync path for CLI, health, Viewer and plugin manifests. Preserve import support for earlier exports and accept exports carrying this personal version. No dependency or engine upgrade.
+- Prepare a new v3 candidate; frozen v1/v2 artifacts retain their original hashes. Runtime rollout and long-term-memory recording remain pending; verification results are recorded with the new candidate.
+- Version validation: 2,950 unit tests passed / 4 existing skips, feedback40/0, release-tools4/0, build/compat/docs/skills passed. Isolated real CLI/iii7/0 confirms exact personal CLI/health/Viewer version, capture/replay, feedback and restart/shutdown. TypeScript retains the same24 baseline diagnostics with no additions. Production remains on the previous version.
 ### Personal fork — combined capture latency response v2 (2026-10-19, not deployed)
 
 - New file-backed captures reuse compact source-budget metadata after one streaming initialization, maintained by existing successful StateKV mutations. Preserve exact UTF-8/source/frame budgets, session limits, cold-load deltas, storage-key identity and durable replay. Ambiguous writes fail closed rather than authorize captures with stale metadata. No data migration or new storage/dependency.
@@ -333,6 +341,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.1]: https://github.com/Daniel-Hong/agentmemory/compare/v0.9.30...v0.9.30-daniel.1
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/rohitg00/agentmemory/compare/v0.9.28...v0.9.29
 [0.9.28]: https://github.com/rohitg00/agentmemory/compare/v0.9.27...v0.9.28
