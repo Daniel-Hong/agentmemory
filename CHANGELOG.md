@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.5] — 2026-10-20
+
+### Missing-value contract for verified embedding publication (not deployed)
+
+- Confirmed with read-only state::get against the running iii0.22.1 SDK: an absent key resolves to undefined. StateKV.get declared T|null but forwarded that result unchanged. Strict vector publication rejected absent retry/clear keys and deleted vector rows even after successful persistence. Existing mocks returned null and concealed the mismatch.
+- Normalize nullish SDK results to null at the shared get boundary. Preserve false, zero, empty strings, objects and rejected SDK calls. Keep publication checks, disk fences and retry records intact; no validation relaxation, data deletion, reset or timeout increase.
+- Regression first reproduced both the contract violation and VECTOR_PUBLICATION_UNVERIFIED, then related six files68 tests passed. An isolated real iii engine reproduced the original failure, verified fixed vector addition/deletion with synced=true/mutationFailures=0 and normal exit0. Production was only queried. Final source/package and deployment results are tracked in the separate vector-publication-investigation-2026-10-20 dossier.
+- Final source verification: 3,023 unit tests passed / four existing opt-in skips; build, compatibility hooks, docs, skills and feedback40 passed. TypeScript retains exactly24 baseline diagnostics, no additions.
+- Existing capture timeouts remain a separate acceptance concern; this fix does not prove all latency resolved. Preserve issued bundles and client hooks. Long-term-memory recording awaits separate manual review.
+
 ## [0.9.30-daniel.4] — 2026-10-20
 
 ### Storage publication follow-up (verified source, not deployed)
@@ -374,6 +384,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.5]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.4...v0.9.30-daniel.5
 [0.9.30-daniel.4]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.3...v0.9.30-daniel.4
 [0.9.30-daniel.3]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.2...v0.9.30-daniel.3
 [0.9.30-daniel.2]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.1...v0.9.30-daniel.2
