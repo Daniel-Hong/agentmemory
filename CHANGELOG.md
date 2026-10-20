@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — storage certification measurements (development only)
+
+- Preserve certification deadlines and all storage checks while adding an in-memory history of eight publications: disjoint capture/readback/fsync/verify, cleanup and retry waiting, fixed retry reasons and existing reader byte counters. Reuse the authenticated health snapshot; no automatic logs, extra disk/network IO, provider calls or scheduler changes.
+- Bound namespace detail to eight entries and use ephemeral keyed scope tokens; never record source data, keys, paths, session IDs or arbitrary exception text. Observer/measurement failures cannot turn storage failure into success or success into failure.
+- Synthetic RED/GREEN, regression/build/generated-document checks and independent review are recorded in docs/customizations/DURABILITY-MEASUREMENT.md and its linked progress record. No operating files, settings, data or service were changed; deployment requires separate approval. Durable memory remains pending manual review.
+
 All notable changes to agentmemory will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

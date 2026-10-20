@@ -13,5 +13,5 @@ export function createStateDurabilityFence(options: { storePath: string; timeout
  flushStable(kv: Reader, options?: { minAgeMs?: number; limit?: number }): Promise<unknown>;
  freeze(): void;
  drain(): Promise<void>;
- snapshot(): { frozen: boolean; activeMutations: number; touchedScopes: number; mutationFailures: number; pruning: boolean; lastVerification: unknown };
+ snapshot(): { frozen: boolean; activeMutations: number; touchedScopes: number; mutationFailures: number; pruning: boolean; lastVerification: unknown; measurements: unknown };
 };

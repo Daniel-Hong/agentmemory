@@ -2,6 +2,7 @@ import {open,stat} from 'node:fs/promises';
 import {isAbsolute,join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {readNamespaceEntries} from './namespace-reader.mjs';
+import {createDurabilityMeasurements} from './durability-measurement.mjs';
 const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');
 
 export function namespaceJson(buffer){
@@ -24,6 +25,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||!Number.isSafeInteger(pollIntervalMs)||pollIntervalMs<1)throw Error('state_durability_interval_invalid');
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),touched=new Map(),pruneAttempts=new Map();
+  const measurements=createDurabilityMeasurements();
   function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
@@ -50,6 +52,9 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       finally{clearTimeout(timer);}
     }
     for(const {scope} of selected)if(!expected.has(scope))expected.set(scope,new Map());
+    const measurement=measurements.begin(expected.keys(),selected.length);
+    let outcome='failed';
+    try{
     try{
       // Bound SDK concurrency; serial capture alone can exhaust the publication deadline.
       for(let offset=0;offset<selected.length;offset+=4)await Promise.all(selected.slice(offset,offset+4).map(async({scope,key})=>{expected.get(scope).set(key,(await capture(scope,key))??null);capturedKeyCount++;}));
@@ -60,7 +65,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       for(const file of files){let rows;const controller=new AbortController(),remaining=timeoutMs-(clock()-began);
         if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         const timer=setTimeout(()=>controller.abort(),remaining);
-        try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys()),signal:controller.signal});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
+        try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys()),signal:controller.signal,onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
         for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want))throw Error('state_namespace_not_committed');
       }
       return {absent,signatures};
@@ -72,17 +77,21 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
         for(const item of selectedRevisions){
           const current=touched.get(item.scope)?.get(item.key)?.revision;
           if(current!==undefined&&current!==item.revision){
+            measurement?.enter('capture');
             item.revision=current;
             expected.get(item.scope).set(item.key,(await capture(item.scope,item.key))??null);
           }
         }
         stage='readback';
+        measurement?.enter('readback');measurement?.check();
         const {absent,signatures}=await check();
         stage='fsync';
+        measurement?.enter('fsync');
         for(const file of files){if(absent.includes(file.path))continue;const handle=await open(file.path,'r');handles.push(handle);if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path))throw Error('state_namespace_changed');await handle.sync();if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path))throw Error('state_namespace_changed');}
         const directory=await open(storePath,'r');handles.push(directory);await directory.sync();
         // The validated bytes remain current only if the synced file's full signature still matches.
         stage='verify';
+        measurement?.enter('verify');
         for(const file of files){
           let current;try{current=signature(await stat(file.path,{bigint:true}));}catch(error){if(error.code!=='ENOENT')throw error;}
           if(current!==signatures.get(file.path))throw Error('state_namespace_changed');
@@ -90,12 +99,15 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
         if(clock()-began>=timeoutMs)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         forgetKeys(selectedRevisions);
         lastVerification={status:'verified',at:clock(),...details(),errorCode:null};
+        outcome='verified';
         return {keys:[...expected.values()].reduce((n,map)=>n+map.size,0),scopes:expected.size,synced:true,waitMs:clock()-began,mutationFailures};
-      }catch(error){lastCode=typeof error.code==='string'?error.code:typeof error.message==='string'&&error.message.startsWith('state_')?error.message:'STATE_SYNC_FAILED';}
-      finally{await Promise.allSettled(handles.map(handle=>handle.close()));}
+      }catch(error){lastCode=typeof error.code==='string'?error.code:typeof error.message==='string'&&error.message.startsWith('state_')?error.message:'STATE_SYNC_FAILED';measurement?.retry(lastCode,stage);}
+      finally{measurement?.enter('cleanup');await Promise.allSettled(handles.map(handle=>handle.close()));}
+      measurement?.enter('retryWait');
       await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,timeoutMs-(clock()-began)))));
     }
     throw failed();
+    }finally{measurement?.finish(outcome,lastCode,stage);}
   }
   async function publishScopes(kv,selected){
     const began=clock(),groups=new Map();
@@ -123,5 +135,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification)})};
+  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot()})};
 }

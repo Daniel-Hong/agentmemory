@@ -7,10 +7,10 @@ const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctime
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead}={}){
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
   const handle=await open(path,'r'),decoder=new StringDecoder('utf8'),utf8=new TextDecoder('utf-8',{fatal:true});
-  const values=new Map(),seen=new Set();let stream;
+  const values=new Map(),seen=new Set();let stream,fileBytes=null,complete=false;
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
   let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0;
   async function consume(text){
@@ -60,7 +60,8 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     if(state==='value'&&valueStart!==null){valueParts.push(text.slice(valueStart));valueStart=0;}
   }
   try{
-    const before=signature(await handle.stat({bigint:true}));
+    const beforeStat=await handle.stat({bigint:true}),before=signature(beforeStat);
+    fileBytes=Number(beforeStat.size);
     signal?.throwIfAborted();
     stream=handle.createReadStream({autoClose:false,highWaterMark:chunkSize,signal});
     for await(const chunk of stream){
@@ -86,6 +87,10 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
     if(before!==after||after!==current)throw fail('state_namespace_changed');
     if(!prefixComplete||state!=='done')throw fail('state_namespace_incomplete');
+    complete=true;
     return{values,entries,bytesRead,maxEntryChars,signature:after};
-  }finally{stream?.destroy();await handle.close();}
+  }finally{
+    try{stream?.destroy();await handle.close();}
+    finally{try{const observer=onRead?.({fileBytes,bytesRead,entries,complete});if(observer&&typeof observer.then==='function')Promise.resolve(observer).catch(()=>{});}catch{}}
+  }
 }
