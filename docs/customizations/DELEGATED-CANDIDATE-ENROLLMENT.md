@@ -24,3 +24,10 @@
 사용자 SSH 출력으로 v1 설치 완료를 확인했고 실제 sudo 목록에 등록 helper가 나타났다. 직접 읽을 수 없는 root-private 정책/marker는 읽기 성공으로 보고하지 않았다. 실제 CLI와 같은 umask077에서 public/enrollment0755 생성이0700으로 바뀌어 자체 검사를 실패하는 것을 격리 재현했다. 신규 디렉터리만 명시 chmod하여 수정했다.
 
 기존 root 코드/묶음은 자동 덮어쓰지 않는다. 별도 `repair-candidate-enrollment-mode.py`는 실제 v1 정책/helper hash에 고정하며 root-private 보존본을 먼저 만들고 helper→정책→완료 marker 순서로 교체한다. 서비스/데이터/기존 updater5개는 바꾸지 않는다. 최초 묶음은 이력으로 보존하고 새 고정 명령의 SSH 실행이 필요하다. 실제 결과는 workspace의 mode-fix 검증 보고서를 따른다.
+
+
+## 2026-10-20 12:26 KST 실제 인수
+
+사용자 SSH 보수 완료 후 실제 root helper/hash/비대화형 호출을 확인했다. 실제 UID1000 요청 `78731dc7-1014-4fa5-933d-7527bfde7250`은 root runtime hash를 의도적으로 바꾼 거부 전용 시험이다. 설치 정책/완료 marker 및 현재 baseline 검증을 통과한 뒤 ROOT_EXECUTION_POLICY_CHANGED로 거부됐고 root 소유 공개 영수증을 UID1000으로 읽었다. 같은 UUID 재시도 결과가 동일하며 catalog/서비스 PID는 불변이었다. 운영은 daniel.7/healthy/mutationFailures0.
+
+이 시험은 실제 성공 등록/UID0→1000 프로세스 전환을 대신하지 않는다. 다음 진짜 후보부터 AI의 등록 경로를 사용하며 가짜 승인 후보는 만들지 않는다. 고정 묶음 및 기존 데이터는 그대로 보존했고 상세 증거는 별도 mode-fix 보고서와 live-enrollment-probe.json을 따른다. 장기기억 저장은 수동 검토 대기다.

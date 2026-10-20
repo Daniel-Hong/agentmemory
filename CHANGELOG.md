@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Candidate enrollment live installation acceptance (2026-10-20 12:26 KST)
+
+- User completed the separate fixed umask077 repair via SSH. Verified actual root-owned0755 helper SHA25600e343569903003f0af2f7e06c60b17f4549ee410c85b6c7012f4d14066c672c and the root-reported policy SHA2563049b962ad188211908e361611e096a9604034e4256de7c8f076b3ba033fe099 (code commit3d4c00a3513cb7c6fb6d75c6258d756357222a28). Prior installation/code archives remain preserved; no rollback occurred.
+- Actual UID1000 sudo-n request78731dc7-1014-4fa5-933d-7527bfde7250 reached installed policy/commit-marker and current baseline validation, then intentionally rejected an altered root runtime with ROOT_EXECUTION_POLICY_CHANGED. Root-owned0644 public receipt under0755 was readable as UID1000; same-UUID retry returned the identical result. No candidate was approved and no apply job was submitted.
+- Public catalog bytes and service MainPID stayed unchanged. Before/after API: daniel.7 healthy, final storage mutationFailures0. This verifies noninteractive invocation, policy rejection and receipt publication, not a successful real-candidate enrollment or a UID0-to1000 process transition. Those remain separate acceptance items for the next genuine release; do not create a dummy approved candidate just to complete a test.
+- Sanitized live evidence is in workspace outputs/delegated-candidate-enrollment-mode-fix-2026-10-20/live-enrollment-probe.json. Source changes here only record acceptance; fixed issued kits are unchanged. Durable-memory recording remains pending separate manual review and explicit instruction.
+
 ### Candidate enrollment installation follow-up (2026-10-20, repair not applied)
 
 - The user completed the frozen v1 SSH installation: installed=true/applied=false/serviceControlled=false, root policy SHA256 e373846fa41bac9d42f5324a14b7c755fe12d4006965eb94781f077e12a97b5f. The new helper is listed NOPASSWD. Root policy/marker directories are private; unprivileged direct reads were denied and are not reported as successful asset verification.
