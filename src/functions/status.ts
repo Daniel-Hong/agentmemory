@@ -527,8 +527,8 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
     problems.push({
       level: "warn",
       code: "capture-dead-letters",
-      message: `${plural(inbox.dead, "captured observation")} could not be stored after ${plural(capture.policy.maxAttempts, "attempt")} and ${inbox.dead === 1 ? "is parked as a dead letter" : "are parked as dead letters"}${inbox.lastError ? `: ${inbox.lastError}` : "."}`,
-      fix: `List them with curl -s ${CURL_AUTH_HEADER} '${base}/capture?status=dead'. After fixing the cause, retry them with curl -X POST ${base}/capture/retry ${CURL_AUTH_HEADER} -H "Content-Type: application/json" -d '{"all":true}'.`,
+      message: `${plural(inbox.dead, "captured observation")} could not be stored or ${inbox.dead === 1 ? "was" : "were"} rejected and ${inbox.dead === 1 ? "is parked as a dead letter" : "are parked as dead letters"}${inbox.lastError ? `: ${inbox.lastError}` : "."}`,
+      fix: `Inspect capture quarantine and recovery history in the dashboard. Fix the cause and retry a selected event, preserving originals and failure history. List them with curl -s ${CURL_AUTH_HEADER} '${base}/capture?status=dead'. After fixing the cause, retry them with curl -X POST ${base}/capture/retry ${CURL_AUTH_HEADER} -H "Content-Type: application/json" -d '{"eventId":"SELECTED_EVENT_ID"}'.`,
     });
   }
   if (capture.progress?.stalled) {
@@ -564,8 +564,8 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
     problems.push({
       level: "warn",
       code: "capture-spool-dropped",
-      message: `The local capture spool dropped ${plural(dropped, "observation")} in total (latest reason: ${latest.reason}), so those tool calls are not in memory.`,
-      fix: `The spool holds at most ${Math.round(latest.maxBytes / 1024)} KiB for ${latest.maxAgeHours} hours. Raise AGENTMEMORY_CAPTURE_SPOOL_MAX_BYTES, keep agentmemory running while agents work, or check that AGENTMEMORY_CAPTURE_SPOOL is not false.`,
+      message: `The local capture spool recorded ${plural(dropped, "failed append attempt")} in total (latest reason: ${latest.reason}). Repeated failures may refer to the same event; permanent loss is not established by this counter.`,
+      fix: `The spool holds at most ${Math.round(latest.maxBytes / 1024)} KiB for ${latest.maxAgeHours} hours. Check the host durable outbox and event receipts before deciding whether a record is missing. Preserve pending records; increasing total spool capacity alone does not fix oversized individual records.`,
     });
   }
   return problems;

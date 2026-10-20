@@ -194,7 +194,7 @@ export function registerObserveFunction(
           recordDedupSkip();
           return { deduplicated: true, sessionId: payload.sessionId };
         }
-        if (maxObservationsPerSession && maxObservationsPerSession > 0) {
+        if (!isCaptureKey(payload.captureKey) && maxObservationsPerSession && maxObservationsPerSession > 0) {
           if ((Array.isArray(existing) ? existing.length : existing.count) >= maxObservationsPerSession) {
             return {
               success: false,

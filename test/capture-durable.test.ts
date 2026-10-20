@@ -438,6 +438,8 @@ describe("capture status problems", () => {
     const codes = report.problems.map((p) => p.code);
     expect(codes).toEqual(expect.arrayContaining(["capture-dead-letters", "capture-retrying", "capture-spool-waiting", "capture-spool-dropped"]));
     expect(report.capture?.inbox?.dead).toBe(1);
+    expect(report.problems.find((p)=>p.code==="capture-dead-letters")!.fix).not.toContain('"all":true');
+    expect(report.problems.find((p)=>p.code==="capture-spool-dropped")!.message).not.toContain("those tool calls are not in memory");
     expect(report.problems.find((p) => p.code === "capture-dead-letters")!.fix).toContain("http://localhost:4811/agentmemory/capture/retry");
   });
 });

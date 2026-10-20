@@ -196,7 +196,7 @@ describe("capture status", () => {
     );
     const drops = report.problems.filter((p) => p.code === "capture-spool-dropped");
     expect(drops).toHaveLength(1);
-    expect(drops[0]!.message).toContain("5 observations");
+    expect(drops[0]!.message).toContain("5 failed append attempts");
     expect(drops[0]!.message).toContain("too-large");
   });
 

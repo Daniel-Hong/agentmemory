@@ -60,6 +60,7 @@ export const KV = {
   recentSearches: "mem:recent-searches",
   projectSessionsIndex: "mem:idx:project-sessions",
   obsSessionIndex: (shard: number) => `mem:idx:obs:${shard}`,
+  captureReview: "mem:capture:review",
   captureInbox: "mem:capture:inbox",
   captureEvents: (shard: string) => `mem:capture:events:${shard}`,
   capturePrompts: "mem:capture:prompts",

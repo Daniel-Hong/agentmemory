@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.8] — 2026-10-20
+### Preserved capture quarantine and selected recovery (not deployed)
+
+- Keep unprocessed dead-letter originals regardless of the old count/age pruning thresholds. Completed dedup-event retention remains unchanged. Preserve lifetime attempts, use a separate automatic-cycle budget, and retain failure/recovery history in `mem:capture:review` after inbox removal and restart. Legacy records retain their last known failure without inventing earlier detail.
+- Let the durable capture path preserve observations beyond the direct-observe session cap, retaining the original direct `mem::observe` limit. Keep per-record storage/response budgets, indexed session reads, inbox admission bounds and asynchronous embedding behavior. No operational configuration change or mass replay is performed.
+- Add an authenticated, paginated capture-quarantine/recovery dialog to Health/operations, separate from summary/compression/graph quarantine. Show bounded input previews, session/event identifiers, reason codes, timestamps, lifetime attempts and paged failure history. Retry one capture key at a time after fixing the cause. Preserve request IDs across uncertain responses and require actual stored-observation verification before marking recovery.
+- Reconcile interrupted scheduling and completion cleanup without losing originals, lowering attempt counts or overwriting an already verified recovery timestamp. Reject malformed request IDs/keys and keep same-request retries idempotent, including after inbox deletion.
+- Replace mass-retry prompts with selected-event guidance. Label spool counters as failed append attempts; repeated attempts are not a proven count of permanently lost events. Exact identity of the historic five failed appends remains unavailable from existing telemetry.
+- This server patch does not change the thirteen compatibility hooks or fix the separately diagnosed oversized host-outbox head. It does not implement delegated candidate enrollment, which is proceeding in another session. Integration/deployment and real operational recovery remain separate from isolated validation.
+- Evidence and actual validation: `docs/customizations/CAPTURE-QUARANTINE-RECOVERY.md` and the root `outputs/capture-quarantine-recovery-2026-10-20/` dossier. Long-term-memory recording remains pending separate manual review.
+
 ## [0.9.30-daniel.7] — 2026-10-20
 
 ### Visible update progress and certified failure recovery (not deployed)
@@ -408,6 +419,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.8]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.7...v0.9.30-daniel.8
 [0.9.30-daniel.7]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.6...v0.9.30-daniel.7
 [0.9.30-daniel.6]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.5...v0.9.30-daniel.6
 [0.9.30-daniel.5]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.4...v0.9.30-daniel.5

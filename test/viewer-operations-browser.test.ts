@@ -66,7 +66,7 @@ describe.skipIf(spawnSync('google-chrome',['--version'],{encoding:'utf8',timeout
     writeFileSync(join(dir,'browser-evidence.json'),JSON.stringify({directory:dir,...result},null,2));
     expect(result.error).toBeUndefined();expect(result.errors).toEqual([]);expect(result.getOnly).toBe(true);expect(result.sessionListsSafe).toBe(true);expect(result.initialHistoryRequests).toBe(0);expect(result.stageRows).toBe(6);expect(result.summaryCards).toBe(3);
     expect(result.httpStatus).toContain('HTTP');expect(result.httpBanner).toContain('실시간 스트림 미연결');expect(result.failedHttpStatus).not.toContain('HTTP');
-    expect(result.initial).toContain('활성 격리: 1건');expect(result.initial).toContain('title');expect(result.initial).toContain('부분 내보내기');expect(result.initial).toContain('품질 표본 3건');expect(result.initial).toContain('사용 가능 16코어');
+    expect(result.initial).toContain('요약·후처리 격리: 1건');expect(result.initial).toContain('title');expect(result.initial).toContain('부분 내보내기');expect(result.initial).toContain('품질 표본 3건');expect(result.initial).toContain('사용 가능 16코어');
     expect(result.initial).toContain('확인된 최소 7건');expect(result.initial).toContain('미확인 세션 1개 / 단계 3개');expect(result.initial).toContain('처리 중');expect(result.initial).toContain('상태 오래됨');expect(result.initial).toContain('다음 확인');
     expect(result.initial).not.toContain('PRIVATE_SECRET');expect(result.noModal).toBe(true);expect(result.detailsFocusable).toBe(true);expect(result.horizontalOverflow).toBe(false);
     expect(result.interval).toBe(60);expect(result.off).toBe(true);expect(result.saved).toEqual({enabled:false,seconds:60});expect(result.banner).toContain('OFF');expect(result.offRequests).toBe(0);expect(result.manualRequests).toBe(3);

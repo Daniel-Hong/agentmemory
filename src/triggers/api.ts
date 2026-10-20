@@ -714,19 +714,28 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const status = req.query_params?.["status"];
-      const limit = Number(req.query_params?.["limit"]) || 50;
-      const [summary, list] = await Promise.all([
-        getCaptureController()?.status() ?? Promise.resolve(null),
-        sdk.trigger({
-          function_id: "mem::capture-list",
-          payload: {
-            ...(status === "pending" || status === "retrying" || status === "dead" ? { status } : {}),
-            limit,
-          },
-        }),
-      ]);
-      return { status_code: 200, headers: { "Cache-Control": "no-store" }, body: { capture: summary, ...(list as object) } };
+      const q=req.query_params??{};
+      const status=q["status"];
+      const review=q["review"]==="true";
+      const key=asNonEmptyString(q["key"]);
+      const eventId=asNonEmptyString(q["eventId"]);
+      const cursor=asNonEmptyString(q["cursor"]);
+      const limit=Number(q["limit"])||50;
+      const historyOffset=Number(q["historyOffset"])||0;
+      if(review && (key&&!/^cap_[a-f0-9]{40}$/.test(key)||eventId&&!isValidEventId(eventId)||cursor&&cursor.length>512||!Number.isSafeInteger(historyOffset)||historyOffset<0||status&&!['pending','retrying','dead','completed'].includes(String(status))))return {status_code:400,body:{error:'INVALID_CAPTURE_QUERY'}};
+      try {
+        const [summary,list]=await Promise.all([
+          getCaptureController()?.status()??Promise.resolve(null),
+          sdk.trigger({function_id:'mem::capture-list',payload:{
+            ...(status==='pending'||status==='retrying'||status==='dead'||review&&status==='completed'?{status}:{}),limit,
+            ...(review?{review:true,...(key?{key}:{}),...(eventId?{eventId}:{}),...(cursor?{cursor}:{}),historyOffset}:{}),
+          }}),
+        ]);
+        return {status_code:200,headers:{'Cache-Control':'no-store'},body:{capture:summary,...(list as object)}};
+      }catch(error){
+        if(error instanceof Error && error.message.includes('INVALID_CAPTURE_CURSOR'))return {status_code:400,body:{error:'INVALID_CAPTURE_CURSOR'}};
+        return {status_code:503,body:{error:'CAPTURE_REVIEW_UNAVAILABLE'}};
+      }
     },
   );
   sdk.registerTrigger({
@@ -739,14 +748,19 @@ export function registerApiTriggers(
     async (req: HttpRequest<{ eventId?: string; all?: boolean }>): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const body = (req.body ?? {}) as { eventId?: unknown; all?: unknown };
+      const body = (req.body ?? {}) as { eventId?: unknown; all?: unknown; requestId?: unknown; key?: unknown };
       const eventId = asNonEmptyString(body.eventId);
+      const requestId=asNonEmptyString(body.requestId);
+      const key=asNonEmptyString(body.key);
+      if(body.key!==undefined&&(!key||!/^cap_[a-f0-9]{40}$/.test(key)))return {status_code:400,body:{error:"INVALID_CAPTURE_KEY"}};
+      if(body.requestId!==undefined&&(!eventId||typeof body.requestId!=="string"||!requestId||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)))return {status_code:400,body:{error:"INVALID_RETRY_REQUEST"}};
+      if(eventId&&!isValidEventId(eventId))return {status_code:400,body:{error:"INVALID_EVENT_ID"}};
       if (!eventId && body.all !== true) {
         return { status_code: 400, body: { error: "pass an eventId, or all: true to retry every dead or waiting capture" } };
       }
       const result = await sdk.trigger({
         function_id: "mem::capture-retry",
-        payload: eventId ? { eventId } : { all: true },
+        payload: eventId ? { eventId, ...(key?{key}:{}), ...(requestId?{requestId}:{}) } : { all: true },
       });
       return { status_code: 200, body: result };
     },

@@ -2656,7 +2656,7 @@
       var pendingLabel = total === null ? minimum === null ? '미확인' : '확인된 최소 '+minimum.toLocaleString()+'건 · 전체 잔여량 미확인' : total.toLocaleString()+'건';
       var active = Number.isSafeInteger(control.activeOperations) ? control.activeOperations.toLocaleString()+'개' : '미확인';
       var recentAt = [h.captureProgress && h.captureProgress.lastCompletedAt,h.embeddingRecovery && h.embeddingRecovery.lastSuccessAt].filter(function(v){return v && Number.isFinite(Date.parse(v));}).sort().pop();
-      html += '<div class="operations-summary"><div><span>남은 처리 단계: </span><strong>'+esc(pendingLabel)+'</strong><small>요약·압축·그래프·임베딩·기억 정리</small></div><div><span>진행 중 작업</span><strong>'+esc(active)+'</strong><small>백그라운드에 승인된 작업</small></div><div><span>활성 격리: </span><strong>'+(operations.available ? work.quarantined+'건' : '미확인')+'</strong><small>사용자 점검이 필요한 기록</small></div></div>';
+      html += '<div class="operations-summary"><div><span>남은 처리 단계: </span><strong>'+esc(pendingLabel)+'</strong><small>요약·압축·그래프·임베딩·기억 정리</small></div><div><span>진행 중 작업</span><strong>'+esc(active)+'</strong><small>백그라운드에 승인된 작업</small></div><div><span>요약·후처리 격리: </span><strong>'+(operations.available ? work.quarantined+'건' : '미확인')+'</strong><small>사용자 점검이 필요한 기록</small></div></div>';
       html += '<p class="hnote">마지막 조회 '+esc(operations.checkedAt ? new Date(operations.checkedAt).toLocaleString() : '미확인')+' · 최근 수집·임베딩 완료 '+esc(recentAt ? new Date(recentAt).toLocaleTimeString() : '미확인')+' · 과거 누적 실패와 현재 오류를 구분합니다.</p>';
       var unknownKinds = [['embedding','임베딩'],['features','기억 정리']].filter(function(pair) { return work.totals[pair[0]] === null; }).map(function(pair) { return pair[1]; });
       if (total === null) html += '<p class="hnote">'+(operations.available ? '미확인 세션 '+work.unknownSessionsCount+'개 / 단계 '+unknownStages+'개' : '미확인 세션 / 단계 수: 조회 실패로 확인 불가')+(unknownKinds.length ? ' · '+unknownKinds.join('·')+' 잔여량 미확인' : '')+'</p>';
@@ -2664,6 +2664,7 @@
       html += operationsProgressHtml(work,h,control);
       var embeddingCode = (h.embeddingRecovery || {}).lastError;
       if (embeddingCode && embeddingCode !== 'CAPTURE_PENDING_EMBEDDING' && /^[A-Z0-9_]{1,80}$/.test(embeddingCode)) html += '<p class="operations-notice" role="status">임베딩: 최근 실패 또는 재시도 기록 · <code>'+esc(embeddingCode)+'</code> · 최근 완료량과 함께 확인하세요.</p>';
+      html += '<p><button type="button" class="btn" data-action="capture-review-open">수집 격리·복구 이력 보기</button><small> 저장 전 실패한 수집 기록은 별도로 확인합니다.</small></p>';
       html += '<details id="operations-details"'+(operations.detailsOpen ? ' open' : '')+'><summary>오류·공급자·세션 상세</summary><div class="hnote">같은 기록이 여러 처리 단계에 포함될 수 있습니다. 세션 종료와 요약 완료는 다릅니다. 격리 기록은 자동 재처리하지 않습니다.</div>';
       html += memoryPressureStatus(h.memoryPressure)+snapshotStatus(h.snapshotRecovery)+readinessStatusHtml(h.providerReadiness);
       if (work.rows.length) {
@@ -7657,7 +7658,7 @@
       var drainedAt = (cap.spool || []).map(function(s) { return s.stats && s.stats.lastDrainAt; }).filter(Boolean).sort().pop();
       var dropped = (cap.spool || []).reduce(function(n, s) { return n + ((s.stats && s.stats.dropped) || 0); }, 0);
       html += hrow('Inbox', inbox ? esc(fmtNum(inbox.pending) + ' pending · ' + fmtNum(inbox.retrying) + ' retrying · ' + fmtNum(inbox.dead) + ' dead') : 'not checked', 'captureInbox',
-        inbox && inbox.dead ? '<span style="overflow-wrap:anywhere;">' + esc(inbox.lastError || 'Could not be stored.') + '</span> Fix the cause, then retry them:' + cmdBlock(curlPost('capture/retry', { all: true })) :
+        inbox && inbox.dead ? '<span style="overflow-wrap:anywhere;">' + esc(inbox.lastError || 'Could not be stored.') + '</span> <button type="button" class="btn" data-action="capture-review-open">수집 격리 확인·선택 재시도</button>' :
         inbox && inbox.retrying ? '<span style="overflow-wrap:anywhere;">' + esc('Retried every ' + durationText(cap.policy.retryIntervalMs) + ' with backoff, up to ' + cap.policy.maxAttempts + ' attempts' + (inbox.lastError ? '. Last error: ' + inbox.lastError : '.')) + '</span>' :
         'Empty means every accepted observation is stored.');
       html += hrow('Since start', esc(fmtNum(since.accepted || 0) + ' accepted · ' + fmtNum(since.completed || 0) + ' stored · ' + fmtNum(since.duplicates || 0) + ' duplicates skipped · ' + fmtNum(since.recovered || 0) + ' recovered by retry · ' + fmtNum(since.deadLettered || 0) + ' dead'), null,
@@ -7669,7 +7670,7 @@
       html += hrow('Offline spool', !spoolOn ? 'off' : waiting ? esc(fmtNum(waiting) + ' waiting · ' + Math.ceil(bytes / 1024) + ' KiB') : 'empty', 'captureSpool',
         !spoolOn ? 'Turned off with AGENTMEMORY_CAPTURE_SPOOL=false, so hooks drop observations while the server is down.' :
         (waiting ? 'Sent on the next hook call or at the next start. To send now:' + cmdBlock(curlPost('capture/drain', {})) : esc('Hooks write here only while the server is unreachable.' + (drainedAt ? ' Last drained ' + timeAgo(drainedAt) + '.' : ''))) +
-        (dropped ? '<div class="hnote" style="color:var(--accent);">' + esc(fmtNum(dropped) + ' dropped because the spool was full or too old. Raise AGENTMEMORY_CAPTURE_SPOOL_MAX_BYTES.') + '</div>' : ''));
+        (dropped ? '<div class="hnote" style="color:var(--accent);">' + esc(fmtNum(dropped) + ' failed spool append attempts. This is not a count of uniquely lost records; check the host outbox and event receipts.') + '</div>' : ''));
       html += hrow('Inspect', esc('from a terminal'), null, 'Spool and inbox, with --drain to send the spool now:' + cmdBlock((customPort() ? 'AGENTMEMORY_URL=' + agentUrl() + ' ' : '') + 'npx @agentmemory/agentmemory capture') + 'Waiting and dead events as JSON:' + cmdBlock(curlGet('capture?status=dead')));
       return html + '</div>';
     }
@@ -9445,5 +9446,6 @@
   </script>
 <!-- AGENTMEMORY_FEEDBACK_VIEWER -->
 <!-- AGENTMEMORY_UPDATE_VIEWER -->
+<!-- AGENTMEMORY_CAPTURE_REVIEW_VIEWER -->
 </body>
 </html>

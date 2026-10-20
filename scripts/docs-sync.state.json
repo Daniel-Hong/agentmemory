@@ -1,5 +1,5 @@
 {
-  "version": "0.9.30-daniel.7",
+  "version": "0.9.30-daniel.8",
   "facts": {
     "mcpTools": [
       "54"
@@ -26,13 +26,13 @@
       "311"
     ],
     "sourceFiles": [
-      "222"
+      "223"
     ],
     "loc": [
       "53000"
     ],
     "kvScopes": [
-      "62"
+      "63"
     ]
   }
 }
