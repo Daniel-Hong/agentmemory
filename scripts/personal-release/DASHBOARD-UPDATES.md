@@ -110,3 +110,21 @@ stage 실패는 이전 wrapper를 복구한다. 활성화 후 실패는 새 work
 공개 실패 영수증에는 고정 errorCode/failedPhase/recoveryStatus만 기록하고 root-private 로그·백업 경로·원문은 공개하지 않는다. API는 해당 작업 생성 이후의 상태만 결합한다. 최근10개 표시와 별개로 선택 후보의 전체 실패/중단 이력을 검사해 새 요청을 거부한다. 같은 UUID의 상태 조회는 유지한다.
 
 Viewer는 클릭 즉시 요청 ID와 중복 클릭 차단을 표시하고 상태 영역을 상단에 고정한다. 확인한 단계를 한국어로 나열하고 밝은/어두운 테마의 본문 색을 따른다. 네트워크 유실은 미확정으로 표시하며 기존 요청 ID를 유지한다. 기존 요청의 같은-ID 재시도가 인증 오류를 받아도 이전 접수 여부를 추측해 ID를 지우지 않는다. 오래된 .6 kit에는 상세 실패 영수증이 없으므로 복구 여부를 추정하지 않는다.
+
+## 제한된 AI 후보 등록 부가 기능
+
+관리자가 별도 고정 설치 묶음을 검토·SSH 설치한 뒤에만 사용할 수 있다. 기존 updater 설치나 서버 업데이트는 이 권한을 자동으로 설치하지 않는다. helper·정책·runtime의 정확한 바이트가 root 소유 경로에 고정되며 일반 후보는 root 실행 코드를 변경할 수 없다. 새 root 코드가 필요하면 별도 관리자 재검토·설치가 필요하다.
+
+AI는 일반 사용자로 기존 `prepare-dashboard-kit.py`의 draft를 준비하고, `/home/daniel/.agentmemory/candidate-enrollment/UUID/`에 `request.json`과 `draft/`를 게시한다. spool/UUID/draft 디렉터리는0700, 파일은0600이어야 한다. 요청은 정확히 `{ "requestId":"UUID", "candidateId":"검증한-ID", "draftManifestSha256":"kit.json의 SHA256" }`다. UUID 폴더를 완성한 뒤 rename으로 게시한다. root에 임의 경로를 인수로 전달하지 않는다.
+
+```sh
+sudo -n /usr/local/libexec/agentmemory-candidate-enroll UUID
+```
+
+helper는 제출물을 fd 기반으로 읽어 root-private snapshot에 고정하고, 정책·현재 root drop-in/catalog·activation·보존 archive·패키지 해시/경로/예산·13개 client compatibility·기존 의존성 계약을 검사한다. 등록은 기존 bootstrap과 runner만 사용한다. 서비스 제어·운영 적용·추론은 하지 않는다. package 기능 품질이나 제출되지 않은 후보 설명 문서의 바이트를 인증하는 기능은 아니다.
+
+공개 결과는 `/var/lib/agentmemory-updates/public/enrollment/UUID.json`과 기존 catalog에서 확인한다. `registered`라도 `applied:false/serviceControlled:false`이며 실제 적용은 기존 버튼의 별도 작업이다. `rejected`는 확정된 검증 거부다. 비영 종료·응답 유실·`unconfirmed`에서는 새 UUID로 성공을 추측하지 말고 같은 UUID/같은 바이트로 조회·재시도한다. 다른 바이트의 재사용은 거부한다. 기존 실패 package의 alias 등록으로 이력을 우회할 수 없다. 검증되지 않은 요청은 공개 영수증 자체가 없을 수 있다.
+
+입력 한도: 요청16KiB, 개별 JSON/runtime4MiB, tgz128MiB, 제출물144MiB, tar10000항목·파일 비압축 합512MiB. 동일 정책 아래 처리한 요청100개를 보존한 뒤에는 신규 요청을 거부하므로 운영자가 별도 검토해야 한다. 자동 삭제·이력 초기화는 하지 않는다. 원문/설정/비밀값은 제출물에 넣지 않는다.
+
+설치/정책 무결성은 `/etc/agentmemory-candidate-enrollment/installation.json` 및 helper의 매 호출 검사로 확인한다. helper는 정책 hash와 일치하는 root 설치 완료 marker도 요구하므로 설치 중 강제 중단 후 남은 sudoers만으로 등록할 수 없다. 기존 ROOT_ASSETS5개는 별개로 유지한다. 설치 전후 실제 OS/sudo/root→UID1000 인수는 합성 시험으로 대체하지 않는다. 상세 상태와 미검증 사항은 `docs/customizations/DELEGATED-CANDIDATE-ENROLLMENT.md` 및 별도 workspace 검증 묶음을 참조한다.
