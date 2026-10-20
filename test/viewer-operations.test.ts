@@ -27,6 +27,12 @@ function fixtures(extra: Record<string, unknown> = {}) {
 }
 
 describe("custom operations panel", () => {
+  it("omits the retired analysis-history control when there are no results", () => {
+    const html = fixtures().operationsPanelHtml();
+    expect(html).not.toContain('과거 분석 기록 보기');
+    expect(html).not.toContain('refresh-codex-inspection');
+    expect(html).toContain('수집 격리·복구 이력 보기');
+  });
   it("renders unavailable data explicitly without declaring an empty queue", () => {
     const c = fixtures(); const html = c.operationsPanelHtml();
     expect(html).toContain('미확인');
@@ -90,8 +96,8 @@ describe("custom operations panel", () => {
     const html = c.operationsPanelHtml();
     expect(html).toContain('&lt;script&gt;result'); expect(html).not.toContain('<script>result');
     expect(html).not.toContain('copy-inspection-request'); expect(html).not.toContain('submit-codex-inspection');
-    expect(html.indexOf('refresh-codex-inspection')).toBeGreaterThan(html.indexOf('<details'));
-    expect(html).toContain('과거 분석 기록 보기');
+    expect(html).not.toContain('refresh-codex-inspection');
+    expect(html).not.toContain('과거 분석 기록 보기');
     expect(c.inspectionErrorText('Bearer secret')).not.toContain('secret');
   });
   it("disables commands after their last status read failed", () => {

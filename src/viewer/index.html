@@ -2678,9 +2678,8 @@
       } else if (operations.available) html += '<p class="hnote">조회 가능한 요약·압축·그래프 대기 세션 없음</p>';
       if (typeof job.result === 'string') html += '<pre class="operations-result">'+esc(job.result.slice(0,24000))+'</pre>';
       if (job.threadId && /^[A-Za-z0-9_-]{1,100}$/.test(job.threadId)) html += '<p class="hnote">Codex 대화 ID: <code>'+esc(job.threadId)+'</code></p>';
-      html += '<div class="operations-actions"><button type="button" class="btn" data-action="refresh-codex-inspection">과거 분석 기록 보기</button></div>';
       if (operations.jobError) html += '<p role="status" class="hnote">과거 기록을 조회하지 못했습니다.</p>';
-      html += '<p class="hnote">분석 기록은 보존하며 여기서는 새 Codex 분석을 실행하지 않습니다. 대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details></section>';
+      html += '<p class="hnote">대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details></section>';
       return html;
     }
 
@@ -8916,7 +8915,6 @@
       if (action === 'pause-background') { changeBackgroundControl('pause'); return; }
       if (action === 'resume-background') { changeBackgroundControl('resume'); return; }
       if (action === 'refresh-operations') { loadOperations(); return; }
-      if (action === 'refresh-codex-inspection') { checkCodexInspection(); return; }
 
       if (action === 'toggle-theme') {
         toggleTheme();

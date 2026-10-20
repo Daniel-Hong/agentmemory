@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Dashboard analysis-history control
+
+- Remove the retired Codex analysis-history button from operations details; it displayed even when no records were available. Preserve stored diagnostic records and APIs, the shutdown warning, and the separate capture quarantine/recovery history control. Source-only change; existing frozen daniel.8 candidates and operating daniel.7 are unchanged.
+- Regression: viewer operations tests cover absent control with empty history and safe rendering of any already-loaded historical result. Durable-memory recording remains pending manual review.
+
 ### Candidate enrollment live installation acceptance (2026-10-20 12:26 KST)
 
 - User completed the separate fixed umask077 repair via SSH. Verified actual root-owned0755 helper SHA25600e343569903003f0af2f7e06c60b17f4549ee410c85b6c7012f4d14066c672c and the root-reported policy SHA2563049b962ad188211908e361611e096a9604034e4256de7c8f076b3ba033fe099 (code commit3d4c00a3513cb7c6fb6d75c6258d756357222a28). Prior installation/code archives remain preserved; no rollback occurred.

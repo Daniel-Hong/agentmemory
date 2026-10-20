@@ -46,7 +46,7 @@ setTimeout(async()=>{try {
  document.querySelector('[data-action="resume-background"]').focus();document.querySelector('[data-action="resume-background"]').click();report.resuming=document.getElementById('health-operations').textContent.includes('재개 중');document.querySelector('[data-action="resume-background"]').click();await new Promise(r=>setTimeout(r,100));report.resumeCount=resumes;report.resumed=operations.control.status==='running';
  fixtureControl={status:'error'};await checkBackgroundControl();report.noResume=!document.querySelector('[data-action="resume-background"]');
  report.noAnalysisActions=!document.querySelector('[data-action="submit-codex-inspection"], [data-action="copy-inspection-request"]');
- fixtureJob={id:'fixture-job',status:'completed',result:'<img src=x onerror="window.fixtureUnsafe=true">safe result'};var historyBefore=requests.filter(r=>r.path.includes('/codex-inspection')).length;document.querySelector('[data-action="refresh-codex-inspection"]').click();await new Promise(r=>setTimeout(r,40));report.historyRequests=requests.filter(r=>r.path.includes('/codex-inspection')).slice(historyBefore);report.analysisRequests=requests.filter(r=>r.path.includes('/codex-inspection')&&r.method==='POST');report.final=document.getElementById('view-health').textContent;report.executedUnsafeHtml=!!document.querySelector('#health-operations img')||!!window.fixtureUnsafe;
+ fixtureJob={id:'fixture-job',status:'completed',result:'<img src=x onerror="window.fixtureUnsafe=true">safe result'};var historyBefore=requests.filter(r=>r.path.includes('/codex-inspection')).length;operations.job=fixtureJob;renderOperations();await new Promise(r=>setTimeout(r,40));report.historyRequests=requests.filter(r=>r.path.includes('/codex-inspection')).slice(historyBefore);report.analysisRequests=requests.filter(r=>r.path.includes('/codex-inspection')&&r.method==='POST');report.final=document.getElementById('view-health').textContent;report.executedUnsafeHtml=!!document.querySelector('#health-operations img')||!!window.fixtureUnsafe;
  await loadOperations();report.historyPreserved=document.getElementById('view-health').textContent.includes('safe result');
  report.detailsKept=document.getElementById('operations-details').open;
  document.getElementById('health-operations').scrollIntoView({block:'start'});
@@ -71,7 +71,7 @@ describe.skipIf(spawnSync('google-chrome',['--version'],{encoding:'utf8',timeout
     expect(result.initial).not.toContain('PRIVATE_SECRET');expect(result.noModal).toBe(true);expect(result.detailsFocusable).toBe(true);expect(result.horizontalOverflow).toBe(false);
     expect(result.interval).toBe(60);expect(result.off).toBe(true);expect(result.saved).toEqual({enabled:false,seconds:60});expect(result.banner).toContain('OFF');expect(result.offRequests).toBe(0);expect(result.manualRequests).toBe(3);
     expect(result.pauseCount).toBe(1);expect(result.focusAfterPause).toBe(true);expect(result.pausing).toContain('일시정지 중');expect(result.resume).toBe(true);expect(result.resuming).toBe(true);expect(result.resumeCount).toBe(1);expect(result.resumed).toBe(true);expect(result.noResume).toBe(true);
-    expect(result.noAnalysisActions).toBe(true);expect(result.analysisRequests).toHaveLength(0);expect(result.historyRequests).toHaveLength(1);expect(result.historyRequests[0].method).toBe('GET');expect(result.final).toContain('<img src=x');expect(result.historyPreserved).toBe(true);expect(result.executedUnsafeHtml).toBe(false);expect(result.detailsKept).toBe(true);
+    expect(result.noAnalysisActions).toBe(true);expect(result.analysisRequests).toHaveLength(0);expect(result.historyRequests).toHaveLength(0);expect(result.final).toContain('<img src=x');expect(result.historyPreserved).toBe(true);expect(result.executedUnsafeHtml).toBe(false);expect(result.detailsKept).toBe(true);
     console.log('Browser evidence '+dir);
   },30000);
   it('uses native Enter and Tab for the details without a focus-trapping popup',async()=> {
@@ -101,11 +101,7 @@ describe.skipIf(spawnSync('google-chrome',['--version'],{encoding:'utf8',timeout
       expect(await evaluate("document.getElementById('operations-details').open")).toBe(true);
       await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
       await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
-      expect(await evaluate("document.activeElement.getAttribute('data-action')")).toBe('refresh-codex-inspection');
-      const before=await evaluate("requests.length");
-      await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13});
-      await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
-      expect(await evaluate("requests.length")).toBe(before+1);
+      expect(await evaluate("!document.querySelector('[data-action=refresh-codex-inspection]') && !document.getElementById('operations-details').contains(document.activeElement)")).toBe(true);
       expect(await evaluate("requests.every(r=>r.method==='GET') && !document.getElementById('modal-overlay').classList.contains('open') && fixtureErrors.length===0")).toBe(true);
     } finally { socket?.close();chrome.kill('SIGTERM'); }
   },20000);
