@@ -1,0 +1,4 @@
+# One UUID only; the fixed root helper validates the caller and all input bytes.
+Defaults!/usr/local/libexec/agentmemory-candidate-enroll env_reset
+Defaults!/usr/local/libexec/agentmemory-candidate-enroll !setenv
+daniel ALL=(root) NOPASSWD: /usr/local/libexec/agentmemory-candidate-enroll *

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Delegated candidate enrollment addon (2026-10-20, not installed)
+
+- Replace repeated SSH administrator enrollment with a separately reviewed fixed-policy helper, available only after the one-time SSH root installation. Accept one canonical UUID from UID/GID1000, snapshot bounded no-follow inputs and require unchanged root execution bytes. Reuse the existing bootstrap and runner transaction; retain the separate dashboard apply action and all five existing root updater assets. The product version remains daniel.7.
+- Validate package paths/file hashes, both release tables, dependency/engine contracts, thirteen unchanged clients and a current baseline selected through root drop-in/catalog/kit provenance. Source text, retry/quarantine/history, existing memories, live data and issued bundles are preserved. Metadata/doc hashes for omitted candidate documentation prove only matching tables, not those absent bytes.
+- Independently reproduced and fixed three Important review findings: activation reread TOCTOU (derive baseline from one checked snapshot and root kit), pending failed-package alias retry (check and enroll under the same dispatch lock), and interrupted installation (require the exact root installation commit before helper authorization). No change to the existing runner/normal-stop/backup/apply/rollback code.
+- Validation: Python81 passed including35 addon checks and real policy-builder/install/reload integration in synthetic FS; unit3057 passed/four skips; build/compat/docs/skills passed; feedback39 passed/one skipped. TypeScript retains exactly24 baseline diagnostics with no additions. The first sandbox attempt hit IPC/socket restrictions and was interrupted; outside-sandbox tests retained actual temporary HOME and the default fork pool. Final post-review gates and artifact hashes are recorded in workspace outputs/delegated-candidate-enrollment-2026-10-20/REPORT.md.
+- Source base e07151c036d782b218fa259ed7679e49fd844b2e; design/plan approved in this session. Read-only runtime observation is already daniel.7/healthy/background running/mutationFailures0, superseding the older .4 handoff. No production change, installer execution, service control, inference, or rollback occurred. Administrator installation, actual root-to-UID1000 access and real sudo-n enrollment remain pending. Long-term-memory storage is pending separate manual review and explicit instruction.
+
 ## [0.9.30-daniel.7] — 2026-10-20
 
 ### Visible update progress and certified failure recovery (not deployed)
