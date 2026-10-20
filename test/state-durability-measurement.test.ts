@@ -189,3 +189,58 @@ it.each([['mem:index:bm25', 'index'], ['mem:audit:2026-10', 'audit'], ['mem:memo
   sample.finish('verified', null, 'verify');
   expect(measurements.snapshot()!.recent[0].namespaces[0].kind).toBe(expected);
 });
+
+it.each(['verified', 'failed'] as const)('counts final measurement construction failure once while storage remains %s', async outcome => {
+  const fence = fixture(); hooks.permanentReadFailure = outcome === 'failed';
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => { throw Error('PRIVATE_TIMESTAMP_FAILURE'); });
+  try {
+    if (outcome === 'verified') await expect(fence.waitForKeys(kv, selected)).resolves.toMatchObject({ synced: true });
+    else {
+      await fence.mutate(scope, 'PRIVATE_KEY', async () => {});
+      await expect(fence.waitForKeys(kv, selected)).rejects.toMatchObject({ code: 'STATE_DURABILITY_TIMEOUT' });
+      expect(fence.keys()).toHaveLength(1);
+    }
+    expect((fence.snapshot() as any).measurements).toMatchObject({ unavailable: 1, recent: [] });
+  } finally { clock.mockRestore(); }
+  hooks.permanentReadFailure = false; hooks.elapsed = 0;
+  await expect(fence.waitForKeys(kv, selected)).resolves.toMatchObject({ synced: true });
+  expect((fence.snapshot() as any).measurements).toMatchObject({ unavailable: 1, recent: [{ outcome: 'verified' }] });
+});
+
+it('counts a finalized sample construction failure only once and remains usable', () => {
+  const measurements = createDurabilityMeasurements(); const sample = measurements.begin([scope], 1)!;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => { throw Error('PRIVATE_TIMESTAMP_FAILURE'); });
+  try { expect(() => sample.finish('verified', null, 'verify')).not.toThrow(); sample.finish('failed', 'STATE_SYNC_FAILED', 'fsync'); }
+  finally { clock.mockRestore(); }
+  expect(measurements.snapshot()).toMatchObject({ unavailable: 1, recent: [] });
+  measurements.begin([scope], 1)!.finish('verified', null, 'verify');
+  expect(measurements.snapshot()).toMatchObject({ unavailable: 1, recent: [{ id: 2, outcome: 'verified' }] });
+});
+
+it('keeps previous bounded history and eviction count intact when final construction fails', () => {
+  const measurements = createDurabilityMeasurements();
+  for (let i = 0; i < 8; i++) measurements.begin([scope], 1)!.finish('verified', null, 'verify');
+  const before = measurements.snapshot()!.recent;
+  const sample = measurements.begin([scope], 1)!;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => { throw Error('PRIVATE_TIMESTAMP_FAILURE'); });
+  try { sample.finish('verified', null, 'verify'); } finally { clock.mockRestore(); }
+  expect(measurements.snapshot()).toMatchObject({ unavailable: 1, evicted: 0, recent: before });
+  measurements.begin([scope], 1)!.finish('verified', null, 'verify');
+  expect(measurements.snapshot()).toMatchObject({ unavailable: 1, evicted: 1 });
+  expect(measurements.snapshot()!.recent).toHaveLength(8);
+});
+
+it('keeps previous history atomic and counts loss if bounded history preparation throws', () => {
+  const measurements = createDurabilityMeasurements();
+  for (let i = 0; i < 8; i++) measurements.begin([scope], 1)!.finish('verified', null, 'verify');
+  const before = measurements.snapshot()!.recent; const sample = measurements.begin([scope], 1)!;
+  const original = Array.prototype.slice;
+  Array.prototype.slice = function(this: any[], start?: number, end?: number) {
+    if (this.length === 9 && this[8]?.id === 9 && this[8]?.namespaceCount === 1) throw Error('PRIVATE_HISTORY_FAILURE');
+    return Reflect.apply(original, this, [start, end]);
+  };
+  try { sample.finish('verified', null, 'verify'); } finally { Array.prototype.slice = original; }
+  expect(measurements.snapshot()).toMatchObject({ unavailable: 1, evicted: 0, recent: before });
+  measurements.begin([scope], 1)!.finish('verified', null, 'verify');
+  expect(measurements.snapshot()).toMatchObject({ unavailable: 1, evicted: 1 });
+});

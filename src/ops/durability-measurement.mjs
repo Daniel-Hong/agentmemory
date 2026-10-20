@@ -26,8 +26,8 @@ function kind(scope){
 }
 
 export function createDurabilityMeasurements(){
-  const salt=safe(()=>randomBytes(32),null),recent=[];
-  let sequence=0,evicted=0,unavailable=0;
+  const salt=safe(()=>randomBytes(32),null);
+  let recent=[],sequence=0,evicted=0,unavailable=0;
   function begin(scopes,keyCount){const measurement=safe(()=>{
     if(!salt)return null;
     const began=performance.now();
@@ -72,14 +72,18 @@ export function createDurabilityMeasurements(){
         if(closed)return;
         observe(()=>advance(phase));closed=true;
         if(!valid){unavailable++;return;}
-        safe(()=>{
+        const stored=safe(()=>{
         const sample={id,completedAt:Date.now(),outcome,keyCount,namespaceCount,omittedNamespaces:namespaceCount-namespaces.size,
           elapsedMs:Math.max(0,mark-began),phases,checkAttempts,rechecks:Math.max(0,checkAttempts-1),
           retryCount,retryReasons,failedStage:outcome==='failed'?failedStage??stage:null,
           failureReason:outcome==='failed'?lastFailureReason??(phase==='capture'?captureReason(code):reason(code)):null,scans,scanBytes,namespaces:[...namespaces.values()]};
-        recent.push(sample);
-        if(recent.length>HISTORY_LIMIT){recent.shift();evicted++;}
-      });},
+        const next=[...recent,sample],evict=next.length>HISTORY_LIMIT;
+        recent=evict?next.slice(-HISTORY_LIMIT):next;
+        if(evict)evicted++;
+        return true;
+      },false);
+        if(!stored)unavailable++;
+      },
     };
   },null);if(!measurement)unavailable++;return measurement;}
   return {begin,snapshot:()=>safe(()=>structuredClone({version:1,historyLimit:HISTORY_LIMIT,namespaceLimit:NAMESPACE_LIMIT,evicted,unavailable,recent}),null)};

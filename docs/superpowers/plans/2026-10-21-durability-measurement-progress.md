@@ -27,3 +27,17 @@ Task 1: complete. Final post-review build → skills:gen → docs:sync → skill
 Ruling: preserve this development clone and evidence for review instead of merging or deleting it. Deployment/integration was excluded by the user's approval; no production rollback is necessary. Cost: original source retains its three user modifications and requires a later reviewed integration step, especially for CHANGELOG.md.
 
 Original source HEAD remains b45645b43aea5855cf2707f6bf3a497955387631 with exactly its initial three modified files. No production files/settings/data, services, provider calls or Investment work changed. Final development commit and patch path are reported in the final response.
+
+## Approved follow-up: close both deferred minors
+
+Task 2 RED: three loss-accounting assertions failed because final sample construction exceptions left unavailable at zero. Reader pre/mid-abort and deterministic inode replacement callback tests require one callback, complete:false, original file size, truthful partial/full scan bytes and no private strings. An asynchronous rename fixture could reach an existing reader EBADF close boundary, so synchronous replacement is used to isolate the signature-rejection path without changing reader behavior.
+
+Task 2 implementation: complete the next bounded history before assigning it, increment unavailable once if final construction/history preparation fails, and preserve the previous history/eviction count. Do not change reader/fence/timeout/operating code. Added success/failure dirty-key, duplicate finalization, next-sample recovery and injected history-preparation failure regressions.
+
+Task 2 focused GREEN: 82 related regressions passed, including 30 measurement tests. Build/skills:gen/docs:sync/skills:check passed; current type diagnostics remain byte-identical to baseline (24 existing errors). Full-suite final result is recorded below when complete.
+
+Second independent fresh-context review: no Critical, Important or Minor findings. Reviewer ran both measurement files (30 tests passed), checked privacy/bounds/atomic history and matched operating runbook arguments/shutdown/rollback/API behavior to repository scripts. No production commands or original source used. Both earlier deferred minor items are closed; earlier ledger entries remain as history.
+
+Task 2 Ruling: keep the operating procedure as a preparation document with explicit unresolved live baseline/candidate/admin inputs, rather than inventing paths, issuing a root kit or exercising an update. Cost: deployment eligibility, actual downtime/current helper state and live acceptance still require separately approved inspection and execution. Reviewer excluded these live matters correctly; no production improvement is claimed.
+
+Task 2: complete. Final full suite: 305 test files passed / 2 skipped, 3131 tests passed / 4 existing skipped, 0 failures, exit 0. Focused regressions 82/82, independent review 30/30; build/generators/skills passed. Typecheck remains the same 24 pre-existing errors, not a globally passing typecheck. No deployment, registration, pause/resume, service restart, actual memory-data test or new model job occurred. New development commit and combined patch are reported in the final response.

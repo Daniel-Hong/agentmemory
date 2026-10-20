@@ -20,7 +20,7 @@
 
 이 계측은 실패 namespace 내부의 어떤 키가 큰지, 물리 디스크 대기와 JSON 파싱 CPU의 비율, 외부 공급자 대기·추론 시간, 대형 파일의 모든 구간별 진행을 직접 측정하지 않는다. 미완료 인증은 완료까지 recent에 나타나지 않는다. 별도 새 부하/벤치마크나 실제 데이터로 성능 개선을 검증하지 않았다.
 
-독립 리뷰의 minor 보류: reader의 abort/파일 교체 실패에 대한 새 measurement callback 전용 회귀는 아직 없다(기존 reader 실패 회귀와 새 malformed-input/observer-error 테스트는 수행). 최종 sample 객체 생성/보관 자체가 예외를 던지는 극단적 계측 장애는 인증 결과를 바꾸지 않지만 `unavailable` 증가 없이 sample이 누락될 수 있다. 정상 단조 시계·고정 데이터 구조에서는 관측되지 않았으며 후속 fault-accounting 보완 대상으로 남긴다.
+최초 독립 리뷰의 minor 두 건은 후속 개발에서 보완했다. pre-abort·중간 abort·inode 교체 거부에서 callback 1회, 기존 오류 유지, 알려진 파일 크기·실제 scan 바이트와 complete:false를 검증한다. 최종 sample 생성·보관 실패는 `unavailable`에 정확히 한 번 반영하고, 새 bounded history를 완성한 뒤 교체하여 이전 기록·eviction 수를 보존한다. 실패 주입 뒤 저장 성공/실패·dirty key 보존과 다음 인증 복구를 함께 검증한다.
 
 ## 보존 계약·검증·적용
 
@@ -29,3 +29,5 @@ timeout 15000ms, poll 정책, capture 동시성, namespace별 인증 분할, fsy
 실제 명령·통과 수·독립 리뷰 결과는 같은 작업의 `docs/superpowers/plans/2026-10-21-durability-measurement-progress.md` 및 최종 보고에 기록한다. 장기기억 자동 저장은 하지 않았으며 별도 수동 검토 대기다. upstream이 동일한 안전한 단계별 계측과 제한·무추가 IO·오류 격리 회귀를 제공하면 이 커스텀을 대체할 수 있다.
 
 향후 운영 적용은 별도 승인 후 기존 배포 guard/정상 종료/보존·백업 절차를 따라 새 후보로 수행해야 한다. 이 작업은 배포 후보나 root 승인 kit를 발행하지 않는다. 롤백은 계측 코드 커밋만 되돌려 재빌드하는 것이며 데이터·커서·retry·통계를 되감지 않는다. 현재는 운영 미적용이므로 서비스 롤백은 필요 없다.
+
+정확한 승인 경계·준비 명령·중단 영향·코드 롤백·실제 관측 방법은 [DURABILITY-MEASUREMENT-OPERATIONS.md](DURABILITY-MEASUREMENT-OPERATIONS.md)에 준비했다. 명령은 실행하지 않았다.

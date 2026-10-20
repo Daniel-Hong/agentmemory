@@ -39,3 +39,14 @@
 - [x] Run build, skills:gen, docs:sync, skills:check, full npm test, docs:check and focused type-baseline comparison.
 - [x] Obtain fresh independent review; fix important findings with RED/GREEN tests; record limitations and evidence.
 - [x] Commit only development changes after required checks, retaining all generated docs. No merge or deployment.
+
+### Task 2: Close review minors and prepare the operating procedure
+
+Approved follow-up scope: add callback-only pre/mid-abort and replacement regressions, minimally correct final measurement-loss accounting, review for remaining important issues, and prepare deployment/downtime/code-only rollback/GET observation instructions without executing them.
+
+- [x] Add synthetic reader callback cases; preserve the existing reader's validation errors and IO behavior.
+- [x] Reproduce final sample-construction loss in both certification outcomes; count once, preserve prior bounded history and allow subsequent recovery.
+- [x] Keep the runtime fix in the measurement collector; do not change the fence, reader, timeout or scheduling.
+- [x] Run focused regressions, build, generators, skills checks and full suite with temporary HOME; compare type diagnostics.
+- [x] Obtain fresh independent read-only review of code/tests and operating procedure.
+- [x] Record final checks and follow-up commit; retain the development copy and patch. No merge, registration, restart or deployment.
