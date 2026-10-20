@@ -271,6 +271,14 @@ class EnrollmentTests(unittest.TestCase):
     def enroll(self, rid=RID):
         return self.m.enroll(rid,policy_path=self.policy_path,state=self.state,spool=self.spool,owner=os.getuid(),anchor=self.root,request_uid=os.getuid() )
 
+    def test_real_cli_umask_preserves_public_receipt_access(self):
+        previous=os.umask(0o077)
+        try:result=self.enroll()
+        finally:os.umask(previous)
+        self.assertEqual(result['status'],'registered')
+        self.assertEqual((self.state/'public/enrollment').stat().st_mode&0o777,0o755)
+        self.assertEqual((self.state/'public/enrollment'/f'{RID}.json').stat().st_mode&0o777,0o644)
+
     def test_enroll_and_same_uuid_replay_do_not_apply(self):
         first=self.enroll();second=self.enroll()
         self.assertEqual(first,second)

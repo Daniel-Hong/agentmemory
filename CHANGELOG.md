@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Candidate enrollment installation follow-up (2026-10-20, repair not applied)
+
+- The user completed the frozen v1 SSH installation: installed=true/applied=false/serviceControlled=false, root policy SHA256 e373846fa41bac9d42f5324a14b7c755fe12d4006965eb94781f077e12a97b5f. The new helper is listed NOPASSWD. Root policy/marker directories are private; unprivileged direct reads were denied and are not reported as successful asset verification.
+- Reproduced a real CLI-environment gap before actual registration: umask077 masks mkdir0755 to0700, so the helper rejected its own newly created public receipt directory. Explicitly set the intended mode only on newly created trusted directories; existing unexpected modes remain rejected. Added a real-umask registration regression, RED→GREEN.
+- Prepare a separate administrator-only exact v1 repair, preserving old root helper/policy/marker and accepting only known old/new intermediate bytes after interruption. Replace only the addon helper and matching policy/installation commit; preserve existing updater assets, issued bundles and current data. An existing root-owned public enrollment directory left0700 by v1 may be repaired to0755. Code changes require SSH root installation again; no NOPASSWD bypass.
+- Verification: Python86 passed; unit3057/four skips; build/compat/docs/skills passed; feedback39/one skip; TypeScript retains the exact24 baseline diagnostics. Independent narrow repair review found no Critical/Important issue. Reconstructed the full installed policy from public evidence and matched its exact root-reported SHA, then verified full-policy repair/reload under synthetic umask077. sudo-n invalid-UUID invocation executed the installed helper without authentication or state mutation. Final follow-up artifacts and operational repair state are tracked in workspace outputs/delegated-candidate-enrollment-mode-fix-2026-10-20/REPORT.md. No service action, apply, inference, data rollback or durable-memory save. Memory remains pending manual review.
+
 ### Delegated candidate enrollment addon (2026-10-20, not installed)
 
 - Replace repeated SSH administrator enrollment with a separately reviewed fixed-policy helper, available only after the one-time SSH root installation. Accept one canonical UUID from UID/GID1000, snapshot bounded no-follow inputs and require unchanged root execution bytes. Reuse the existing bootstrap and runner transaction; retain the separate dashboard apply action and all five existing root updater assets. The product version remains daniel.7.

@@ -379,7 +379,13 @@ def check_caller(argv, *, euid, sudo_uid):
 
 def protected_directory(path, mode, owner, anchor):
     trusted(path.parent, owner, anchor)
-    path.mkdir(mode=mode, exist_ok=True)
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError:
+        pass
+    else:
+        path.chmod(mode)
+        sync_directory(path.parent)
     trusted(path, owner, anchor)
     require(stat.S_ISDIR(path.stat().st_mode) and stat.S_IMODE(path.stat().st_mode) == mode, 'UNTRUSTED_PATH')
     return path

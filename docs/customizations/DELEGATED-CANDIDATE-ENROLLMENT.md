@@ -17,3 +17,10 @@
 합성 시험은 원문 sentinel, 입력 중 변경/링크/FIFO/예산/JSON·metadata/실행 코드 변경/baseline 위조/tar 경로·중복/의존성·클라이언트/등록 재시도/게시 실패/lock/설치 충돌·visudo 실패를 검사한다. Python 전체 회귀는 source에서 임시 HOME으로 `python3 -B -m unittest discover -s scripts/personal-release -p 'test_*.py' -v`. 합성 owner 주입은 실제 UID0→1000/OS 정책 인수를 인증하지 않는다.
 
 장기기억 저장은 별도 수동 검토 및 명시 지시 대기다. 운영 데이터·기존 실패·기억 삭제/통합은 수행하지 않는다. upstream이 동일한 위임 경계·제한·재개·보존을 제공하면 같은 시험으로 동등성을 입증하고 변경 이력 후 대체한다.
+
+
+## 최초 설치 후 umask077 재현
+
+사용자 SSH 출력으로 v1 설치 완료를 확인했고 실제 sudo 목록에 등록 helper가 나타났다. 직접 읽을 수 없는 root-private 정책/marker는 읽기 성공으로 보고하지 않았다. 실제 CLI와 같은 umask077에서 public/enrollment0755 생성이0700으로 바뀌어 자체 검사를 실패하는 것을 격리 재현했다. 신규 디렉터리만 명시 chmod하여 수정했다.
+
+기존 root 코드/묶음은 자동 덮어쓰지 않는다. 별도 `repair-candidate-enrollment-mode.py`는 실제 v1 정책/helper hash에 고정하며 root-private 보존본을 먼저 만들고 helper→정책→완료 marker 순서로 교체한다. 서비스/데이터/기존 updater5개는 바꾸지 않는다. 최초 묶음은 이력으로 보존하고 새 고정 명령의 SSH 실행이 필요하다. 실제 결과는 workspace의 mode-fix 검증 보고서를 따른다.
