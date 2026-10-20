@@ -235,6 +235,77 @@ class TransactionTests(unittest.TestCase):
                 executed += 1
         self.assertEqual(executed, 3)
 
+    def test_unwritable_install_paths_reject_before_api_pause_and_stop(self):
+        parent = self.paths['releases']
+        parent.chmod(0o555)
+        try:
+            self.tx.api = lambda *args, **kw: self.fail('API reached before install permission check')
+            with self.assertRaisesRegex(RuntimeError, 'INSTALL_PATH_NOT_WRITABLE'):
+                self.tx.apply()
+            self.assertEqual(self.system.actions, [])
+        finally:
+            parent.chmod(0o755)
+
+    def test_failure_after_certified_stop_restores_previous_service_without_data_restore(self):
+        def failed_backup():
+            raise RuntimeError('BACKUP_READBACK_FAILED')
+        self.tx.backup_latest = failed_backup
+        with self.assertRaisesRegex(RuntimeError, 'BACKUP_READBACK_FAILED'):
+            self.tx.apply()
+        self.assertEqual(self.system.actions, ['stop', 'start'])
+        state = self.runtime.read_json(self.paths['public_state'] / 'release-6.json')
+        self.assertEqual(state['recoveryStatus'], 'restored')
+        self.assertEqual(state['errorCode'], 'BACKUP_READBACK_FAILED')
+        self.assertEqual(state['failedPhase'], 'normal_shutdown_verified')
+        self.assertNotIn('private', json.dumps(state))
+
+    def test_previous_server_start_failure_is_reported_without_retries_or_data_restore(self):
+        def failed_backup():
+            raise RuntimeError('BACKUP_READBACK_FAILED')
+        original = self.system.service
+        def service(action):
+            if action == 'start':
+                self.system.actions.append(action)
+                raise RuntimeError('SYNTHETIC_START_FAILURE')
+            original(action)
+        self.tx.backup_latest = failed_backup
+        self.system.service = service
+        raw = self.raw.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'BACKUP_READBACK_FAILED'):
+            self.tx.apply()
+        self.assertEqual(self.system.actions, ['stop', 'start'])
+        state = self.runtime.read_json(self.paths['public_state'] / 'release-6.json')
+        self.assertEqual(state['recoveryStatus'], 'restore_failed')
+        self.assertEqual(self.raw.read_bytes(), raw)
+
+    def test_recovery_requires_the_actual_previous_version_not_the_failed_new_version(self):
+        from unittest.mock import patch
+        original_api, original_service = self.api, self.system.service
+        starts = []
+        def service(action):
+            if action == 'start':
+                starts.append(action)
+            original_service(action)
+        def api(path, body=None):
+            result = original_api(path, body)
+            if path == 'health':
+                result['version'] = 'previous-version' if not starts else '0.9.30-daniel.6'
+            return result
+        self.system.service = service
+        self.tx.api = api
+        self.tx.verify_runtime = lambda: (_ for _ in ()).throw(RuntimeError('SYNTHETIC_POST_START_FAILURE'))
+        restore = self.tx.restore_previous_service
+        def bounded_restore():
+            with patch.object(self.runtime.time, 'monotonic', side_effect=[0, 121]):
+                restore()
+        self.tx.restore_previous_service = bounded_restore
+        with self.assertRaisesRegex(RuntimeError, 'SYNTHETIC_POST_START_FAILURE'):
+            self.tx.apply()
+        self.assertEqual(len(starts), 2)
+        state = self.runtime.read_json(self.paths['public_state'] / 'release-6.json')
+        self.assertEqual(state['recoveryStatus'], 'restore_failed')
+        self.assertEqual(self.tx.previous_version, 'previous-version')
+
     def test_snapshot_retry_is_exact_and_does_not_apply(self):
         self.enroll.install(self.draft, self.review, state=self.state, runner=self.runner, owner=os.getuid(), anchor=self.root, run=lambda args, **kw: self.calls.append(args))
         self.assertEqual(len(self.calls), 2)
@@ -252,7 +323,7 @@ class TransactionTests(unittest.TestCase):
             self.tx.apply()
         self.tx.guard(before=True)
         self.assertTrue(self.tx.version.exists())
-        self.assertNotIn('start', self.system.actions)
+        self.assertIn('start', self.system.actions)
         self.assertTrue(self.runtime.read_json(self.tx.work / 'transaction.json')['codeRollbackVerified'])
         self.assertIn(b'original', self.raw.read_bytes())
 
@@ -263,7 +334,7 @@ class TransactionTests(unittest.TestCase):
         self.tx.verify_runtime = failed_verification
         with self.assertRaisesRegex(RuntimeError, 'SYNTHETIC_POST_START_FAILURE'):
             self.tx.apply()
-        self.assertEqual(self.system.actions, ['stop', 'reload', 'start', 'stop', 'reload'])
+        self.assertEqual(self.system.actions, ['stop', 'reload', 'start', 'stop', 'reload', 'start'])
         self.tx.guard(before=True)
         self.assertIn(b'"new":true', self.raw.read_bytes())
         self.assertTrue(self.runtime.read_json(self.tx.work / 'transaction.json')['codeRollbackVerified'])

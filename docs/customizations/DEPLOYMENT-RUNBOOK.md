@@ -39,3 +39,7 @@
 ## daniel.6 운영 화면과 업데이트 후보
 
 OPERATIONS-OVERVIEW-DANIEL6.md를 따른다. .5는 운영 미적용이므로 .6 baseline은 실제 .4 activation/preservation으로 확인한다. 과거 outputs Python을 root runner에 직접 등록하지 않는다. 검토된 closed kit를 root snapshot으로 등록한 뒤 기존 대시보드의 업데이트 후보를 선택한다. 최초 등록은 관리자 작업이며 서비스 적용과 구분한다. 단계별 처리량/ETA는 실제 완료 표본이 쌓인 뒤 표시되며 초기 측정 중은 오류가 아니다. 클라이언트 훅이 동일하면 별도 재적용하지 않는다.
+
+## daniel.7 업데이트 실패 대응
+
+UPDATE-RECOVERY-DANIEL7.md와 최종 .7 인수 폴더를 따른다. .6 실패 묶음은 보존한다. 실제 root 등록 후 --check-install-access의 UID/GID1000 성공을 먼저 확인하고, 이후 대시보드에서 새 .7 후보만 적용한다. .4와 기존 root 자산·동일 훅은 유지하며 신규 설치는 사용자 소유의 별도 코드 경로를 사용한다. 자동 이전 서버 복구도 검증된 정상 종료·데이터/guard·이전 버전 확인을 충족해야 하며, 실패한 업데이트 자체는 failed로 보존한다.

@@ -28,7 +28,7 @@ DEFAULT_PATHS = {
     'backup': '/var/lib/agentmemory-updates/private/backups', 'env': '/home/daniel/.agentmemory/.env',
     'engine': '/home/daniel/.agentmemory/bin/iii',
     'legacy': '/home/daniel/.npm-global/lib/node_modules/@agentmemory/agentmemory',
-    'releases': '/home/daniel/.local/share/agentmemory-personal/releases',
+    'releases': '/home/daniel/.local/share/agentmemory-personal-releases',
     'bin': '/home/daniel/bin', 'feedback': '/srv/agentmemory/feedback',
     'dropin': '/etc/systemd/system/agentmemory.service.d/90-personal.conf',
     'public': '/var/lib/agentmemory-updates/public/release-kits',
@@ -226,15 +226,20 @@ class Runtime:
         self.stage_attempted = False
         self.activation_attempted = False
         self.start_attempted = False
+        self.stop_requested = False
+        self.certified_stopped = False
 
     def record(self, phase, **extra):
         self.phase = phase
-        emit(self.work / 'transaction.json', {'phase': phase, 'at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'dataRewound': False, **extra})
+        at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        emit(self.work / 'transaction.json', {'phase': phase, 'at': at, 'dataRewound': False, **extra})
         directory = self.paths['public_state']
         directory.mkdir(mode=0o755, parents=True, exist_ok=True)
         trusted(directory, self.owner, self.anchor)
         directory.chmod(0o755)
-        atomic(directory / (self.kit['id'] + '.json'), (json.dumps({'phase': phase, 'sourceCommit': self.kit['sourceCommit']}) + '\n').encode(), 0o644)
+        public = {'phase': phase, 'at': at, 'sourceCommit': self.kit['sourceCommit']}
+        public.update({key: extra[key] for key in ('failedPhase', 'errorCode', 'recoveryStatus') if key in extra})
+        atomic(directory / (self.kit['id'] + '.json'), (json.dumps(public) + '\n').encode(), 0o644)
         print('PHASE: ' + phase, flush=True)
 
     def api(self, path, body=None):
@@ -313,6 +318,23 @@ class Runtime:
         proposed = json.loads(content)
         require(all(proposed.get(field, {}) == current.get(field, {}) for field in ('dependencies', 'optionalDependencies', 'engines')), 'DEPENDENCY_REUSE_NOT_COMPATIBLE')
 
+    def user_install_access(self):
+        require(os.geteuid() == self.uid and os.getegid() == self.gid, 'USER_TRANSITION_REFUSED')
+        for target in (self.version.parent, self.receipt.parent, self.paths['bin'], self.paths['archives']):
+            require(not target.is_symlink() and not any(p.is_symlink() for p in target.parents), 'TARGET_SYMLINK_REFUSED')
+            directory = target
+            while not directory.exists():
+                directory = directory.parent
+            try:
+                descriptor, probe = tempfile.mkstemp(prefix='.agentmemory-access-', dir=directory)
+                os.close(descriptor)
+                os.unlink(probe)
+            except OSError:
+                raise RuntimeError('INSTALL_PATH_NOT_WRITABLE') from None
+        with (self.public / 'package.tgz').open('rb') as stream:
+            stream.read(1)
+        return {'uid': os.geteuid(), 'gid': os.getegid(), 'installAccessVerified': True}
+
     def preflight(self):
         self.guard(before=True)
         self.verify_dependency_reuse()
@@ -320,9 +342,13 @@ class Runtime:
         trusted(self.public, self.owner, self.anchor)
         for name in self.kit['files']:
             require(sha(self.public / name) == sha(self.root / name), 'PUBLIC_KIT_CHANGED')
+        run_as_user(self.user_install_access, self.uid, self.gid)
         require(self.system.main_pid() > 0, 'CURRENT_SERVICE_REQUIRED')
         self.system.verify_identity()
-        require(self.api('health').get('storageDurability', {}).get('mutationFailures') == 0, 'STORAGE_FAILURE_PRESENT')
+        health = self.api('health')
+        require(health.get('storageDurability', {}).get('mutationFailures') == 0, 'STORAGE_FAILURE_PRESENT')
+        self.previous_version = health.get('version')
+        require(isinstance(self.previous_version, str) and bool(self.previous_version), 'CURRENT_VERSION_REQUIRED')
         guides = [row for row in self.api('memories?latest=true').get('memories', []) if row.get('title') == 'AgentMemory 운영 및 유지보수 가이드']
         require(len(guides) == 1, 'LATEST_GUIDE_NOT_UNIQUE')
         control = self.api('background/control')['control']
@@ -333,6 +359,8 @@ class Runtime:
         self.record('preflight_verified')
 
     def stop(self):
+        self.stop_requested = True
+        self.certified_stopped = False
         worker = int((self.paths['runtime'] / 'worker.pid').read_text())
         engine = int((self.paths['runtime'] / 'iii.pid').read_text())
         main = self.system.main_pid()
@@ -347,6 +375,7 @@ class Runtime:
         require(receipt.get('pid') == worker and receipt.get('verified') is True and receipt.get('durability', {}).get('synced') is True and receipt['durability'].get('mutationFailures') == 0, 'SHUTDOWN_NOT_VERIFIED')
         require(all(not self.system.alive(pid) for pid in {worker, engine, main}), 'SHUTDOWN_PROCESS_REMAINS')
         self.stop_receipt = receipt
+        self.certified_stopped = True
         self.record('normal_shutdown_verified')
 
     def copy_private(self, source, destination, *, allowed_root=None):
@@ -564,9 +593,28 @@ class Runtime:
             atomic(self.paths['dropin'], self.rollback_dropin, 0o644)
             self.system.reload()
         self.guard(before=True)
-        # Keep the certified stopped service held for administrator inspection.
         # New package and all latest data remain intact; nothing is rewound.
-        self.record('failed', codeRollbackVerified=True, inspectionRequired=True)
+
+    def restore_previous_service(self):
+        require(self.certified_stopped, 'SHUTDOWN_NOT_VERIFIED')
+        self.guard(before=True)
+        if not self.start_attempted and hasattr(self, 'before_data'):
+            require(self.queues.stopped_hashes(self.paths['data'], self) == self.before_data, 'COLD_DATA_CHANGED')
+        self.system.service('start')
+        self.certified_stopped = False
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                health = self.api('health')
+                control = self.api('background/control')['control']
+                require(health.get('version') == self.previous_version and health.get('status') in ('healthy', 'degraded') and health.get('storageDurability', {}).get('mutationFailures') == 0, 'PREVIOUS_RUNTIME_NOT_READY')
+                require(control.get('status') == 'paused' and control.get('pausedRequested') is True and control.get('activeOperations') == 0 and control.get('error') is None, 'PAUSE_NOT_PRESERVED')
+                self.guard(before=True)
+                return
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(1)
 
     def apply(self):
         try:
@@ -576,6 +624,7 @@ class Runtime:
             self.stage()
             self.activate()
             self.start_attempted = True
+            self.certified_stopped = False
             self.system.service('start')
             self.record('new_version_started')
             self.verify_runtime()
@@ -584,22 +633,31 @@ class Runtime:
             run_as_user(self.user_finish, self.uid, self.gid)
             self.guard()
             self.record('applied_pending_live_acceptance')
-        except BaseException:
+        except BaseException as error:
             failed_phase = self.phase
             rollback_verified = False
+            recovery = 'not_needed' if not self.stop_requested else 'manual_required'
             if self.stage_attempted:
                 try:
                     self.rollback_code_only()
                     rollback_verified = True
                 except BaseException:
                     pass  # No code switch after an uncertified shutdown.
-            self.record('failed', failedPhase=failed_phase, codeRollbackVerified=rollback_verified, inspectionRequired=True)
+            if self.certified_stopped and (not self.stage_attempted or rollback_verified):
+                try:
+                    self.restore_previous_service()
+                    recovery = 'restored'
+                except BaseException:
+                    recovery = 'restore_failed'
+            safe_errors = {'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
+            code = str(error) if str(error) in safe_errors else 'UPDATE_FAILED'
+            self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, inspectionRequired=recovery not in ('not_needed', 'restored'))
             raise
 
 
 def main():
-    require(sys.argv[1:] in (['--apply'], ['--guard'], ['--preserve']), 'UNSUPPORTED_ARGUMENT')
-    if sys.argv[1] == '--apply':
+    require(sys.argv[1:] in (['--apply'], ['--guard'], ['--preserve'], ['--check-install-access']), 'UNSUPPORTED_ARGUMENT')
+    if sys.argv[1] in ('--apply', '--check-install-access'):
         require(os.geteuid() == 0, 'ROOT_REQUIRED')
     runtime = Runtime(Path(__file__).absolute().parent)
     if sys.argv[1] == '--apply':
@@ -607,6 +665,8 @@ def main():
         runtime.apply()
     elif sys.argv[1] == '--guard':
         print(json.dumps(runtime.guard()))
+    elif sys.argv[1] == '--check-install-access':
+        print(json.dumps(run_as_user(runtime.user_install_access, runtime.uid, runtime.gid)))
     else:
         print(json.dumps(runtime.user_preserve()))
 

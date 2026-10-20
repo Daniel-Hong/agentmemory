@@ -16,7 +16,21 @@ const jobFields=['jobId','candidateId','status','phase','createdAt','updatedAt',
 function publicJob(value){if(!value||!uuid(value.jobId)||!candidateId(value.candidateId)||!['queued','running','applied_pending_acceptance','failed','interrupted'].includes(value.status))throw fault('update_record_invalid');const result=Object.fromEntries(jobFields.filter(k=>value[k]!==undefined).map(k=>[k,value[k]]));if(Array.isArray(value.events))result.events=value.events.slice(-12).map(e=>Object.fromEntries(['status','phase','at','errorCode'].filter(k=>typeof e[k]==='string'&&e[k].length<=80).map(k=>[k,e[k]])));return result;}
 export function createDashboardUpdates({publicRoot='/var/lib/agentmemory-updates/public',requestRoot,version,dispatch=async id=>{await exec('/usr/bin/sudo',['-n','/usr/local/libexec/agentmemory-update-request',id],{timeout:15000,maxBuffer:8192});}}){
  const inflight=new Map();
- async function job(id){if(!uuid(id))throw fault('invalid_job_id',400);try{return publicJob(await json(join(publicRoot,'jobs',id+'.json')));}catch(error){if(error.code==='ENOENT')throw fault('update_job_not_found',404);throw error;}}
+ async function job(id){
+  if(!uuid(id))throw fault('invalid_job_id',400);
+  let result;try{result=publicJob(await json(join(publicRoot,'jobs',id+'.json')));}catch(error){if(error.code==='ENOENT')throw fault('update_job_not_found',404);throw error;}
+  if(result.status==='failed'){
+   try{
+    const state=await json(join(publicRoot,'release-kit-state',result.candidateId+'.json'),4096);
+    const at=Date.parse(state.at),created=Date.parse(result.createdAt);
+    if(state.phase==='failed'&&Number.isFinite(at)&&Number.isFinite(created)&&at>=created&&['not_needed','restored','manual_required','restore_failed'].includes(state.recoveryStatus)){
+     const errors=['INSTALL_PATH_NOT_WRITABLE','USER_TRANSITION_REFUSED','DEPENDENCY_REUSE_NOT_COMPATIBLE','BACKUP_READBACK_FAILED','PACKAGE_HASH_MISMATCH','SHUTDOWN_NOT_VERIFIED','COLD_DATA_CHANGED','USER_PHASE_FAILED','ROOT_ASSET_CHANGED','PROTECTED_FILE_CHANGED','UPDATE_FAILED'];
+     result.failure={errorCode:errors.includes(state.errorCode)?state.errorCode:'UPDATE_FAILED',failedPhase:typeof state.failedPhase==='string'&&/^[a-z_]{1,60}$/.test(state.failedPhase)?state.failedPhase:'unknown',recoveryStatus:state.recoveryStatus};
+    }
+   }catch{/* Older kits have no structured failure receipt; keep the original job. */}
+  }
+  return result;
+ }
  async function list(){
   let catalog;try{catalog=await json(join(publicRoot,'catalog.json'),65536);}catch(error){if(error.code==='ENOENT')return{available:false,reason:'administrator_setup_required',currentVersion:version,candidates:[],jobs:[]};throw error;}
   if(!Array.isArray(catalog.candidates)||catalog.candidates.length>100)throw fault('update_catalog_invalid');
@@ -38,6 +52,12 @@ export function createDashboardUpdates({publicRoot='/var/lib/agentmemory-updates
   if(existing&&(existing.jobId!==id||existing.candidateId!==body.candidateId))throw fault('update_request_conflict',409);
   try{const saved=await job(id);if(saved.candidateId!==body.candidateId)throw fault('update_request_conflict',409);if(saved.status!=='queued')return saved;}catch(error){if(error.status!==404)throw error;}
   const catalog=await list();if(!catalog.available)throw fault('administrator_setup_required');if(!catalog.candidates.some(c=>c.id===body.candidateId))throw fault('unapproved_candidate',400);
+  let names=[];try{names=await readdir(join(publicRoot,'jobs'));}catch(error){if(error.code!=='ENOENT')throw error;}
+  for(const name of names){
+   if(!name.endsWith('.json')||!uuid(name.slice(0,-5)))continue;
+   const previous=await json(join(publicRoot,'jobs',name));
+   if(previous.candidateId===body.candidateId&&['failed','interrupted'].includes(previous.status))throw fault('candidate_previously_failed',409);
+  }
   await mkdir(requestRoot,{recursive:true,mode:0o700});const info=await lstat(requestRoot);
   if(!info.isDirectory()||info.isSymbolicLink()||info.uid!==process.getuid?.()||info.mode&0o077||await realpath(requestRoot)!==resolve(requestRoot))throw fault('update_request_path_unsafe');
   if(!existing){

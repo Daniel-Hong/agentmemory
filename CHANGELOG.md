@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.7] — 2026-10-20
+
+### Visible update progress and certified failure recovery (not deployed)
+
+- Record the .6 operational failure: one job, verified normal stop and latest private backup, then failure before versioned installation/activation. The legacy releases parent was root-owned0755 while installation ran as UID1000. Reproduced the same failure path in isolation; the original private final error remains unread without administrator authentication. The user restarted .4; live read-only checks confirmed healthy/paused/mutationFailures0.
+- Use a separate user-owned code releases directory and prove actual installer access before pause/stop. Retain previous installation hashes, root asset modes, dependency compatibility, data and existing hooks. Add an administrator-only access check that drops to the actual service identity without controlling the service or touching operational data.
+- Show immediate request status, confirmed phases and failure/recovery guidance near the top of the update dialog. Fix nearly-white update text in the light theme. Keep one durable request ID across network uncertainty and same-ID retry authentication failures; distinguish a new request's definitive rejection. Reject new execution of a failed/interrupted candidate using its entire preserved history.
+- After a certified stop, restore only code and restart the previous service only if storage/data/guard safety is verified. Confirm the actual previous version, paused state and storage status; otherwise retain a manual inspection/restore-failed result. Never rewind data, force-kill, erase queue/history, retry indefinitely or turn failed updates into success.
+- Source verification: 3,057 unit tests passed / four existing skips; Python46, build/compat/docs/skills and feedback40 passed. TypeScript retains exactly24 baseline diagnostics. Real Chromium mobile/desktop and light/dark contrast checks passed. Independent review findings were reproduced and fixed; packaged-runtime and actual OS root/application gates remain separate.
+- Publish only sanitized matching failure metadata; keep private logs/settings/backup paths private. Preserve issued .6 bundles and prepare a separate artifact against the actual .4 baseline. Detailed checks, packaged-runtime proof, root registration and live acceptance are separate stages in the update-feedback-recovery-daniel7-2026-10-20 dossier. Long-term memory remains pending manual review.
+
 ## [0.9.30-daniel.6] — 2026-10-20
 
 ### Operations progress and reviewed dashboard release kits (not deployed)
@@ -397,6 +408,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.7]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.6...v0.9.30-daniel.7
 [0.9.30-daniel.6]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.5...v0.9.30-daniel.6
 [0.9.30-daniel.5]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.4...v0.9.30-daniel.5
 [0.9.30-daniel.4]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.3...v0.9.30-daniel.4

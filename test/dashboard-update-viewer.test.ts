@@ -34,18 +34,18 @@ function fixture(store = new Map<string, string>()) {
   let catalog: any = { available: true, currentVersion: 'test.0', candidates: [candidate], jobs: [] };
   let offline = false, missing = false, status = 'queued';
   const requests: any[] = [];
-  let failStorage = false;
+  let failStorage = false, rejectPost = false;
   const fetch = vi.fn(async (url: string, opts: any) => {
     requests.push({ url, ...opts });
     if (offline) throw Error('offline');
     const post = opts.method === 'POST';
     const data = url.endsWith('/updates') ? catalog : { jobId: JSON.parse(store.get('agentmemory-update-pending') || '{}').requestId, candidateId: 'release-1', status, phase: 'applying', verificationComplete: false };
-    return { ok: !missing || post || url.endsWith('/updates'), status: missing && !post && !url.endsWith('/updates') ? 404 : 200, json: async () => data };
+    return { ok: post && rejectPost ? false : !missing || post || url.endsWith('/updates'), status: post && rejectPost ? 401 : missing && !post && !url.endsWith('/updates') ? 404 : 200, json: async () => data };
   });
   const context = { document, fetch, REST: 'https://viewer.test', getViewerToken: () => 'viewer-token', crypto: { randomUUID: () => '12345678-1234-4234-8234-123456789012' }, AbortController, localStorage: { getItem: (k: string) => store.get(k) || null, setItem: (k: string, v: string) => { if (failStorage) throw Error('blocked'); store.set(k, v); }, removeItem: (k: string) => store.delete(k) }, setTimeout: (fn: Function, ms: number) => { if (ms === 4000) timers.push(fn); return 1; }, clearTimeout: vi.fn(), console };
   vm.runInNewContext(source, context);
   const byId = (id: string): Node => document.getElementById(id);
-  return { document, store, requests, context, failStorage: () => failStorage = true, timers, byId, setOffline: (v: boolean) => offline = v, setMissing: (v: boolean) => missing = v, setStatus: (v: string) => status = v, setCatalog: (v: any) => catalog = v, open: async () => { byId('update-launch').focus(); await byId('update-launch').trigger(); } };
+  return { document, store, requests, context, failStorage: () => failStorage = true, rejectPost: () => rejectPost = true, timers, byId, setOffline: (v: boolean) => offline = v, setMissing: (v: boolean) => missing = v, setStatus: (v: string) => status = v, setCatalog: (v: any) => catalog = v, open: async () => { byId('update-launch').focus(); await byId('update-launch').trigger(); } };
 }
 
 describe('dashboard update viewer', () => {
@@ -123,3 +123,27 @@ it('allows explicit same-ID queued redispatch and blocks interrupted work withou
  expect(f.byId('update-message').text()).toContain('관리자 점검 필요');expect(f.byId('update-retry').disabled).toBe(true);
  expect(f.store.has('agentmemory-update-pending')).toBe(true);
 });
+
+it('shows progress near the top and blocks a fresh request for a previously failed candidate', async () => {
+    const f = fixture(); f.setCatalog({available:true,candidates:[candidate],jobs:[{jobId:'failed-id',candidateId:candidate.id,status:'failed',phase:'failed',events:[{phase:'normal_shutdown_verified'},{phase:'latest_private_backup_verified'}],failure:{errorCode:'INSTALL_PATH_NOT_WRITABLE',failedPhase:'latest_private_backup_verified',recoveryStatus:'restored'}}]});
+    await f.open();
+    expect(f.byId('update-message').text()).toContain('업데이트 실패');
+    expect(f.byId('update-message').text()).toContain('이전 버전');
+    expect(f.byId('update-message').text()).toContain('설치');
+    expect(f.byId('update-progress').text()).toContain('백업');
+    expect(f.byId('update-apply').disabled).toBe(true);
+    expect(f.requests.filter(r=>r.method==='POST')).toHaveLength(0);
+  });
+
+it('immediately disables duplicate clicks and moves a scrolled dialog to the request status',async()=>{
+ const f=fixture();await f.open();(f.byId('update-dialog') as any).scrollTop=900;
+ const pending=f.byId('update-apply').trigger();
+ expect(f.byId('update-apply').disabled).toBe(true);
+ expect((f.byId('update-dialog') as any).scrollTop).toBe(0);
+ expect(f.byId('update-message').text()).toContain('접수');
+ await pending;
+});
+
+it('shows a definitive authorization rejection instead of polling forever as if applying',async()=>{const f=fixture();await f.open();f.rejectPost();await f.byId('update-apply').trigger();expect(f.byId('update-message').text()).toContain('거부');expect(f.byId('update-message').text()).toContain('401');expect(f.store.has('agentmemory-update-pending')).toBe(false);expect(f.requests.filter(r=>r.method==='POST')).toHaveLength(1);});
+
+it('retains an ambiguous existing request ID when same-ID retry is rejected by authentication',async()=>{const f=fixture();await f.open();f.setOffline(true);await f.byId('update-apply').trigger();const saved=f.store.get('agentmemory-update-pending');f.setOffline(false);f.setMissing(true);await f.byId('update-refresh').trigger();f.rejectPost();await f.byId('update-retry').trigger();expect(f.store.get('agentmemory-update-pending')).toBe(saved);expect(f.byId('update-message').text()).toContain('기존 요청 ID');});

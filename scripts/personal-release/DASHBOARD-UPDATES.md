@@ -97,6 +97,16 @@ sudo /usr/bin/python3 -I -B /ROOT-OWNED/enroll-reviewed-kit.py \
 
 현재 PID의 신선한 verified/synced/mutationFailures0 정상종료 영수증과 모든 기존 process 종료를 증명하기 전에는 backup/stage하지 않는다. 원문/queue/retained dependencies/보호 파일의 최신 백업은 root-private에 저장하고 디스크를 다시 읽어 검증한다. 새 package·guard·runtime·데이터·전체 코드 archive read-back까지 통과해야 새 영수증을 쓴다. 시작 직전에는 root가 게시한 제한된 phase 상태를 guard가 확인하고, 영수증 이후에는 영수증 및 archive를 확인한다. 완료는 계속 `verificationComplete:false`로 운영 인수를 남긴다.
 
-stage 실패는 이전 wrapper만 복구한다. 활성화 후 실패는 새 worker의 **새 정상종료 인증**과 데이터 보존 검사 성공 뒤에만 이전 drop-in/wrapper로 코드 복구한다. 종료 미인증이면 코드 전환도 차단한다. 모든 실패는 서비스 inspection 상태로 남기며 최신 데이터/queue를 복원하거나 package를 삭제하지 않는다. 프로세스 강제 종료·timeout 연장·인증 우회는 없다.
+stage 실패는 이전 wrapper를 복구한다. 활성화 후 실패는 새 worker의 **새 정상종료 인증**과 데이터 보존 검사 성공 뒤에만 이전 drop-in/wrapper로 코드 복구한다. 종료 미인증이면 코드 전환과 자동 재시작을 차단한다. 인증된 중지·데이터 보존·기존 guard를 모두 확인한 경우에만 이전 서버를 한 번 재시작하고, 이전 버전·일시정지·저장 상태를 다시 확인한다. 확인하지 못하면 manual_required/restore_failed로 남기며 자동 반복하지 않는다. 실패한 업데이트 자체는 복구 성공이어도 failed다. 최신 데이터/queue를 복원하거나 package를 삭제하지 않고, 프로세스 강제 종료·timeout 연장·인증 우회도 하지 않는다.
 
 격리 검증: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/personal-release -p test_dashboard_kit.py`. 합성 tgz/파일시스템·가짜 서비스·실제 fork를 사용한다. 실제 root UID0→1000 전환 및 실제 OS bootstrap/서비스 적용은 이 시험으로 인증하지 않으며 운영 설치 인수 항목이다.
+
+## daniel.7 실제 권한·진행 표시 보완
+
+기존 root 소유 releases 상위를 그대로 UID1000으로 쓰려던 .6 실패를 보존한다. 신규 버전은 `/home/daniel/.local/share/agentmemory-personal-releases`에 설치하고 기존 root 소유 설치·상위 권한은 바꾸지 않는다. 새 경로는 runtime/data 백업 영역 밖에 둔다. 기존 .4의 guard/보존본/훅은 계속 검사한다.
+
+등록 후 root 소유 공개 kit의 `kit-runtime.py --check-install-access`를 관리자 권한으로 실행하면 실제 UID/GID1000 child가 코드/영수증/보존 상위에 임시 파일을 만들고 즉시 삭제하여 설치 접근을 검사한다. API·일시정지·systemctl·운영 데이터를 건드리지 않는다. 실제 apply도 같은 검사를 **일시정지/중지 전에** 반복한다. 이 출력의 installAccessVerified는 정상종료·설치·운영 데이터 인수와 별개다.
+
+공개 실패 영수증에는 고정 errorCode/failedPhase/recoveryStatus만 기록하고 root-private 로그·백업 경로·원문은 공개하지 않는다. API는 해당 작업 생성 이후의 상태만 결합한다. 최근10개 표시와 별개로 선택 후보의 전체 실패/중단 이력을 검사해 새 요청을 거부한다. 같은 UUID의 상태 조회는 유지한다.
+
+Viewer는 클릭 즉시 요청 ID와 중복 클릭 차단을 표시하고 상태 영역을 상단에 고정한다. 확인한 단계를 한국어로 나열하고 밝은/어두운 테마의 본문 색을 따른다. 네트워크 유실은 미확정으로 표시하며 기존 요청 ID를 유지한다. 기존 요청의 같은-ID 재시도가 인증 오류를 받아도 이전 접수 여부를 추측해 ID를 지우지 않는다. 오래된 .6 kit에는 상세 실패 영수증이 없으므로 복구 여부를 추정하지 않는다.
