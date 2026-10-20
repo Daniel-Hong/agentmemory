@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.9] — 2026-10-20
+### Capture retry request ID compatibility
+
+- Reuse the viewer's existing secure getRandomValues UUID generator for capture retries so browsers without crypto.randomUUID can send them. Verify persisted request ID readback before POST. Separate secure-random, storage-quota and blocked-storage failures; never send an untracked retry or clear existing site data. The reported event remained quarantined with manualRetries0; the exact mobile exception is not yet observable.
+- Regression: actual Chromium normal/mobile/dark, missing-randomUUID and quota-denied cases. Source-only; operating daniel.8 and frozen candidates unchanged. Durable memory pending manual review.
+
 ### Dashboard analysis-history control
 
 - Remove the retired Codex analysis-history button from operations details; it displayed even when no records were available. Preserve stored diagnostic records and APIs, the shutdown warning, and the separate capture quarantine/recovery history control. Source-only change; existing frozen daniel.8 candidates and operating daniel.7 are unchanged.
@@ -447,6 +453,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.9]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.8...v0.9.30-daniel.9
 [0.9.30-daniel.8]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.7...v0.9.30-daniel.8
 [0.9.30-daniel.7]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.6...v0.9.30-daniel.7
 [0.9.30-daniel.6]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.5...v0.9.30-daniel.6

@@ -39,7 +39,11 @@
  }
  async function load(cursor){try{var page=await api('?review=true&status='+select.value+'&limit=25'+(cursor?'&cursor='+encodeURIComponent(cursor):''));rows=page.items||[];nextCursor=page.nextCursor||null;var cap=page.capture?.inbox;summary.textContent='선택 상태 '+page.total+'건'+(cap?' · 수집 격리 '+cap.dead+'건 · 자동 재시도 '+cap.retrying+'건':'');render();await reconcile();if(!pending)controls();}
   catch{announce(pending?'이전 재시도 결과 미확정 · 연결을 확인한 뒤 같은 요청 결과를 조회하세요.':'수집 목록 조회 실패 · 비어 있다고 판정하지 않습니다.');}finally{controls();}}
- async function submit(eventId,reuse,captureKey){if(busy||pending&&!reuse)return;if(!reuse){try{pending={eventId:eventId,key:captureKey,requestId:crypto.randomUUID()};localStorage.setItem(key,JSON.stringify(pending));}catch{pending=null;announce('요청 ID를 보존할 수 없어 재시도를 보내지 않았습니다.');return;}}
+ async function submit(eventId,reuse,captureKey){if(busy||pending&&!reuse)return;if(!reuse){
+  try{pending={eventId:eventId,key:captureKey,requestId:newInspectionRequestId()};}catch{pending=null;announce('보안 난수로 요청 ID를 생성하지 못해 재시도를 보내지 않았습니다. 브라우저를 업데이트한 뒤 다시 확인하세요.');return;}
+  try{var saved=JSON.stringify(pending);localStorage.setItem(key,saved);if(localStorage.getItem(key)!==saved)throw Error('request ID readback failed');}
+  catch(error){pending=null;announce((error.name==='QuotaExceededError'?'브라우저 저장 공간이 부족합니다.':error.name==='SecurityError'?'브라우저가 사이트 저장을 차단했습니다.':'브라우저에 요청 ID를 저장·재확인하지 못했습니다.')+' 재시도는 보내지 않았습니다. 사이트 저장 설정을 확인하세요. 기존 사이트 데이터는 지우지 마세요.');return;}}
+
   busy=true;controls();announce('선택 항목 재시도 요청 중 · '+pending.eventId+'\n실제 저장 결과를 확인하고 있습니다. 다시 누르지 않아도 됩니다.');
   try{var result=await api('/retry','POST',pending);var event=pending.eventId;if(result.recovered>0){announce('실제 저장 확인 완료 · '+event);clearPending();}else if(result.dead>0){announce('다시 격리됨 · 원인을 확인하세요. 이전 실패 이력은 유지됩니다.');clearPending();}else{announce('재시도 결과 미확정 · 같은 요청 ID를 보존했습니다.');}await load(cursorStack[cursorStack.length-1]);}
   catch(error){if(error.status>=400&&error.status<500&&!reuse){clearPending();announce('재시도 요청 거부('+error.status+') · 인증과 항목 상태를 확인하세요.');}else announce('재시도 결과 미확정 · 원문과 요청 ID를 보존했습니다. 새 요청 대신 상태 새로고침으로 확인하세요.');}
