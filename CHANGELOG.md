@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased — storage certification measurements (development only)
+## Unreleased — storage certification measurements (deployment preparation)
+
+- Deployment preparation: user authorized measurement-only apply/restart/observation. Prepare a distinct daniel.11 package from the reviewed cd09b0e code without incorporating unrelated original Viewer/CHANGELOG edits. Current daniel.10 guard and preservation verified; pre-existing persistent pause will be preserved unless separately authorized to resume. No timeout, credentials, provider, concurrency or scheduling changes. Applied status requires later actual receipts and observation.
 
 - Follow-up: cover pre/mid-scan abort and inode replacement callback metadata; count final measurement construction/storage loss exactly once and preserve previous bounded history. Synthetic failure injection verifies original certification success/failure, dirty-key retention and subsequent recovery. Prepare operator approval/downtime/code-only rollback/GET observation steps without executing them.
 
@@ -14,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.11] — 2026-10-20
 ## [0.9.30-daniel.10] — 2026-10-20
 ### Persistent capture retry jobs (daniel.10)
 
@@ -471,6 +474,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.11]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.10...v0.9.30-daniel.11
 [0.9.30-daniel.10]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.9...v0.9.30-daniel.10
 [0.9.30-daniel.9]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.8...v0.9.30-daniel.9
 [0.9.30-daniel.8]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.7...v0.9.30-daniel.8
