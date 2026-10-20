@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.10] — 2026-10-20
+### Persistent capture retry jobs (daniel.10)
+
+- Single and all-quarantined retries now use a durable server job, one record at a time, with immutable request IDs and a start-time snapshot. Closing the browser does not stop work. Stop prevents the next item and lets the current retry reach a verified result. Manual background pause and certified shutdown are respected; restart resumes the saved job.
+- Deduplicate competing job requests permanently and retain alias/history metadata. Fence observation/review/inbox/event dependencies before terminal job progress. Never trust completed history without an actual stored observation; preserve missing-original cases as attention items.
+- Viewer locks duplicate controls, automatically polls without replaying POSTs, refreshes terminal results, shows recovered/attention/skipped/remaining counts, and restores progress on reopen. Preserve explicit same-ID retry for legacy ambiguous requests. Existing legacy synchronous API remains compatible.
+- Stage progress now uses an independently collapsible details section and preserves its open state during automatic refresh.
+- Source/preparation only; no operating batch replay or apply. Long-term memory remains pending manual review.
+
+
 ## [0.9.30-daniel.9] — 2026-10-20
 ### Capture retry request ID compatibility
 
@@ -453,6 +463,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.10]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.9...v0.9.30-daniel.10
 [0.9.30-daniel.9]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.8...v0.9.30-daniel.9
 [0.9.30-daniel.8]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.7...v0.9.30-daniel.8
 [0.9.30-daniel.7]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.6...v0.9.30-daniel.7

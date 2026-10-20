@@ -27,6 +27,11 @@ function fixtures(extra: Record<string, unknown> = {}) {
 }
 
 describe("custom operations panel", () => {
+  it("lets stage progress collapse independently and retains its open state in rendering", () => {
+    const c=fixtures();c.operations.progressOpen=false;
+    expect(c.operationsPanelHtml()).toContain('<details id="operations-progress-details"><summary>단계별 처리 현황 · 최근 완료 표본 기준</summary>');
+    c.operations.progressOpen=true;expect(c.operationsPanelHtml()).toContain('<details id="operations-progress-details" open>');
+  });
   it("omits the retired analysis-history control when there are no results", () => {
     const html = fixtures().operationsPanelHtml();
     expect(html).not.toContain('과거 분석 기록 보기');

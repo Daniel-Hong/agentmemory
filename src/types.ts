@@ -367,7 +367,7 @@ export interface ExportPagination {
 }
 
 export interface ExportData {
-  version: "0.3.0" | "0.4.0" | "0.5.0" | "0.6.0" | "0.6.1" | "0.7.0" | "0.7.2" | "0.7.3" | "0.7.4" | "0.7.5" | "0.7.6" | "0.7.7" | "0.7.9" | "0.8.0" | "0.8.1" | "0.8.2" | "0.8.3" | "0.8.4" | "0.8.5" | "0.8.6" | "0.8.7" | "0.8.8" | "0.8.9" | "0.8.10" | "0.8.11" | "0.8.12" | "0.8.13" | "0.9.0" | "0.9.1" | "0.9.2" | "0.9.3" | "0.9.4" | "0.9.5" | "0.9.6" | "0.9.7" | "0.9.8" | "0.9.9" | "0.9.10" | "0.9.11" | "0.9.12" | "0.9.13" | "0.9.14" | "0.9.15" | "0.9.16" | "0.9.17" | "0.9.18" | "0.9.19" | "0.9.20" | "0.9.21" | "0.9.22" | "0.9.23" | "0.9.24" | "0.9.25" | "0.9.26" | "0.9.27" | "0.9.28" | "0.9.29" | "0.9.30" | "0.9.30-daniel.1" | "0.9.30-daniel.2" | "0.9.30-daniel.3" | "0.9.30-daniel.4" | "0.9.30-daniel.5" | "0.9.30-daniel.6" | "0.9.30-daniel.7" | "0.9.30-daniel.8" | "0.9.30-daniel.9";
+  version: "0.3.0" | "0.4.0" | "0.5.0" | "0.6.0" | "0.6.1" | "0.7.0" | "0.7.2" | "0.7.3" | "0.7.4" | "0.7.5" | "0.7.6" | "0.7.7" | "0.7.9" | "0.8.0" | "0.8.1" | "0.8.2" | "0.8.3" | "0.8.4" | "0.8.5" | "0.8.6" | "0.8.7" | "0.8.8" | "0.8.9" | "0.8.10" | "0.8.11" | "0.8.12" | "0.8.13" | "0.9.0" | "0.9.1" | "0.9.2" | "0.9.3" | "0.9.4" | "0.9.5" | "0.9.6" | "0.9.7" | "0.9.8" | "0.9.9" | "0.9.10" | "0.9.11" | "0.9.12" | "0.9.13" | "0.9.14" | "0.9.15" | "0.9.16" | "0.9.17" | "0.9.18" | "0.9.19" | "0.9.20" | "0.9.21" | "0.9.22" | "0.9.23" | "0.9.24" | "0.9.25" | "0.9.26" | "0.9.27" | "0.9.28" | "0.9.29" | "0.9.30" | "0.9.30-daniel.1" | "0.9.30-daniel.2" | "0.9.30-daniel.3" | "0.9.30-daniel.4" | "0.9.30-daniel.5" | "0.9.30-daniel.6" | "0.9.30-daniel.7" | "0.9.30-daniel.8" | "0.9.30-daniel.9" | "0.9.30-daniel.10";
   exportedAt: string;
   sessions: Session[];
   observations: Record<string, CompressedObservation[]>;
@@ -1038,3 +1038,7 @@ export interface CaptureReviewHistory {
   failures: Array<{at: string; attempt: number; code: string; legacy?: boolean}>;
   requests: Record<string,{startedAt: string; finishedAt?: string; outcome?: "recovered" | "dead" | "waiting" | "gone" | "stopped"}>;
 }
+
+export type CaptureRetryJobItemState = 'queued' | 'working' | 'waiting' | 'recovered' | 'dead' | 'skipped';
+export type CaptureRetryJobItem = { key: string; eventId: string; requestId: string; status: CaptureRetryJobItemState; errorCode?: string };
+export type CaptureRetryJob = { id: string; all: boolean; eventId?: string; key?: string; status: 'running'|'stopping'|'stopped'|'completed'; stopRequested: boolean; createdAt: string; updatedAt: string; items: CaptureRetryJobItem[] };

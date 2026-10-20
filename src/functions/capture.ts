@@ -17,6 +17,8 @@ import {
   type CompletedEvent,
 } from "../capture/event-record.js";
 import { captureReviewPage, recordCaptureFailure, resolveCaptureReview, reviewHistory } from "../capture/review.js";
+import { createCaptureRetryJobs } from "../capture/retry-jobs.js";
+import { backgroundTask, backgroundPaused } from "../ops/background-control.mjs";
 import { restoreIndexEntries } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord } from "./privacy.js";
@@ -432,8 +434,9 @@ export function registerCaptureFunctions(
         history=await reviewHistory(kv,rec);
         if(requestId && history.requests[requestId]){
           const previous=history.requests[requestId];
-          if(previous.outcome)return previous.outcome;
-          if(rec.manualRequestId===requestId)return 'waiting';
+          if(previous.outcome){
+            if(previous.outcome!=='recovered'||history.observationId&&(await storedObservation({sessionId:rec.sessionId,observationId:history.observationId} as CompletedEvent))?.id===history.observationId)return previous.outcome;
+          }else if(rec.manualRequestId===requestId)return 'waiting';
         }
         const id=requestId??randomUUID();
         if(!history.requests[id]){history.manualRetries++;history.requests[id]={startedAt:new Date().toISOString()};}
@@ -644,6 +647,11 @@ export function registerCaptureFunctions(
     };
   });
 
+  const retryJobs = createCaptureRetryJobs(kv,retryOne);
+  sdk.registerFunction("mem::capture-jobs",async (input:{jobId?:string}={})=>({job:await retryJobs.status(input.jobId),backgroundPaused:backgroundPaused()}));
+  sdk.registerFunction("mem::capture-jobs-start",async (input:{requestId:string;all?:boolean;eventId?:string;key?:string})=>({job:await retryJobs.start(input),backgroundPaused:backgroundPaused()}));
+  sdk.registerFunction("mem::capture-jobs-stop",async (input:{jobId:string})=>({job:await retryJobs.stop(input.jobId),backgroundPaused:backgroundPaused()}));
+
   sdk.registerFunction("mem::capture-drain", async () => {
     const results = await drainLocalSpool();
     return { results };
@@ -667,7 +675,10 @@ export function registerCaptureFunctions(
         trackMaintenance(prune);
       }, 60 * 60 * 1000);
       pruneTimer.unref();
-      timers.push(sweepTimer, pruneTimer);
+      const jobTick=backgroundTask(async()=>{if(!stopped)await retryJobs.tick();});
+      const jobTimer=setInterval(()=>{if(!stopped)trackMaintenance(jobTick);},1000);
+      jobTimer.unref();
+      timers.push(sweepTimer, pruneTimer,jobTimer);
     },
     stop() {
       stopped = true;

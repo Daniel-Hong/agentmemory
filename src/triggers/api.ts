@@ -771,6 +771,32 @@ export function registerApiTriggers(
     config: { api_path: "/agentmemory/capture/retry", http_method: "POST" },
   });
 
+  const jobIdValid=(value:unknown):value is string=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+  const jobCall=async(function_id:string,payload:Record<string,unknown>):Promise<Response>=>{
+    try{return {status_code:function_id==='mem::capture-jobs-start'?202:200,body:await sdk.trigger({function_id,payload})};}
+    catch(error){const code=error instanceof Error?error.message:'';return {status_code:code==='CAPTURE_JOB_CONFLICT'?409:code==='CAPTURE_JOB_TOO_LARGE'?413:503,body:{error:['CAPTURE_JOB_CONFLICT','CAPTURE_JOB_TOO_LARGE'].includes(code)?code:'CAPTURE_JOB_UNAVAILABLE'}};}
+  };
+  sdk.registerFunction("api::capture-jobs",async(req:HttpRequest):Promise<Response>=>{
+    const authErr=checkAuth(req,secret);if(authErr)return authErr;
+    const id=req.query_params?.['jobId'];if(id!==undefined&&!jobIdValid(id))return {status_code:400,body:{error:'INVALID_CAPTURE_JOB'}};
+    return jobCall('mem::capture-jobs',id?{jobId:id}:{});
+  });
+  sdk.registerFunction("api::capture-jobs-start",async(req:HttpRequest):Promise<Response>=>{
+    const authErr=checkAuth(req,secret);if(authErr)return authErr;
+    const b=(req.body??{}) as Record<string,unknown>;
+    if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).some(k=>!['requestId','all','eventId','key'].includes(k))||!jobIdValid(b.requestId)||b.all!==undefined&&b.all!==true||b.all===true&&(b.eventId!==undefined||b.key!==undefined)||b.all!==true&&(typeof b.eventId!=='string'||!isValidEventId(b.eventId))||b.key!==undefined&&(typeof b.key!=='string'||!/^cap_[a-f0-9]{40}$/.test(b.key)))return {status_code:400,body:{error:'INVALID_CAPTURE_JOB'}};
+    return jobCall('mem::capture-jobs-start',{requestId:b.requestId,...(b.all===true?{all:true}:{eventId:b.eventId,...(b.key?{key:b.key}:{})})});
+  });
+  sdk.registerFunction("api::capture-jobs-stop",async(req:HttpRequest):Promise<Response>=>{
+    const authErr=checkAuth(req,secret);if(authErr)return authErr;
+    const b=(req.body??{}) as Record<string,unknown>;
+    if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).some(k=>k!=='jobId')||!jobIdValid(b.jobId))return {status_code:400,body:{error:'INVALID_CAPTURE_JOB'}};
+    return jobCall('mem::capture-jobs-stop',{jobId:b.jobId});
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-jobs',config:{api_path:"/agentmemory/capture/jobs",http_method:'GET'}});
+  sdk.registerTrigger({type:'http',function_id:'api::capture-jobs-start',config:{api_path:"/agentmemory/capture/jobs",http_method:'POST'}});
+  sdk.registerTrigger({type:'http',function_id:'api::capture-jobs-stop',config:{api_path:"/agentmemory/capture/jobs/stop",http_method:'POST'}});
+
   sdk.registerFunction("api::capture-drain",
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);

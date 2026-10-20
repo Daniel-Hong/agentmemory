@@ -2440,7 +2440,7 @@
       s.lastHealthAt = Date.now();
     }
 
-    var operations = { health: {}, sessions: [], control: null, job: null, available: false, loading: false, checking: false, submitting: false, controlBusy: false, error: '', controlError: '', jobError: '', submitError: '', checkedAt: null, detailsOpen: false, requestId: null, refreshTimer: null, controlTimer: null, jobTimer: null, request: null, generation: 0, metrics: {}, metricPrevious: {} };
+    var operations = { health: {}, sessions: [], control: null, job: null, available: false, loading: false, checking: false, submitting: false, controlBusy: false, error: '', controlError: '', jobError: '', submitError: '', checkedAt: null, detailsOpen: false, progressOpen: false, requestId: null, refreshTimer: null, controlTimer: null, jobTimer: null, request: null, generation: 0, metrics: {}, metricPrevious: {} };
     var autoRefresh = { enabled: true, seconds: 30 };
     try {
       var savedRefresh = JSON.parse(localStorage.getItem('agentmemory-refresh'));
@@ -2627,12 +2627,12 @@
     function operationsProgressHtml(work, health, control) {
       var stages = operationsStages(work,operations.sessions,health,operations.available), now = Date.now();
       var fresh = !!operations.checkedAt && !operations.error && !operations.controlError && now-operations.checkedAt <= Math.max(90000,autoRefresh.seconds*2500);
-      var html = '<div class="table-wrap operations-progress"><table class="metric-table"><caption>단계별 처리 현황 · 최근 완료 표본 기준</caption><thead><tr><th>단계</th><th>남음</th><th>최근 완료</th><th>분당 완료</th><th>예상 시간</th><th>진행 상태</th></tr></thead><tbody>';
+      var html = '<details id="operations-progress-details"'+(operations.progressOpen?' open':'')+'><summary>단계별 처리 현황 · 최근 완료 표본 기준</summary><div class="table-wrap operations-progress"><table class="metric-table"><caption>처리 단계별 잔여량과 예상 시간</caption><thead><tr><th>단계</th><th>남음</th><th>최근 완료</th><th>분당 완료</th><th>예상 시간</th><th>진행 상태</th></tr></thead><tbody>';
       stages.forEach(function(s) {
         var r = stageProgress(s,now,control,fresh && (s.key !== 'summary' && s.key !== 'compress' && s.key !== 'graph' || operations.available));
         html += '<tr><th scope="row">'+esc(s.label)+'</th><td>'+(s.pending === null || s.pending === undefined?'미확인':s.pending.toLocaleString()+'건')+'</td><td>'+(r.recent === null?'—':r.recent.toLocaleString()+'건<div class="hnote">'+Math.max(1,Math.round(r.observedSeconds/60))+'분 관측</div>')+'</td><td>'+(r.rate === null?'—':r.rate.toLocaleString(undefined,{maximumFractionDigits:1})+'건')+'</td><td>'+(r.etaSeconds === null?'—':esc(progressDuration(r.etaSeconds)))+'<div class="hnote">'+esc(r.reason)+'</div></td><td>'+esc(r.status)+(s.lastCompletedAt?'<div class="hnote">최근 완료 '+esc(new Date(s.lastCompletedAt).toLocaleTimeString())+'</div>':'')+'</td></tr>';
       });
-      return html+'</tbody></table></div><p class="hnote">예상 시간은 현재 대기분 기준이며 새 유입·후속 단계·재시도에 따라 달라집니다. 단계별 건수는 중복될 수 있어 기록 수나 완료율로 합산하지 않습니다.</p>';
+      return html+'</tbody></table></div><p class="hnote">예상 시간은 현재 대기분 기준이며 새 유입·후속 단계·재시도에 따라 달라집니다. 단계별 건수는 중복될 수 있어 기록 수나 완료율로 합산하지 않습니다.</p></details>';
     }
     function operationsPanelHtml() {
       var h = operations.health || {}, control = operations.control || {}, job = operations.job || {};
@@ -7825,6 +7825,8 @@
       html += consolidationPanelHtml(store.consolidationStatus, c);
       html += functionsCardHtml(r);
       setViewHtml(el, html);
+      var progressDetails=el.querySelector('#operations-progress-details');
+      if(progressDetails)progressDetails.addEventListener('toggle',function(){operations.progressOpen=progressDetails.open;});
       var operationDetails = el.querySelector('#operations-details');
       if (operationDetails) operationDetails.addEventListener('toggle', function() { operations.detailsOpen = operationDetails.open; });
       if (insideOperations && operationDetails) {
