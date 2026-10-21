@@ -109,6 +109,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.18] — 2026-10-21
 ## [0.9.30-daniel.16] — 2026-10-21
 ## [0.9.30-daniel.15] — 2026-10-21
 ## [0.9.30-daniel.11] — 2026-10-20
@@ -569,6 +570,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.18]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.16...v0.9.30-daniel.18
 [0.9.30-daniel.16]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.15...v0.9.30-daniel.16
 [0.9.30-daniel.15]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.11...v0.9.30-daniel.15
 [0.9.30-daniel.11]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.10...v0.9.30-daniel.11
