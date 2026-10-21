@@ -1,5 +1,10 @@
 # Changelog
 
+## Exact reviewed-plan operating command (prepared only)
+
+- Complete genuine AI review of the actual fixed-plan export; no important finding. Add one fixed wrapper to revalidate, record that AI review and invoke existing check/apply after separate operating approval. Bind plan/intent/count, all executable sources and the outer wrapper bytes; preserve every existing guard and different review/history.
+- Cover failure/duplicate/concurrency/source/layout/recording uncertainty and core restoration using synthetic fixtures. No actual review.json write, operating trust change, service restart or .16 retry performed; no user source-review/name-entry requirement.
+
 ## Body-free prepared-plan review evidence (development only)
 
 - Add one fixed read-only export for the prepared plan/intent and 36 targets after OS permissions blocked actual AI review. Reconstruct proposed trust metadata, validate staged code archive contents and hash-bound original snapshots, and return only fixed aliases, modes and comparison facts. No private bodies, review.json write, apply, service control or retry.
