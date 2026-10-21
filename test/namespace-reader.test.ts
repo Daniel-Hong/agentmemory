@@ -75,3 +75,15 @@ it('validates long string runs and dense escaped delimiters across stream chunks
   await writeFile(path,'{"kept":"'+ 'x'.repeat(128*1024)+'\u0001"}');
   await expect(readNamespaceEntries(path,{chunkSize:1024})).rejects.toThrow('state_namespace_corrupt');
 });
+
+
+it.each([1,7,61,4096])('keeps native JSON validation across structural-scan chunk boundaries %s',async(chunkSize)=>{
+  const object={selected:{vector:Array.from({length:256},(_,i)=>Math.sin(i)/17),text:'한 😀 \" \\ \n {}[]'.repeat(8)},other:{flag:true,list:[false,null,{text:'backslash\\ before quote \"',numbers:[-0,1.25e30,-4.2e-9]}]},primitive:1234567890};
+  const {path}=await fixture(Buffer.concat([Buffer.from(JSON.stringify(object)),Buffer.from([255,0,93,125])]));
+  const result=await readNamespaceEntries(path,{keys:new Set(['selected']),chunkSize});
+  expect(Object.fromEntries(result.values)).toEqual({selected:object.selected});expect(result.entries).toBe(3);
+});
+
+it.each(['{"selected":true,"other":{"numbers":[1,,2]}}','{"selected":true,"other":{"value":tru}}','{"selected":true,"other":{"value":01}}','{"selected":true,"other":{"value":undefined}}','{"selected":true,"other":{"text":"bad\\q"}}','{"selected":true,"other":{"numbers":[1,2}}'])('still refuses malformed unselected compound JSON after structural jumps: %s',async(json)=>{
+ const {path}=await fixture(json);await expect(readNamespaceEntries(path,{keys:new Set(['selected']),chunkSize:7})).rejects.toThrow();
+});

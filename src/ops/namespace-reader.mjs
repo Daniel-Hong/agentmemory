@@ -17,7 +17,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
   let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0,lastSignatureCheck=0,selectedBytes=0,privateProjection=false;
   async function consume(text){
-    const delimiter=/["\\]/g;
+    const delimiter=/["\\]/g,structural=/["{}\[\]]/g;
     if(state==='value')valueStart=0;
     async function finish(end){
       if(valueStart!==null)valueParts.push(text.slice(valueStart,end));
@@ -39,6 +39,8 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       if(state==='value'&&valueQuoted&&!valueEscape){
         delimiter.lastIndex=i;if(!delimiter.test(text))break;i=delimiter.lastIndex-1;
       }
+      // JSON.parse at finish still validates every skipped token and unselected entry.
+      if(state==='value'&&valueKind==='compound'&&!valueQuoted){structural.lastIndex=i;if(!structural.test(text))break;i=structural.lastIndex-1;}
       const char=text[i];let again=true;
       while(again){again=false;
         if(state==='start'){if(white(char))continue;if(char!=='{')throw fail('state_namespace_shape');state='key_or_end';}
@@ -86,12 +88,13 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
         if(before!==opened||opened!==current)throw fail('state_namespace_changed');
         lastSignatureCheck=bytesRead;
       }
-      const rawText=chunk.toString('latin1'),delimiter=/["\\]/g;
+      const rawText=chunk.toString('latin1'),delimiter=/["\\]/g,structural=/["{}\[\]]/g;
       let end=chunk.length;
       for(let i=0;i<chunk.length;i++){
         if(rawQuoted&&!rawEscape){
           delimiter.lastIndex=i;if(!delimiter.test(rawText))break;i=delimiter.lastIndex-1;
         }
+        if(rawStarted&&!rawQuoted){structural.lastIndex=i;if(!structural.test(rawText))break;i=structural.lastIndex-1;}
         const byte=chunk[i];
         if(!rawStarted){if([9,10,13,32].includes(byte))continue;if(byte!==123)throw fail('state_namespace_shape');rawStarted=true;rawDepth=1;continue;}
         if(rawQuoted){if(rawEscape)rawEscape=false;else if(byte===92)rawEscape=true;else if(byte===34)rawQuoted=false;}

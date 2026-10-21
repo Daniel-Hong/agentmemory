@@ -1,5 +1,12 @@
 # Changelog
 
+## Faster fully validated namespace scanning (development only)
+
+- Use native structural-token searches to skip non-structural runs in the raw JSON-prefix and compound-value scans. Retain full fatal UTF-8 decoding and JSON.parse validation for every entry, including unselected values; signature checks, cancellation, fsync, deadlines and receipt ownership rules are unchanged.
+- Reproduce the five-second compatibility collector receipt-before-post stall with synthetic 220 MB namespaces and concurrent readback. The optimized reader completes the same real file fence and durable duplicate handoff within the unchanged budget in two alternating development trials. Add malformed/chunk-boundary and real collector/receipt/file-fence preservation tests, including a separate worker process retaining pending ownership during retry backoff.
+- Validation: build, skill/docs generation and checks, 3,301 passing application tests (4 skipped), two alternating synthetic budget comparisons and independent review. Compatibility capture/manifest hashes are unchanged.
+- This is not an operating fix confirmation. No service deployment/restart, backlog replay/deletion, timeout expansion, counter reset or administrative permission change. Existing operating capture acceptance remains incomplete; synthetic SDK/transport and workload limits are documented in CAPTURE-RECEIPT-BUDGET.md.
+
 ## Exact reviewed-plan operating command (prepared only)
 
 - Complete genuine AI review of the actual fixed-plan export; no important finding. Add one fixed wrapper to revalidate, record that AI review and invoke existing check/apply after separate operating approval. Bind plan/intent/count, all executable sources and the outer wrapper bytes; preserve every existing guard and different review/history.
