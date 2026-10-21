@@ -7,12 +7,13 @@ const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctime
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,checkIntervalBytes=0}={}){
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
+  if(!Number.isSafeInteger(checkIntervalBytes)||checkIntervalBytes<0)throw fail('state_namespace_check_interval_invalid');
   const handle=await open(path,'r'),decoder=new StringDecoder('utf8'),utf8=new TextDecoder('utf-8',{fatal:true});
   const values=new Map(),seen=new Set();let stream,fileBytes=null,complete=false;
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
-  let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0;
+  let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0,lastSignatureCheck=0;
   async function consume(text){
     const delimiter=/["\\]/g;
     if(state==='value')valueStart=0;
@@ -63,8 +64,16 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     const beforeStat=await handle.stat({bigint:true}),before=signature(beforeStat);
     fileBytes=Number(beforeStat.size);
     signal?.throwIfAborted();
-    stream=handle.createReadStream({autoClose:false,highWaterMark:chunkSize,signal});
-    for await(const chunk of stream){
+    stream=handle.createReadStream({autoClose:false,autoDestroy:false,highWaterMark:chunkSize,signal});
+    for await(const chunk of stream.iterator({destroyOnReturn:false})){
+      if(checkIntervalBytes&&bytesRead-lastSignatureCheck>=checkIntervalBytes){
+        signal?.throwIfAborted();
+        const opened=signature(await handle.stat({bigint:true}));
+        let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
+        signal?.throwIfAborted();
+        if(before!==opened||opened!==current)throw fail('state_namespace_changed');
+        lastSignatureCheck=bytesRead;
+      }
       const rawText=chunk.toString('latin1'),delimiter=/["\\]/g;
       let end=chunk.length;
       for(let i=0;i<chunk.length;i++){

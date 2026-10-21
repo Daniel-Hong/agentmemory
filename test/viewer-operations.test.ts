@@ -239,3 +239,12 @@ it('invalidates the HTTP badge, footer and health view together when a snapshot 
   const c=context(['loadSnapshot'],{apiGet:async()=>null,store:{snapshotAt:Date.now()},state:{activeTab:'health'},renderConnection:vi.fn(),updateFooter,markDirty:vi.fn(),renderTab});
   expect(await c.loadSnapshot()).toBe(false);expect(c.store.snapshotError).toBe(true);expect(updateFooter).toHaveBeenCalledOnce();expect(renderTab).toHaveBeenCalledWith('health');
 });
+
+it('shows memory protection hold separately from current normal pressure and manual recovery constraints',()=>{
+ const c=fixtures();c.operations.control={status:'paused',holds:['memory','manual'],recovery:{attempts:3,maxAttempts:3}};c.operations.health={memoryPressure:{level:'normal',recoveryStatus:'attempt_limit'}};
+ const html=c.operationsPanelHtml();expect(html).toContain('메모리 보호');expect(html).toContain('수동 중지');expect(html).toContain('자동 회복 횟수 제한');expect(html).toContain('메모리 보호는 안정 확인 후 자동 회복');expect(html).not.toContain('재개는 직접 눌러야 합니다');
+ c.operations.control.holds=['PRIVATE_RAW'];expect(c.operationsPanelHtml()).not.toContain('PRIVATE_RAW');
+});
+it('does not imply another hold exists when a cancelled memory recovery remains held',()=>{
+ const c=fixtures();c.operations.control={status:'paused',holds:['memory']};c.operations.health={memoryPressure:{level:'high',recoveryStatus:'held'}};const html=c.operationsPanelHtml();expect(html).toContain('보호 중지 유지 · 재개 조건 확인 필요');expect(html).not.toContain('다른 중지 원인 확인 필요');
+});

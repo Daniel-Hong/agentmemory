@@ -7,7 +7,7 @@ vi.mock('node:fs/promises',async importOriginal=>{
  const actual=await importOriginal<typeof import('node:fs/promises')>();
  return {...actual,open:async(...args:Parameters<typeof actual.open>)=>{
   const handle=await actual.open(...args),sync=handle.sync.bind(handle),read=handle.createReadStream.bind(handle);
-  handle.createReadStream=(options:any)=>{hooks.reads++;const stream=read(options);if(hooks.slowRead||hooks.onRead){const iterator=stream[Symbol.asyncIterator].bind(stream);stream[Symbol.asyncIterator]=async function*(){await hooks.onRead?.();for await(const chunk of {[Symbol.asyncIterator]:iterator}){if(hooks.slowRead)await new Promise(resolve=>setTimeout(resolve,40));yield chunk;}};}return stream;};
+  handle.createReadStream=(options:any)=>{hooks.reads++;const stream=read(options);if(hooks.slowRead||hooks.onRead){const iterate=stream.iterator.bind(stream);stream.iterator=(iterationOptions:any)=>{const iterator=iterate(iterationOptions);return(async function*(){await hooks.onRead?.();for await(const chunk of {[Symbol.asyncIterator]:()=>iterator}){if(hooks.slowRead)await new Promise(resolve=>setTimeout(resolve,40));yield chunk;}})();};}return stream;};
   handle.sync=async()=>{if(!String(args[0]).endsWith('.bin'))await hooks.onDirectorySync?.();await sync();};
   return handle;
  }};

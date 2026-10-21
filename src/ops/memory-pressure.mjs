@@ -10,17 +10,48 @@ export async function readHostMemory(){
 }
 
 export function createMemoryPressureGuard({control,readSample=readHostMemory,schedule=true,clock=Date.now}={}){
- let state={level:'unknown',totalBytes:null,availableBytes:null,reserveBytes:null,criticalBytes:null,checkedAt:null,rejectedRequests:0},timer=null,active=null,stopped=false;
+ let state={level:'unknown',totalBytes:null,availableBytes:null,reserveBytes:null,criticalBytes:null,checkedAt:null,rejectedRequests:0,recoveryStatus:'observing',stableSince:null},timer=null,active=null,pendingRecovery=null,pendingPause=null,stopped=false;
+ let lastSampleAt=null,stableSince=null,sampleSequence=0;
+ async function readFresh(){
+  const sequence=++sampleSequence,before=clock(),m=await readSample(),now=clock();
+  if(sequence!==sampleSequence||!m||!Number.isFinite(m.total)||m.total<=0||!Number.isFinite(m.available)||m.available<0||m.available>m.total||!Number.isFinite(now)||now<before||now-before>10000)throw Error('memory_sample_unavailable');
+  const reserve=Math.max(2*GiB,m.total*.20),critical=Math.max(GiB/2,m.total*.05),recoveryBytes=Math.max(3*GiB,m.total*.25);
+  state={...state,level:m.available<critical?'critical':m.available<reserve?'high':'normal',totalBytes:m.total,availableBytes:m.available,reserveBytes:reserve,criticalBytes:critical,recoveryBytes,sampleError:false,checkedAt:now};
+  return{now,recovered:m.available>recoveryBytes};
+ }
  async function sample(){
   try{
-   const m=await readSample();
-   if(!m||!Number.isFinite(m.total)||m.total<=0||!Number.isFinite(m.available)||m.available<0||m.available>m.total)throw Error('memory_sample_unavailable');
-   const reserve=Math.max(2*GiB,m.total*.20),critical=Math.max(GiB/2,m.total*.05);
-   state={...state,level:m.available<critical?'critical':m.available<reserve?'high':'normal',totalBytes:m.total,availableBytes:m.available,reserveBytes:reserve,criticalBytes:critical,sampleError:false,checkedAt:clock()};
-   if(state.level!=='normal'&&!control.snapshot().pausedRequested){try{await control.change('pause');state.pauseError=null;}catch{state.pauseError='background_pause_failed';}}
-  }catch{state={...state,level:['high','critical'].includes(state.level)?state.level:'unknown',sampleError:true,checkedAt:clock()};}
+   const {now,recovered}=await readFresh();
+   if(lastSampleAt===null||now<lastSampleAt||now-lastSampleAt>10000||!recovered)stableSince=null;
+   lastSampleAt=now;
+   if(!recovered)stableSince=null;else if(stableSince===null)stableSince=now;
+   state.stableSince=stableSince;
+   if(state.level!=='normal'){
+    state.recoveryStatus='pressure';
+    if(!pendingPause)pendingPause=control.change('pause',{source:'memory'}).then(()=>{state.pauseError=null;},()=>{state.pauseError='background_pause_failed';}).finally(()=>{pendingPause=null;});
+    return;
+   }
+   if(pendingRecovery){state.recoveryStatus='recovering';return;}
+   const c=control.snapshot();
+   if(!c.holds?.includes('memory')){state.recoveryStatus='observing';return;}
+   if(c.holds.length!==1||c.status==='error'){state.recoveryStatus='held';return;}
+   if(c.recovery.attempts>=c.recovery.maxAttempts){state.recoveryStatus='attempt_limit';return;}
+   if(now<c.recovery.nextAttemptAt){state.recoveryStatus='backoff';return;}
+   state.recoveryStatus='stabilizing';
+   if(stableSince===null||now-stableSince<120000)return;
+   state.recoveryStatus='recovering';
+   pendingRecovery=control.change('resume',{source:'memory',canResume:async()=>{
+    let checked;
+    try{checked=await readFresh();}catch{stableSince=null;lastSampleAt=null;state={...state,level:['high','critical'].includes(state.level)?state.level:'unknown',sampleError:true,stableSince:null};return false;}
+    if(stableSince===null||checked.now-stableSince<120000||!checked.recovered||checked.now<lastSampleAt||checked.now-lastSampleAt>10000||stopped){stableSince=null;state.stableSince=null;return false;}
+    lastSampleAt=checked.now;return true;
+   }}).then(()=>{
+    state.recoveryStatus=['high','critical'].includes(state.level)?'pressure':control.snapshot().pausedRequested?'held':'recovered';
+   },()=>{state.recoveryStatus='held';}).finally(()=>{pendingRecovery=null;stableSince=null;state.stableSince=null;});
+  }catch{stableSince=null;lastSampleAt=null;state={...state,level:['high','critical'].includes(state.level)?state.level:'unknown',sampleError:true,recoveryStatus:'sample_error',stableSince:null,checkedAt:clock()};}
  }
  function refresh(){if(stopped)return Promise.resolve();if(active)return active;active=sample().finally(()=>{active=null;});return active;}
+ async function drain(){while(active||pendingRecovery||pendingPause)await Promise.all([active,pendingRecovery,pendingPause]);}
  return{
   refresh,snapshot:()=>({...state}),
   install(sdk,auth){
@@ -32,7 +63,7 @@ export function createMemoryPressureGuard({control,readSample=readHostMemory,sch
    }:handler,...rest);
   },
   start(){if(schedule&&!stopped){void refresh();timer=setInterval(()=>void refresh(),5000);timer.unref();}},
-  async drain(){if(active)await active;},
-  async stop(){stopped=true;clearInterval(timer);if(active)await active;}
+  drain,
+  async stop(){stopped=true;clearInterval(timer);await drain();}
  };
 }

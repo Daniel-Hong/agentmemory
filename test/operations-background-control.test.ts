@@ -17,7 +17,7 @@ describe("background transition status and safe diagnostics", () => {
     const control = createBackgroundControl(), initializing = control.init(f.kv);
     await tick();
     expect(control.snapshot()).toMatchObject({ status: "initializing", pausedRequested: true });
-    expect(f.saved()).toEqual({ paused: false, resumePending: true });
+    expect(f.saved()).toEqual({ version:2, paused:false, resumePending:true, holds:[], recovery:{attempts:0,nextAttemptAt:0} });
     expect((await control.run(() => 42)).deferred).toBe(true);
     await expect(control.commitCleanShutdown()).rejects.toMatchObject({ code: "BACKGROUND_CLEAN_SHUTDOWN_UNSAFE" });
     disk.resolve(); await initializing;
@@ -88,7 +88,7 @@ describe("background transition status and safe diagnostics", () => {
       errorCode: "STATE_DURABILITY_TIMEOUT", causeCode: "STATE_NAMESPACE_NOT_COMMITTED", category: "state_durability", stage: "capture", keyCount: 9, scopeCount: 2, capturedKeyCount: 3, elapsedMs: 50, waitMs: 50,
     } });
     expect(JSON.stringify(snapshot)).not.toContain("PRIVATE_");
-    expect(f.saved()).toEqual(action === "resume" ? { paused: true, resumePending: true } : { paused: true });
+    expect(f.saved()).toEqual({version:2,paused:true,resumePending:true,holds:action==='resume'?['legacy_unknown','storage_error']:['manual','storage_error'],recovery:{attempts:0,nextAttemptAt:0}});
     expect((await control.run(() => 42)).deferred).toBe(true);
   });
 
@@ -142,7 +142,7 @@ it('certifies all preceding writes once through wait without a duplicate stable 
 it.each([undefined,{}, {synced:false,mutationFailures:0},{synced:true,mutationFailures:1},{synced:true}, {synced:true,mutationFailures:Number.NaN}])('keeps resume admission closed for an uncertified full wait result %j',async result=>{
  const f=fixture({paused:true});f.kv.durability.wait=async()=>result;const control=createBackgroundControl();await control.init(f.kv);
  await expect(control.change('resume')).rejects.toThrow('background_storage_unavailable');expect(control.snapshot()).toMatchObject({status:'error',pausedRequested:true,diagnostics:{phase:'resume_storage',precedingWritesVerified:false,rollbackVerified:true}});
- expect(f.saved()).toEqual({paused:true,resumePending:true});
+ expect(f.saved()).toEqual({version:2,paused:true,resumePending:true,holds:['legacy_unknown','storage_error'],recovery:{attempts:0,nextAttemptAt:0}});
 });
 it('fails closed when the full-dirty wait API is unavailable',async()=>{
  const f=fixture({paused:true});delete (f.kv.durability as any).wait;const control=createBackgroundControl();await control.init(f.kv);

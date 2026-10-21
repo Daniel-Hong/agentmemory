@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased — storage certification measurements (deployment preparation)
+## Unreleased — readback cost and memory-protection recovery (development only)
+
+- Reduce obsolete readback work with optional 1MiB full-signature checkpoints and per-certification negative-only mismatch reuse. No positive cache, deadline increase, skipped fsync/final validation, LLM serialization/input-budget change or operational deployment. Preserve stream handle through final verification and cleanup on abort/error.
+- Persist fixed manual/deployment/memory/legacy/storage-error holds and bounded recovery attempts. Only memory-only holds may recover after strict headroom/stability/freshness checks through the existing storage-certified admission path; manual/unknown/other holds remain. Keep pressure sampling live through pending storage-certified pause/resume, reject out-of-order samples, and await both transitions at shutdown. No external notifications or new jobs.
+- Synthetic RED/GREEN and comparison details: docs/customizations/DURABILITY-READBACK-COST.md and PROTECTION-RECOVERY.md. Independent storage/recovery/integration reviews clear after race and test-gap fixes; final combined verification is recorded in docs/customizations/DURABILITY-PROTECTION-VERIFICATION.md; production.11/running work and original user edits preserved. Operational activation/restart remains separately approved. Long-term memory recording pending separate manual review.
+
+## Measurement preparation history (daniel.11)
 
 - Deployment preparation: user authorized measurement-only apply/restart/observation. Prepare a distinct daniel.11 package from the reviewed cd09b0e code without incorporating unrelated original Viewer/CHANGELOG edits. Current daniel.10 guard and preservation verified; pre-existing persistent pause will be preserved unless separately authorized to resume. No timeout, credentials, provider, concurrency or scheduling changes. Applied status requires later actual receipts and observation.
 

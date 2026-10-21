@@ -41,7 +41,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   }
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
   async function waitForKeys(kv,selected){
-    const began=clock(),expected=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
+    const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
     let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED';
     const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began)});
     const failed=()=>{const diagnostics=details();lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
@@ -62,11 +62,20 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));
     async function check(){
       const absent=[],signatures=new Map();
-      for(const file of files){let rows;const controller=new AbortController(),remaining=timeoutMs-(clock()-began);
+      for(const file of files){let rows;const mismatch=unchangedMismatches.get(file.scope);
+        if(mismatch){
+          let current;try{current=signature(await stat(file.path,{bigint:true}));}catch(error){if(error.code!=='ENOENT')throw error;}
+          if(current===mismatch){measurement?.skipUnchangedMismatch();throw Error('state_namespace_not_committed');}
+          unchangedMismatches.delete(file.scope);
+        }
+        const controller=new AbortController(),remaining=timeoutMs-(clock()-began);
         if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         const timer=setTimeout(()=>controller.abort(),remaining);
-        try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys()),signal:controller.signal,onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
-        for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want))throw Error('state_namespace_not_committed');
+        try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys()),checkIntervalBytes:1024*1024,signal:controller.signal,onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
+        for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want)){
+          if(signatures.has(file.path))unchangedMismatches.set(file.scope,signatures.get(file.path));
+          throw Error('state_namespace_not_committed');
+        }
       }
       return {absent,signatures};
     }
@@ -79,6 +88,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
           if(current!==undefined&&current!==item.revision){
             measurement?.enter('capture');
             item.revision=current;
+            unchangedMismatches.delete(item.scope);
             expected.get(item.scope).set(item.key,(await capture(item.scope,item.key))??null);
           }
         }
