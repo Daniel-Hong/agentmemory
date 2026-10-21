@@ -271,6 +271,20 @@ class EnrollmentTests(unittest.TestCase):
     def enroll(self, rid=RID):
         return self.m.enroll(rid,policy_path=self.policy_path,state=self.state,spool=self.spool,owner=os.getuid(),anchor=self.root,request_uid=os.getuid() )
 
+    def test_policy_epoch_change_before_lock_rejects_stale_process(self):
+        import contextlib
+        lock=self.m.enrollment_lock
+        @contextlib.contextmanager
+        def changed(*args,**kwargs):
+            with lock(*args,**kwargs):
+                policy=json.loads(self.policy_path.read_text());policy['policyId']='changed-by-reviewed-transition'
+                self.policy_path.write_text(json.dumps(policy))
+                marker=self.root/'installation.json';marker.write_text(json.dumps({'installed':True,'policySha256':sha(self.policy_path.read_bytes())}))
+                yield
+        with patch.object(self.m,'enrollment_lock',changed),self.assertRaisesRegex(RuntimeError,'POLICY_CHANGED'):
+            self.enroll()
+        self.assertEqual(self.manager.catalog(),[])
+
     def test_real_cli_umask_preserves_public_receipt_access(self):
         previous=os.umask(0o077)
         try:result=self.enroll()

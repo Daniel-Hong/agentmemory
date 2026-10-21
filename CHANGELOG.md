@@ -1,9 +1,14 @@
 # Changelog
 
+## Fixed administrator trust transition (development only)
+
+- Prepare exact .15/.16/.17 trust lineage, new code-preservation archive, administrator binaries and enrollment policy/installation evidence under existing locks. Preserve original packages, approvals and failed-job proof. No web/sudo/unit permission expansion.
+- Journal known-state replacements and restore only before commit and before service/update advancement. Validate executable bytes before import; refuse stale enrollment policy epochs. Synthetic whole paths include .16 retry/apply and .17 compatible recovery with hold/budget/data preservation. Operating installation is not performed; see docs/customizations/ADMIN-TRUST-TRANSITION.md.
+
 ## Administrator preflight retry (development only)
 
 - Add root-only, once-only retry for a proven CLIENT_PROCESS_ACTIVE failure before service stop or code change. Preserve original failure evidence and bind execution to candidate/package/baseline; recheck current guards before queueing and execution. Ordinary requests reject failed candidates and cannot redispatch administrator retries.
-- Keep web/sudo authority unchanged; fail closed on partial writes, changed bindings, unknown/partial failures and dispatch uncertainty. Synthetic tests include successful execution exactly once. No operating installation or retry performed. Pinned root-asset hashes require separately reviewed trust-transition preparation before installation. Details: docs/customizations/PREFLIGHT-RETRY.md.
+- Keep web/sudo authority unchanged; fail closed on partial writes, changed bindings, unknown/partial failures and dispatch uncertainty. Synthetic tests include successful execution exactly once. No operating installation or retry performed. Pinned root-asset hashes require the separately reviewed fixed trust transition before installation. Details: docs/customizations/PREFLIGHT-RETRY.md.
 
 ## Explicit two-file client transition (preparation only)
 

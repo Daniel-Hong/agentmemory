@@ -343,7 +343,51 @@ class Runner:
                 raise ValueError()
         except (ValueError, UnicodeError):
             raise Rejected('RETRY_FAILURE_UNVERIFIED') from None
-        return {'version':1,'failedJobId':failed_id,'requestId':request_id,'candidateId':selected,'packageSha256':metadata['packageSha256'],'kitSha256':approved['kitSha256'],'baselineSha256':sha(baseline),'failedJobSha256':sha(self.job_path(failed_id)),'transactionSha256':sha(transaction),'logSha256':sha(log)}
+        binding = {'version':1,'failedJobId':failed_id,'requestId':request_id,'candidateId':selected,'packageSha256':metadata['packageSha256'],'kitSha256':approved['kitSha256'],'baselineSha256':sha(baseline),'failedJobSha256':sha(self.job_path(failed_id)),'transactionSha256':sha(transaction),'logSha256':sha(log)}
+        binding.update(self.retry_lineage(root,metadata,binding))
+        return binding
+
+    def retry_lineage(self, root, metadata, binding):
+        transition = metadata.get('adminTrustTransition')
+        if transition is None:
+            return {}
+        work = self.state / 'private/admin-trust-transition'
+        try:
+            receipt_path = work / 'receipt.json'
+            self.trusted(receipt_path)
+            receipt = read_json(receipt_path,self.trusted_uid,65536,private=True)
+            journal_path=work/'journal.json';self.trusted(journal_path)
+            journal=read_json(journal_path,self.trusted_uid,4096,private=True)
+            plan_path=work/'plan.json';self.trusted(plan_path)
+            if journal.get('phase')!='committed' or journal.get('planSha256')!=receipt.get('planSha256') or sha(plan_path)!=receipt.get('planSha256'):
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            selected = binding['candidateId']
+            line = receipt.get('lineage',{}).get(selected,{})
+            expected = {'intentSha256':receipt.get('intentSha256'),'priorKitSha256':line.get('priorKitSha256'),'priorBaselineSha256':line.get('priorBaselineSha256')}
+            if receipt.get('format') != 'ubuntu-admin-trust-v1' or receipt.get('committed') is not True or transition != expected or not re.fullmatch('[a-f0-9]{64}',str(expected['intentSha256'])):
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            if any(line.get(key)!=binding[key] for key in ('kitSha256','baselineSha256','packageSha256')) or line.get('sourceCommit')!=metadata['sourceCommit']:
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            proof = receipt.get('failedProof',{})
+            if any(proof.get(key)!=binding[key] for key in ('failedJobId','candidateId','failedJobSha256','logSha256','transactionSha256','packageSha256')) or proof.get('kitSha256')!=line['priorKitSha256'] or proof.get('baselineSha256')!=line['priorBaselineSha256']:
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            original = work / 'original-kits' / selected
+            old = self.checked_kit(original,line['priorKitSha256'])
+            if any(old[key]!=metadata[key] for key in ('id','version','sourceCommit','packageSha256','entrypoint')) or 'adminTrustTransition' in old or sha(original/'baseline.json')!=line['priorBaselineSha256']:
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            if set(metadata['files'])!=set(old['files'])|{'admin-transition.json'} or any(metadata['files'][name]!=value for name,value in old['files'].items() if name!='baseline.json'):
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            original_failure = receipt.get('originalFailure',{})
+            required = {'job.json':binding['failedJobSha256'],'log.txt':binding['logSha256'],'transaction.json':binding['transactionSha256']}
+            if original_failure!=required:
+                raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            for name,value in required.items():
+                path=work/'original-failure'/name;self.trusted(path)
+                if sha(path)!=value:
+                    raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED')
+            return {'adminTrustTransitionSha256':sha(receipt_path),'originalKitSha256':line['priorKitSha256'],'originalBaselineSha256':line['priorBaselineSha256']}
+        except (OSError,KeyError,TypeError,Rejected):
+            raise Rejected('RETRY_TRUST_LINEAGE_UNVERIFIED') from None
 
     def verify_retry_current(self, root):
         # Import only the immutable, closure-reviewed vault runtime. No installed

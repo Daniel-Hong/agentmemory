@@ -309,10 +309,12 @@ def load_module(path, *, owner=0, anchor=Path('/')):
 def load_policy(path, *, owner=0, anchor=Path('/')):
     trusted(path, owner, anchor)
     value = read_record(path)
-    require(set(value) == {'schemaVersion','policyId','validatorVersion','delegatingReview','requestUid','requestGid','assets','runtimeHashes','packageContract','extraArtifacts','legacyBaseline','library','runner','state','dropin','publicKits','archives'}, 'INVALID_POLICY')
+    require(set(value)-{'currentRuntimeHashes'} == {'schemaVersion','policyId','validatorVersion','delegatingReview','requestUid','requestGid','assets','runtimeHashes','packageContract','extraArtifacts','legacyBaseline','library','runner','state','dropin','publicKits','archives'}, 'INVALID_POLICY')
     require(type(value['schemaVersion']) is int and value['schemaVersion'] == 1 and type(value['requestUid']) is int and value['requestUid'] == 1000 and type(value['requestGid']) is int and value['requestGid'] == 1000, 'INVALID_POLICY')
     require(all(isinstance(value[k], str) and 0 < len(value[k]) <= 1024 for k in ('policyId','validatorVersion','delegatingReview')), 'INVALID_POLICY')
     require(isinstance(value['assets'], dict) and 6 <= len(value['assets']) <= 16 and set(value['runtimeHashes']) == set(RUNTIME), 'INVALID_POLICY')
+    current = value.get('currentRuntimeHashes', [value['runtimeHashes']])
+    require(isinstance(current,list) and 1 <= len(current) <= 2 and value['runtimeHashes'] in current and all(isinstance(row,dict) and set(row)==set(RUNTIME) and all(is_hash(h) for h in row.values()) for row in current) and len({tuple(sorted(row.items())) for row in current})==len(current), 'INVALID_POLICY')
     for name, expected in value['assets'].items():
         trusted(name, owner, anchor)
         require(is_hash(expected) and sha(name) == expected, 'ROOT_EXECUTION_POLICY_CHANGED')
@@ -347,9 +349,9 @@ def current_baseline(policy, *, owner=0, anchor=Path('/'), runtime_paths=None):
     for entry in manager.catalog():
         kit_path = Path(policy['publicKits']) / entry['id']
         metadata = manager.checked_kit(kit_path, entry['kitSha256'])
-        if not all(metadata['files'].get(n) == policy['runtimeHashes'][n] for n in RUNTIME):
+        if {n:metadata['files'].get(n) for n in RUNTIME} not in policy.get('currentRuntimeHashes',[policy['runtimeHashes']]):
             continue
-        rt = load_module(Path(policy['library']) / 'kit-runtime.py', owner=owner, anchor=anchor)
+        rt = load_module(kit_path / 'kit-runtime.py', owner=owner, anchor=anchor)
         runtime = rt.Runtime(kit_path, paths=runtime_paths, owner=owner, anchor=anchor)
         if runtime.dropin_bytes() != dropin.read_bytes():
             continue
@@ -366,7 +368,8 @@ def current_baseline(policy, *, owner=0, anchor=Path('/'), runtime_paths=None):
         rt.verify_archive(archive, saved['archiveSha256'], archive_files)
         runtime.guard()
         protected = {**post, **{str(kit_path / n):h for n,h in metadata['files'].items()}, str(kit_path / 'kit.json'):sha(kit_path / 'kit.json')}
-        return {**runtime.baseline, 'protectedFiles':protected, 'receiptPath':str(runtime.receipt), 'receiptIdentity':identity,
+        compatibility={name:value for name,value in runtime.release['packageFiles'].items() if name.startswith('plugin/scripts/codex-compat/')}
+        return {**runtime.baseline, 'compatibilityFiles':compatibility, 'protectedFiles':protected, 'receiptPath':str(runtime.receipt), 'receiptIdentity':identity,
                 'archives':[*runtime.baseline['archives'], {'path':str(archive),'sha256':saved['archiveSha256'],'files':archive_files}]}
     raise RuntimeError('CURRENT_BASELINE_UNVERIFIED')
 
@@ -428,6 +431,7 @@ def enroll(identifier, *, policy_path=POLICY, state=STATE, spool=SPOOL, owner=0,
     candidates = protected_directory(private / 'candidates', 0o700, owner, anchor)
     requests = protected_directory(private / 'requests', 0o700, owner, anchor)
     with enrollment_lock(private / 'enrollment.lock', owner):
+        require(sha(policy_path)==policy_hash and load_policy(policy_path,owner=owner,anchor=anchor)==policy, 'POLICY_CHANGED')
         require((requests / identifier).exists() or len(list(requests.iterdir())) < 100, 'ENROLLMENT_LIMIT')
         with tempfile.TemporaryDirectory(prefix='.input-', dir=private) as temporary:
             snapshot = Path(temporary)

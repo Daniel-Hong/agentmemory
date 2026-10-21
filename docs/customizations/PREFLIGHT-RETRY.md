@@ -14,30 +14,17 @@ This is not an instruction to execute the uninstalled feature. The no-password `
 
 Only one original failed job for the exact candidate is eligible: PROGRAM_FAILED, not interrupted or an earlier retry. Its root-owned bounded private transaction must show constructed/not_needed, no certified shutdown, rollback, rewind or inspection requirement. Its private log must contain exactly `PHASE: failed` and CLIENT_PROCESS_ACTIVE/no-rewind JSON, without prior phases. Transaction time must lie within the original job interval. Unknown/partial failure is refused.
 
-The new request binds original job/transaction/log hashes, reviewed kit/package/baseline hashes and candidate ID. The original public job and private job log remain unchanged. The candidate-level transaction receipt is hash-bound at authorization and execution; normal apply overwrites that shared receipt during later phases, so its original bytes are not separately archived by this patch. A private durable one-use claim precedes queue creation. If IO fails between writes, the claim is consumed and inspection required; another UUID is not an escape. The same UUID returns its saved job without redispatch. Ordinary/helper requests cannot redispatch a queued administrator retry. A retry chain is refused.
+The new request binds original job/transaction/log hashes, reviewed kit/package/baseline hashes and candidate ID. The original public job and private job log remain unchanged. The candidate-level transaction receipt is hash-bound at authorization and execution; normal apply overwrites that shared receipt during later phases, so the fixed trust transition separately preserves its original bytes before later execution. Without a transition the original retry behavior remains hash-bound to its admission-time receipt. A private durable one-use claim precedes queue creation. If IO fails between writes, the claim is consumed and inspection required; another UUID is not an escape. The same UUID returns its saved job without redispatch. Ordinary/helper requests cannot redispatch a queued administrator retry. A retry chain is refused.
 
 A nonblocking global flock covers validation/claim/queue creation. Queued/running/interrupted work blocks admission. Admission and execution recheck the reviewed vault runtime, client-idle check, complete existing baseline/archive/root-asset guards, dependency reuse, release absence, service PID/user/group, healthy state, no storage mutation failures, normal memory pressure and non-error background control. These checks are read-only. Normal apply repeats its existing checks and owns pause/stop/backup/stage/start. A client starting between checks still causes refusal and consumes the retry. This command never stops collectors automatically or weakens guards.
 
 A dispatch error is unconfirmed, not success or permission to retry. Preserve queued job/claim and inspect its unit/job without blindly redispatching. Success remains applied_pending_acceptance, never invented acceptance or a data-preservation claim.
 
-## Operating installation blocker
+## Coordinated installation boundary
 
-The installed request helper and runner hashes are rootAssets pinned in running .15 and enrolled .16/.17 baselines. Replacing either binary alone causes ROOT_ASSET_CHANGED. The general installer also replaces unit/sudo assets and must NOT install this patch into that baseline.
+The fixed development transition now addresses the pinned root-asset blocker; see [ADMIN-TRUST-TRANSITION.md](ADMIN-TRUST-TRANSITION.md). It preserves original immutable packages and failed-job evidence and supplies a separate administrator-approved old/new trust lineage. Replacing the runner alone, using the general installer, deleting failure history or renaming a candidate remains unsafe and unsupported.
 
-This development patch is **not yet an executable operating installation plan**. No safe command can replace the binary and apply enrolled .16 unchanged while preserving its exact baseline. Before installation an administrator must separately review/approve a coordinated root-asset/baseline trust transition, including current .15 guard, candidate/recovery baselines and integrity/registration bindings. This patch does not implement that transition, edit enrolled snapshots, rename candidates, reset jobs or invoke a vault runtime directly.
-
-The remaining decision is whether to approve development of a minimal reviewed trust-transition procedure or keep the current baseline. Eventual installation requires administrator SSH authentication; no-password request authority must not expand. Service installation/restart or retry is a later action after resolving this blocker and reviewing installation.
-
-## Reviewable SSH preparation — read-only
-
-From the development clone:
-
-```sh
-git diff ad6c423b -- scripts/personal-release/dashboard-updates.py scripts/personal-release/test_preflight_retry.py scripts/personal-release/test_dashboard_updates.py docs/customizations/PREFLIGHT-RETRY.md
-sha256sum scripts/personal-release/dashboard-updates.py /usr/local/libexec/agentmemory-update-runner /usr/local/libexec/agentmemory-update-request
-```
-
-Review the entire executable diff/tests and separate trust-transition design before preparing installation commands. A plain sudo install, existing --install or direct root apply is not a safe workaround.
+Operating installation, transition and retry have not been performed. The transition requires separate SSH administrator review and approval; the no-password web request authority is unchanged.
 
 ## Synthetic verification
 
