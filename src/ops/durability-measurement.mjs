@@ -35,7 +35,7 @@ export function createDurabilityMeasurements(){
     let mark=began,phase='capture',closed=false,valid=true,checkAttempts=0,retryCount=0,failedStage=null,lastFailureReason=null;
     const phases={captureMs:0,readbackMs:0,fsyncMs:0,verifyMs:0,cleanupMs:0,retryWaitMs:0};
     const retryReasons={},namespaces=new Map();
-    let namespaceCount=0,scans=0,scanBytes=0,unchangedMismatchSkips=0;
+    let namespaceCount=0,scans=0,scanBytes=0,unchangedMismatchSkips=0,sharedReads=0;
     for(const scope of scopes){
       namespaceCount++;
       if(namespaces.size<NAMESPACE_LIMIT)namespaces.set(scope,{
@@ -53,6 +53,7 @@ export function createDurabilityMeasurements(){
     return {
       enter(next){observe(()=>advance(next));},
       skipUnchangedMismatch(){observe(()=>{unchangedMismatchSkips++;});},
+      sharedRead(){observe(()=>{sharedReads++;});},
       check(){if(!closed)checkAttempts++;},
       retry(code,stage){observe(()=>{
         if(closed)return;
@@ -76,7 +77,7 @@ export function createDurabilityMeasurements(){
         const stored=safe(()=>{
         const sample={id,completedAt:Date.now(),outcome,keyCount,namespaceCount,omittedNamespaces:namespaceCount-namespaces.size,
           elapsedMs:Math.max(0,mark-began),phases,checkAttempts,rechecks:Math.max(0,checkAttempts-1),
-          retryCount,retryReasons,unchangedMismatchSkips,failedStage:outcome==='failed'?failedStage??stage:null,
+          retryCount,retryReasons,unchangedMismatchSkips,sharedReads,failedStage:outcome==='failed'?failedStage??stage:null,
           failureReason:outcome==='failed'?lastFailureReason??(phase==='capture'?captureReason(code):reason(code)):null,scans,scanBytes,namespaces:[...namespaces.values()]};
         const next=[...recent,sample],evict=next.length>HISTORY_LIMIT;
         recent=evict?next.slice(-HISTORY_LIMIT):next;

@@ -1,5 +1,10 @@
 # Changelog
 
+## Concurrent readback sharing (development only)
+
+- Coalesce compatible in-flight namespace scans with bounded pending key unions and started-scan subset joins. Keep independent expectations, dirty revisions, original deadlines, file/directory fsync and final full-signature checks; never cache completed success. Isolate request aborts and drain physical readers at shutdown.
+- Bound shared jobs/participants/keys/serialized selected projection; overflow and incompatible requests use the original reader. Count actual parser work once in aggregate metrics even when the initiating request expires. No operational changes or model calls. Design, synthetic comparison and validation: docs/customizations/DURABILITY-READBACK-SHARING.md.
+
 ## Unreleased — readback cost and memory-protection recovery (development only)
 
 - Reduce obsolete readback work with optional 1MiB full-signature checkpoints and per-certification negative-only mismatch reuse. No positive cache, deadline increase, skipped fsync/final validation, LLM serialization/input-budget change or operational deployment. Preserve stream handle through final verification and cleanup on abort/error.

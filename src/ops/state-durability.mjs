@@ -1,7 +1,7 @@
 import {open,stat} from 'node:fs/promises';
 import {isAbsolute,join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
-import {readNamespaceEntries} from './namespace-reader.mjs';
+import {createSharedNamespaceReader} from './shared-namespace-reader.mjs';
 import {createDurabilityMeasurements} from './durability-measurement.mjs';
 const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');
 
@@ -26,6 +26,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),touched=new Map(),pruneAttempts=new Map();
   const measurements=createDurabilityMeasurements();
+  const readSharing=createSharedNamespaceReader();
   function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
@@ -39,7 +40,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     remember(scope,key);const promise=Promise.resolve().then(fn);active.add(promise);
     promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
   }
-  async function drain(){while(active.size)await Promise.allSettled([...active]);}
+  async function drain(){while(active.size)await Promise.allSettled([...active]);await readSharing.drain();}
   async function waitForKeys(kv,selected){
     const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
     let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED';
@@ -71,7 +72,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
         const controller=new AbortController(),remaining=timeoutMs-(clock()-began);
         if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         const timer=setTimeout(()=>controller.abort(),remaining);
-        try{const read=await readNamespaceEntries(file.path,{keys:new Set(expected.get(file.scope).keys()),checkIntervalBytes:1024*1024,signal:controller.signal,onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
+        try{const read=await readSharing.read(file.path,{keys:new Set(expected.get(file.scope).keys()),checkIntervalBytes:1024*1024,signal:controller.signal,onShared:()=>measurement?.sharedRead(),onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
         for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want)){
           if(signatures.has(file.path))unchangedMismatches.set(file.scope,signatures.get(file.path));
           throw Error('state_namespace_not_committed');
@@ -145,5 +146,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot()})};
+  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot(),readSharing:readSharing.snapshot()})};
 }
