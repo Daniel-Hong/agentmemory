@@ -87,8 +87,14 @@ class WholeTransitionTests(unittest.TestCase):
         self.bundle=self.root/'usr/local/lib/agentmemory-admin-trust-transition';self.bundle.mkdir(mode=0o755)
         for name in ('admin-trust-transition.py','dashboard-updates.py','candidate-enrollment.py'):self.write(self.bundle/name,(HERE/name).read_bytes(),0o644)
         self.specs={role:{k:json.loads((tx.root/'kit.json').read_text())[k] for k in ('id','version','sourceCommit','packageSha256')}|{'kitSha256':self.runtime.sha(tx.root/'kit.json')} for role,tx in [('current',self.current),('primary',self.primary),('recovery',self.recovery)]}
+        # Root-managed paths are strict. User paths model observed ownership
+        # roles/permissions instead of stripping group-write from every path.
+        home=self.root/'home/daniel'
         for path in self.root.rglob('*'):
-            if path.is_dir():path.chmod(path.stat().st_mode&0o777&~0o022)
+            if path.is_dir():
+                path.chmod(0o700 if path.is_relative_to(home) else path.stat().st_mode&0o777&~0o022)
+        home.chmod(0o750)
+        self.apply_user_directory_layout()
         self.executable_hashes={str(p):self.runtime.sha(self.root/str(p).lstrip('/')) for p in ('/usr/local/libexec/agentmemory-update-request','/usr/local/libexec/agentmemory-update-runner','/usr/local/libexec/agentmemory-candidate-enroll')}
         self.module=base.load('admin-trust-transition');self.transition=self.new_transition()
         self.original_data=self.raw.read_bytes();self.original_failure=self.manager.job_path(self.failed_id).read_bytes()
@@ -117,6 +123,80 @@ class WholeTransitionTests(unittest.TestCase):
         self.write(path,('from pathlib import Path\nPath('+repr(str(marker))+').touch()\n').encode()+path.read_bytes(),0o755)
         with self.assertRaises(Exception):self.transition.prepare(self.failed_id)
         self.assertFalse(marker.exists())
+
+    def apply_user_directory_layout(self):
+        # Preserve actual 0775 user-owned code ancestors; do not normalize them.
+        for path in (self.paths['engine'].parent,self.paths['bin'],self.client_root,self.paths['legacy']):
+            path.chmod(0o775)
+
+    def test_prepare_and_apply_accept_readonly_hashes_under_0775_user_directories(self):
+        self.apply_user_directory_layout();self.prepare_review();self.transition.apply()
+        self.assertEqual(self.paths['engine'].parent.stat().st_mode&0o777,0o775)
+        self.assertEqual(self.paths['bin'].stat().st_mode&0o777,0o775)
+        self.new_runtime('client-release-16').guard(before=True)
+
+    def test_service_hash_does_not_return_file_body_and_rejects_wrong_expectation(self):
+        self.paths['engine'].parent.chmod(0o775)
+        expected=self.runtime.sha(self.paths['engine']);self.transition.hash_observe(self.paths['engine'],expected)
+        self.assertEqual(set(self.transition.observed[str(self.paths['engine'])]),{'sha256','mode','uid','gid'})
+        with self.assertRaisesRegex(RuntimeError,'UNCHANGED_DEPENDENCY_CHANGED'):self.transition.hash_observe(self.paths['engine'],'0'*64)
+
+    def test_service_hash_rejects_symlink_and_world_writable_parent(self):
+        path=self.paths['engine'];raw=path.read_bytes();path.unlink();other=path.with_name('other');self.write(other,raw);path.symlink_to(other)
+        with self.assertRaises(RuntimeError):self.transition.hash_observe(path,self.runtime.sha(other))
+        path.unlink();self.write(path,raw);path.parent.chmod(0o777)
+        with self.assertRaises(RuntimeError):self.transition.hash_observe(path,self.runtime.sha(path))
+
+    def test_service_hash_rejects_file_replacement_during_read(self):
+        path=self.paths['engine'];expected=self.runtime.sha(path);raw=path.read_bytes();real=self.module.hashlib.sha256
+        class Exchange:
+            def __init__(inner):inner.value=real();inner.changed=False
+            def update(inner,data):
+                inner.value.update(data)
+                if not inner.changed:
+                    inner.changed=True;replacement=path.with_name('replacement');replacement.write_bytes(raw);os.replace(replacement,path)
+            def hexdigest(inner):return inner.value.hexdigest()
+        with patch.object(self.module.hashlib,'sha256',Exchange),self.assertRaisesRegex(RuntimeError,'USER_HASH_FILE_CHANGED'):
+            self.transition.user_hash_metadata(path,expected)
+
+    def test_service_hash_rejects_directory_replacement_during_read(self):
+        path=self.paths['engine'];expected=self.runtime.sha(path);raw=path.read_bytes();real=self.module.hashlib.sha256
+        class Exchange:
+            def __init__(inner):inner.value=real();inner.changed=False
+            def update(inner,data):
+                inner.value.update(data)
+                if not inner.changed:
+                    inner.changed=True;path.parent.rename(path.parent.with_name('old-bin'));path.parent.mkdir();path.write_bytes(raw)
+            def hexdigest(inner):return inner.value.hexdigest()
+        with patch.object(self.module.hashlib,'sha256',Exchange),self.assertRaisesRegex(RuntimeError,'USER_HASH_PATH_CHANGED'):
+            self.transition.user_hash_metadata(path,expected)
+
+    def test_service_hash_group_write_is_limited_to_expected_service_uid_gid(self):
+        from types import SimpleNamespace
+        path=self.paths['engine'];path.parent.chmod(0o775);expected=self.runtime.sha(path);real=self.module.os.fstat
+        original_owner=self.transition.owner;self.transition.owner=os.getuid()+10
+        for field,value in [('st_gid',os.getgid()+1),('st_uid',self.transition.owner)]:
+            def metadata(fd):
+                info=real(fd)
+                if info.st_ino==path.parent.stat().st_ino:
+                    keys=['st_dev','st_ino','st_uid','st_gid','st_mode'];row={key:getattr(info,key) for key in keys};row[field]=value
+                    return SimpleNamespace(**row)
+                return info
+            with self.subTest(field=field),patch.object(self.module.os,'fstat',metadata),self.assertRaisesRegex(RuntimeError,'USER_HASH_PATH_REFUSED'):
+                self.transition.user_hash_metadata(path,expected)
+        self.transition.owner=original_owner
+
+    def test_failed_preparation_shell_is_preserved_and_reuse_refused(self):
+        self.paths['engine'].parent.chmod(0o777)
+        with self.assertRaisesRegex(RuntimeError,'USER_HASH_PATH_REFUSED'):self.transition.prepare(self.failed_id)
+        before={str(p.relative_to(self.transition.work)) for p in self.transition.work.rglob('*')}
+        self.assertEqual(before,{'before','after','original-kits','original-failure'})
+        with self.assertRaisesRegex(RuntimeError,'TRANSITION_ALREADY_PREPARED'):self.new_transition().prepare(self.failed_id)
+        self.assertEqual(before,{str(p.relative_to(self.transition.work)) for p in self.transition.work.rglob('*')})
+
+    def test_root_execution_directory_keeps_strict_group_write_rejection(self):
+        self.bundle.chmod(0o775)
+        with self.assertRaisesRegex(RuntimeError,'PATH_REFUSED'):self.transition.module(self.bundle/'dashboard-updates.py')
 
     def test_prepare_does_not_modify_operating_targets(self):
         before=self.current.receipt.read_bytes();old_runner=(self.root/'usr/local/libexec/agentmemory-update-runner').read_bytes()
@@ -162,7 +242,7 @@ class WholeTransitionTests(unittest.TestCase):
             with self.subTest(target=stop):
                 f=WholeTransitionTests();f.setUp()
                 try:
-                    _,plan=f.prepare_review()
+                    f.apply_user_directory_layout();_,plan=f.prepare_review()
                     def fail(index,path):
                         if index==stop:raise RuntimeError('SYNTHETIC_TARGET_FAILURE')
                     with self.assertRaisesRegex(RuntimeError,'SYNTHETIC_TARGET_FAILURE'):f.transition.apply(fail)
@@ -241,7 +321,7 @@ class WholeTransitionTests(unittest.TestCase):
         self.assertEqual(found,self.prepare.baseline_from_kit(runtime.public,runtime.receipt))
 
     def test_whole_path_transition_then_16_retry_and_next_baseline(self):
-        self.prepare_review();self.transition.apply();manager,job=self.admit_retry()
+        self.apply_user_directory_layout();self.prepare_review();self.transition.apply();manager,job=self.admit_retry()
         primary=self.new_runtime('client-release-16');primary.apply();primary.guard()
         manager.save_job(job,'applied_pending_acceptance','awaiting_acceptance')
         self.assertEqual(self.raw.read_bytes(),self.original_data);self.assertEqual(manager.job_path(self.failed_id).read_bytes(),self.original_failure)
@@ -249,7 +329,7 @@ class WholeTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'COMMITTED_TRANSITION_RESTORE_REFUSED'):self.transition.restore()
 
     def test_whole_path_16_failure_then_17_compatible_recovery_preserves_holds(self):
-        self.prepare_review();self.transition.apply();manager,job=self.admit_retry()
+        self.apply_user_directory_layout();self.prepare_review();self.transition.apply();manager,job=self.admit_retry()
         primary=self.new_runtime('client-release-16')
         control_path=self.paths['data']/'state_store.db/mem%3Abackground-control%3Av1.bin'
         control={'manual-pause':{'version':2,'paused':True,'resumePending':False,'holds':['manual','deployment','memory'],'recovery':{'attempts':2,'nextAttemptAt':987654}}}

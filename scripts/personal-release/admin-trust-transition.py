@@ -52,7 +52,7 @@ class Transition:
         self.work=self.state/'private/admin-trust-transition';self.system=system;self.api=api;self.service=service
         self.policy_path=self.p('/etc/agentmemory-candidate-enrollment/policy.json');self.marker=self.policy_path.with_name('installation.json')
         self.executables=dict(executables) if executables is not None else {p:OLD_RUNNER_SHA if p in EXECUTABLES[:2] else OLD_ENROLL_SHA for p in EXECUTABLES}
-        self.catalog=self.state/'catalog.json';self.observed={};self.targets={}
+        self.catalog=self.state/'catalog.json';self.observed={};self.targets={};self._user_hash_runner=None
 
     def p(self, name):return self.root/name.lstrip('/')
 
@@ -74,9 +74,57 @@ class Transition:
             yield fd
         finally:os.close(fd)
 
+    def user_hash_metadata(self,path,expected):
+        # Runs only inside the existing reviewed privilege-dropping helper.
+        require(os.geteuid()==self.uid and os.getegid()==self.gid,'USER_TRANSITION_REFUSED')
+        def directory_signature(info):return (info.st_dev,info.st_ino,info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))
+        def walk():
+            fd=os.open(self.root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);chain=[]
+            try:
+                for component in (None,*path.parent.relative_to(self.root).parts):
+                    if component is not None:
+                        child=os.open(component,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=child
+                    info=os.fstat(fd)
+                    require(info.st_uid in {self.owner,self.uid} and not info.st_mode&0o002,'USER_HASH_PATH_REFUSED')
+                    require(not info.st_mode&0o020 or (info.st_uid==self.uid and info.st_gid==self.gid),'USER_HASH_PATH_REFUSED')
+                    chain.append(directory_signature(info))
+                return fd,chain
+            except BaseException:os.close(fd);raise
+        def signature(info):return (info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns,info.st_uid,info.st_gid,info.st_mode,info.st_nlink)
+        parent,chain=walk()
+        try:
+            fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
+            with os.fdopen(fd,'rb') as file:
+                before=os.fstat(file.fileno())
+                require(stat.S_ISREG(before.st_mode) and before.st_nlink==1 and before.st_size<=512*1024*1024,'FILE_REFUSED')
+                require(before.st_uid in {self.owner,self.uid} and not before.st_mode&0o002 and (not before.st_mode&0o020 or (before.st_uid==self.uid and before.st_gid==self.gid)),'USER_HASH_PATH_REFUSED')
+                value=hashlib.sha256();remaining=512*1024*1024+1
+                while remaining:
+                    data=file.read(min(1024*1024,remaining))
+                    if not data:break
+                    remaining-=len(data);value.update(data)
+                after=os.fstat(file.fileno());named=os.stat(path.name,dir_fd=parent,follow_symlinks=False)
+                require(signature(before)==signature(after)==signature(named),'USER_HASH_FILE_CHANGED')
+                require(remaining>0 and value.hexdigest()==expected,'UNCHANGED_DEPENDENCY_CHANGED')
+            latest,new_chain=walk()
+            try:require(chain==new_chain,'USER_HASH_PATH_CHANGED')
+            finally:os.close(latest)
+            return {'sha256':expected,'mode':stat.S_IMODE(after.st_mode),'uid':after.st_uid,'gid':after.st_gid}
+        finally:os.close(parent)
+
     def hash_observe(self,path,expected):
         path=Path(path)
-        with self.directory(path.parent,user=True) as parent:
+        require(path.is_absolute() and path.is_relative_to(self.root) and '..' not in path.parts,'PATH_REFUSED')
+        if path.is_relative_to(self.p('/home/daniel')):
+            if self._user_hash_runner is None:
+                cid=self.specs['current']['id'];snapshot=self.work/'original-kits'/cid
+                source=snapshot if snapshot.is_dir() else self.public/cid
+                self._user_hash_runner=self.checked_runtime_module(source,cid,original=True).run_as_user
+            result=self._user_hash_runner(lambda:self.user_hash_metadata(path,expected),uid=self.uid,gid=self.gid)
+            require(set(result)=={'sha256','mode','uid','gid'} and result['sha256']==expected,'USER_HASH_RESPONSE_REFUSED')
+            self.observed[str(path)]=result;return
+        # Root-controlled code, policy, staging and trust paths stay strict.
+        with self.directory(path.parent) as parent:
             fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
             with os.fdopen(fd,'rb') as file:
                 st=os.fstat(file.fileno());require(stat.S_ISREG(st.st_mode) and st.st_nlink==1 and st.st_size<=512*1024*1024,'FILE_REFUSED')

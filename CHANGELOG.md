@@ -1,5 +1,11 @@
 # Changelog
 
+## Service-identity read-only hash correction (development only)
+
+- Fix the transition tool's mismatch with existing service-owned 0775 code directories: perform only home-file hash observations through the verified original runtime's privilege-dropping helper. Preserve strict root code/trust/write checks, no-follow traversal, expected hashes and file/directory replacement checks. No chmod or operating update performed.
+- Replace the test fixture's blanket permission normalization with explicit root/user layouts; cover full preparation, .16/.17 paths, each target-prefix rollback, UID/GID and replacement failures, and preservation/refusal of a failed preparation shell.
+- Add a metadata-only preparation diagnostic without locks, repairs, kit execution or private-body output. The actual historical failure path and root-only preparation residue remain unconfirmed. Core staging hash and review evidence will need coordinated updating before any later installation; existing wrapper pins remain unchanged and no automatic resume is introduced.
+
 ## Existing-staging preparation continuation (development only)
 
 - Remove the wrapper's unnecessary human source-review prompts. Continue only the exact previous pending staging after host-root ownership/permission and frozen three-file hash verification; do not change core code or permissions.
