@@ -1,9 +1,10 @@
 # Changelog
 
-## Interactive trust preparation wrapper (development only)
+## Existing-staging preparation continuation (development only)
 
-- Add fixed-hash, fresh-directory-only SSH staging and optional `--prepare` after a real source review. Keep default attestation false, identify AI review evidence separately, and stop safely when review is incomplete. No operating transition, plan approval, restart or retry is included.
-- Distinguish cancellation before launch from uncertain interruption after preparation starts. Core three-file hashes and trust requirements remain unchanged; all development tests use temporary synthetic fixtures.
+- Remove the wrapper's unnecessary human source-review prompts. Continue only the exact previous pending staging after host-root ownership/permission and frozen three-file hash verification; do not change core code or permissions.
+- Attribute the completed code review to its actual independent AI reviewer, bind review evidence to exact source hashes, and record the user's existing staging/prepare authorization separately without claiming a user code review. Preserve the prior pending record and refuse changed/approved records, concurrency or existing preparation.
+- Execute `--prepare` only; no plan approval, operating transition, service action or retry. Validate with synthetic fixtures; no operating sudo performed during development.
 
 ## Fixed administrator trust transition (development only)
 

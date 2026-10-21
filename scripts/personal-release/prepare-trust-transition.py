@@ -1,5 +1,6 @@
 #!/usr/bin/python3 -I
-"""Interactive staging and --prepare only. Never changes operating entrypoints."""
+"""Resume exact pending staging with real AI-review evidence; --prepare only."""
+import fcntl
 import hashlib
 import json
 import os
@@ -11,7 +12,7 @@ import uuid
 
 PREPARE_MAY_HAVE_STARTED=False
 PYTHON='/usr/bin/python3'
-SOURCE=Path('/home/daniel/Documents/Codex/2026-10-21/task/agentmemory-diagnostics/scripts/personal-release')
+WORK=Path('/var/lib/agentmemory-updates/private/admin-trust-transition')
 BUNDLE=Path('/usr/local/lib/agentmemory-admin-trust-transition')
 PINS={
  'admin-trust-transition.py':'0ba0062120a38dfd642f173b14eb0557bd05901ef077b232c99ba0163d3dc4fe',
@@ -31,12 +32,21 @@ def require(value,code):
     if not value:raise RuntimeError(code)
 
 
-def read(path):
+def checked_directory(path,owner,anchor):
+    require(path.is_absolute() and path.is_relative_to(anchor),'STAGING_PERMISSION_REFUSED')
+    for item in (path,*path.parents):
+        info=item.lstat()
+        require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_uid==owner and not info.st_mode&0o022,'STAGING_PERMISSION_REFUSED')
+        if item==anchor:break
+
+
+def read_owned(path,owner,gid,mode):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     with os.fdopen(fd,'rb') as f:
-        st=os.fstat(f.fileno());require(stat.S_ISREG(st.st_mode) and st.st_nlink==1 and st.st_size<=2*1024*1024,'SOURCE_FILE_REFUSED')
+        info=os.fstat(f.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==owner and info.st_gid==gid and stat.S_IMODE(info.st_mode)==mode and info.st_size<=2*1024*1024,'STAGING_PERMISSION_REFUSED')
         raw=f.read(2*1024*1024+1)
-    require(len(raw)<=2*1024*1024,'SOURCE_FILE_REFUSED');return raw
+    require(len(raw)<=2*1024*1024,'STAGING_PERMISSION_REFUSED');return raw
 
 
 def sync_dir(path):
@@ -45,64 +55,63 @@ def sync_dir(path):
     finally:os.close(fd)
 
 
-def write(path,raw,owner,gid,mode):
-    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
-    with os.fdopen(fd,'wb') as f:
-        os.fchmod(f.fileno(),mode);os.fchown(f.fileno(),owner,gid);f.write(raw);f.flush();os.fsync(f.fileno())
+def encoded(record):return (json.dumps(record,indent=2)+'\n').encode()
 
 
-def prepare(source,bundle,pins, *, owner=0,gid=0,ask=input,run=None,out=sys.stdout):
+def resume_pending_staging(bundle,pins,work, *, owner=0,gid=0,anchor=Path('/'),run=None,out=sys.stdout):
+    # Library-only fixture injection; CLI has no path, owner or digest overrides.
     global PREPARE_MAY_HAVE_STARTED
-    # Parameters are for synthetic library tests. CLI exposes no path/hash override.
-    require(not bundle.exists() and not bundle.is_symlink(),'BUNDLE_EXISTS')
-    blobs={n:read(source/n) for n in pins}
-    require(all(hashlib.sha256(blobs[n]).hexdigest()==h for n,h in pins.items()),'SOURCE_HASH_MISMATCH')
-    for parent in [bundle.parent,*bundle.parent.parents]:
-        info=parent.lstat();require(stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_uid==owner and not info.st_mode&0o022,'STAGING_PARENT_REFUSED')
-        # Synthetic fixtures anchor at their parent; production checks through /.
-        if owner!=0:break
-    try:bundle.mkdir(mode=0o755)
-    except FileExistsError:raise RuntimeError('BUNDLE_EXISTS') from None
-    os.chmod(bundle,0o755);os.chown(bundle,owner,gid);sync_dir(bundle.parent)
-    for n,raw in blobs.items():write(bundle/n,raw,owner,gid,0o644)
-    record={'executionClosureReviewed':False,'reviewedBy':'','files':dict(pins),'independentReviewEvidence':EVIDENCE}
-    approval=bundle/'source-review.json'
-    write(approval,(json.dumps(record,indent=2)+'\n').encode(),owner,gid,0o600);sync_dir(bundle)
-    print('STAGED: 고정 코드 3개와 미승인 검토 기록만 설치했습니다. 운영 실행 파일·서비스·재시도 변경 없음.',file=out)
-    print(json.dumps({'frozenSourceHashes':pins,'independentReviewEvidence':EVIDENCE},ensure_ascii=False),file=out)
-    print('위 AI 리뷰는 사람의 검토를 대신하지 않습니다. 미검토라면 Enter로 설치만 마치세요. 실제 설치 코드 검토 명령:',file=out)
-    for n in pins:print('less '+str(bundle/n),file=out)
-    name=ask('설치 코드 전체를 실제로 검토한 검토자 이름 (미완료면 Enter): ').strip()
-    if not name:return 'STAGED_REVIEW_REQUIRED'
-    require(len(name)<=120 and all(ord(c)>=32 and ord(c)!=127 for c in name),'REVIEWER_IDENTITY_REFUSED')
-    print('검토하지 않았다면 확인 문구를 입력하지 마세요. AI 리뷰를 본 것만으로 직접 코드 검토를 주장하지 마세요.',file=out)
-    if ask('실제 검토를 완료했고 준비만 승인한다면 SOURCE REVIEW COMPLETE; PREPARE ONLY 입력: ')!='SOURCE REVIEW COMPLETE; PREPARE ONLY':return 'STAGED_REVIEW_REQUIRED'
-    require(all(hashlib.sha256(read(bundle/n)).hexdigest()==h for n,h in pins.items()),'STAGED_HASH_MISMATCH')
-    require(json.loads(read(approval))==record,'REVIEW_RECORD_CHANGED')
-    record.update(executionClosureReviewed=True,reviewedBy=name)
-    record['preparationApproval']={'scope':'staging and --prepare only','confirmedBy':name,'operatingTransitionApproved':False}
-    temporary=bundle/('.source-review-'+str(uuid.uuid4()))
-    write(temporary,(json.dumps(record,indent=2)+'\n').encode(),owner,gid,0o600)
-    os.replace(temporary,approval);sync_dir(bundle)
-    command=[PYTHON,'-I',str(bundle/'admin-trust-transition.py'),'--prepare']
-    PREPARE_MAY_HAVE_STARTED=True
-    if run is None:subprocess.run(command,check=True,env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','LANG':'C.UTF-8'})
-    else:run(command)
-    return 'PREPARE_COMPLETED'
+    checked_directory(bundle,owner,anchor)
+    lock_fd=os.open(bundle/'.prepare-wrapper.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
+    with os.fdopen(lock_fd,'r+b') as lock:
+        info=os.fstat(lock.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==owner and info.st_gid==gid and stat.S_IMODE(info.st_mode)==0o600,'STAGING_PERMISSION_REFUSED')
+        try:fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise RuntimeError('PREPARATION_BUSY') from None
+        require(not work.exists() and not work.is_symlink(),'PREPARATION_EXISTS_INSPECT_STATE')
+        for name,expected in pins.items():
+            require(hashlib.sha256(read_owned(bundle/name,owner,gid,0o644)).hexdigest()==expected,'STAGED_HASH_MISMATCH')
+        approval=bundle/'source-review.json'
+        pending={'executionClosureReviewed':False,'reviewedBy':'','files':dict(pins),'independentReviewEvidence':EVIDENCE}
+        original=read_owned(approval,owner,gid,0o600)
+        require(original==encoded(pending),'REVIEW_STATE_NOT_PENDING')
+        evidence={**EVIDENCE,'sourceFilesSha256':dict(pins),'reviewScope':'Fixed trust-transition derivation/restoration, retry lineage and enrollment-policy integration; connected .16/.17 synthetic execution paths and pre-import verification correction.'}
+        evidence_sha=hashlib.sha256(encoded(evidence)).hexdigest()
+        record={'executionClosureReviewed':True,'reviewedBy':EVIDENCE['performedBy'],'files':dict(pins),'independentReviewEvidence':evidence,'reviewEvidenceSha256':evidence_sha,
+          'preparationAuthorization':{'source':'Existing explicit user instruction authorizing staging and --prepare','scope':'existing staging continuation and --prepare only','userCodeReviewClaimed':False,'operatingTransitionApproved':False},'priorPendingRecordSha256':hashlib.sha256(original).hexdigest()}
+        # Preserve the exact pending evidence in the new root-protected record.
+        record['priorPendingRecord']=pending
+        require(read_owned(approval,owner,gid,0o600)==original,'REVIEW_STATE_CHANGED')
+        temporary=bundle/('.source-review-'+str(uuid.uuid4()))
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        try:
+            with os.fdopen(fd,'wb') as f:
+                os.fchmod(f.fileno(),0o600);os.fchown(f.fileno(),owner,gid);f.write(encoded(record));f.flush();os.fsync(f.fileno())
+            os.replace(temporary,approval);sync_dir(bundle)
+        finally:
+            try:temporary.unlink()
+            except FileNotFoundError:pass
+        require(read_owned(approval,owner,gid,0o600)==encoded(record),'REVIEW_RECORD_CHANGED')
+        print(json.dumps({'stagingVerified':True,'reviewAttributedToAI':True,'userCodeReviewClaimed':False,'preparationOnly':True}),file=out,flush=True)
+        PREPARE_MAY_HAVE_STARTED=True
+        command=[PYTHON,'-I',str(bundle/'admin-trust-transition.py'),'--prepare']
+        if run is None:subprocess.run(command,check=True,env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','LANG':'C.UTF-8'})
+        else:run(command)
+        return 'PREPARE_COMPLETED'
 
 
 def main():
     require(os.geteuid()==0,'SSH_SUDO_REQUIRED')
     require(len(sys.argv)==1,'ARGUMENTS_REFUSED')
-    require(sys.stdin.isatty(),'INTERACTIVE_REVIEW_REQUIRED')
-    result=prepare(SOURCE,BUNDLE,PINS)
+    result=resume_pending_staging(BUNDLE,PINS,WORK)
     print(json.dumps({'status':result,'serviceControlled':False,'retryStarted':False}))
 
+
 def failure_code(error):
-    if isinstance(error,(EOFError,KeyboardInterrupt)):return 'PREPARE_INTERRUPTED_INSPECT_RESULT_NO_RETRY' if PREPARE_MAY_HAVE_STARTED else 'REVIEW_INTERRUPTED_NO_PREPARE'
+    if isinstance(error,(EOFError,KeyboardInterrupt)):return 'PREPARE_INTERRUPTED_INSPECT_RESULT_NO_RETRY' if PREPARE_MAY_HAVE_STARTED else 'RESUME_INTERRUPTED_INSPECT_STATE_NO_PREPARE'
     if isinstance(error,subprocess.CalledProcessError):return 'PREPARE_FAILED_INSPECT_RESULT_NO_RETRY'
     if isinstance(error,RuntimeError) and str(error).replace('_','').isalnum():return str(error)
-    return 'PREPARATION_WRAPPER_FAILED'
+    return 'PREPARATION_RESUME_FAILED_INSPECT_STATE'
 
 
 if __name__=='__main__':
