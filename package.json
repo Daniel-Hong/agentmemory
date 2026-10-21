@@ -105,5 +105,9 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "agentmemoryCompatibility": {
+    "backgroundControlVersion": 2,
+    "automaticMemoryRecovery": true
   }
 }

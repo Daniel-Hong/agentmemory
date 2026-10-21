@@ -228,6 +228,10 @@ class Runtime:
         self.start_attempted = False
         self.stop_requested = False
         self.certified_stopped = False
+        self.candidate_background_control_version = 1
+        self.previous_recovery_compatible = False
+        self.previous_recovery_files = {}
+        self.previous_recovery_directory = None
 
     def record(self, phase, **extra):
         self.phase = phase
@@ -316,7 +320,61 @@ class Runtime:
             content = archive.extractfile(members[0]).read()
         require(hashlib.sha256(content).hexdigest() == self.release['packageFiles']['package.json'], 'PACKAGE_HASH_MISMATCH')
         proposed = json.loads(content)
+        profile = proposed.get('agentmemoryCompatibility')
+        if 'agentmemoryCompatibility' in proposed:
+            require(isinstance(profile, dict) and set(profile) == {'backgroundControlVersion', 'automaticMemoryRecovery'} and type(profile['backgroundControlVersion']) is int and profile['backgroundControlVersion'] == 2 and type(profile['automaticMemoryRecovery']) is bool, 'BACKGROUND_CONTROL_PROFILE_INVALID')
+        self.candidate_background_control_version = 1 if profile is None else profile['backgroundControlVersion']
         require(all(proposed.get(field, {}) == current.get(field, {}) for field in ('dependencies', 'optionalDependencies', 'engines')), 'DEPENDENCY_REUSE_NOT_COMPATIBLE')
+
+    def previous_release_paths(self, directory):
+        found, pending = set(), [directory]
+        while pending:
+            for path in pending.pop().iterdir():
+                if path == directory / 'node_modules':
+                    require(path.is_symlink() and path.resolve() == (self.paths['legacy'] / 'node_modules').resolve(), 'DEPENDENCY_LINK_CHANGED')
+                    continue
+                require(not path.is_symlink(), 'PROTECTED_PATH_CHANGED')
+                if path.is_dir():
+                    pending.append(path)
+                else:
+                    require(path.is_file(), 'PROTECTED_PATH_CHANGED')
+                    found.add(str(path))
+        return found
+
+    def verify_previous_recovery_files(self):
+        require(self.previous_release_paths(self.previous_recovery_directory) == set(self.previous_recovery_files), 'PREVIOUS_RELEASE_FILE_SET_CHANGED')
+        verify_map(self.previous_recovery_files)
+
+    def previous_recovery_proven(self, control):
+        if type(control.get('formatVersion')) is not int or control['formatVersion'] != 2:
+            return False
+        lines = self.paths['dropin'].read_text().splitlines()
+        starts = [line for line in lines if line.startswith('ExecStart=') and line != 'ExecStart=']
+        if len(starts) != 1:
+            return False
+        match = re.fullmatch(r'ExecStart=/usr/bin/node (/.+)/dist/cli\.mjs --data-dir ' + re.escape(str(self.paths['data'])), starts[0])
+        if not match:
+            return False
+        directory = Path(match[1])
+        manifest = directory / 'package.json'
+        allowed = any(directory.is_relative_to(self.paths[name]) for name in ('releases', 'legacy'))
+        if not allowed or manifest.is_symlink() or manifest.resolve() != manifest or any(str(path) not in self.baseline['protectedFiles'] for path in (manifest, directory / 'dist/cli.mjs', directory / 'dist/index.mjs')):
+            return False
+        require(sha(manifest) == self.baseline['protectedFiles'][str(manifest)], 'PROTECTED_FILE_CHANGED')
+        value = read_json(manifest)
+        profile = value.get('agentmemoryCompatibility', {})
+        proven = value.get('version') == self.previous_version and isinstance(profile, dict) and set(profile) == {'backgroundControlVersion', 'automaticMemoryRecovery'} and type(profile['backgroundControlVersion']) is int and profile['backgroundControlVersion'] == 2 and profile['automaticMemoryRecovery'] is False
+        if not proven:
+            return False
+        ledger = self.baseline['receiptIdentity'].get('installedFileHashes')
+        if not isinstance(ledger, dict) or read_json(self.baseline['receiptPath']).get('installedFileHashes') != ledger:
+            return False
+        files = {name: digest for name, digest in ledger.items() if Path(name).is_relative_to(directory)}
+        if self.previous_release_paths(directory) != set(files) or any(self.baseline['protectedFiles'].get(name) != digest for name, digest in files.items()):
+            return False
+        self.previous_recovery_directory, self.previous_recovery_files = directory, files
+        self.verify_previous_recovery_files()
+        return True
 
     def user_install_access(self):
         require(os.geteuid() == self.uid and os.getegid() == self.gid, 'USER_TRANSITION_REFUSED')
@@ -352,6 +410,10 @@ class Runtime:
         guides = [row for row in self.api('memories?latest=true').get('memories', []) if row.get('title') == 'AgentMemory 운영 및 유지보수 가이드']
         require(len(guides) == 1, 'LATEST_GUIDE_NOT_UNIQUE')
         control = self.api('background/control')['control']
+        current_format = control.get('formatVersion', 1)
+        require(type(current_format) is int and current_format in (1, 2), 'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED')
+        require(self.candidate_background_control_version >= current_format, 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED')
+        self.previous_recovery_compatible = self.previous_recovery_proven(control)
         if control.get('status') == 'running' and control.get('error') is None:
             control = self.api('background/control', {'action': 'pause'})['control']
         safe_error = control.get('error') is None if control.get('status') != 'error' else control.get('error') == 'background_storage_unavailable' and (control.get('diagnostics') or {}).get('rollbackVerified') is True
@@ -575,9 +637,12 @@ class Runtime:
 
     def rollback_code_only(self):
         # A partially started new worker must certify its own latest storage first.
-        if self.start_attempted:
+        if self.start_attempted and not self.certified_stopped:
             self.stop()
         self.verify_data()
+        require(not self.start_attempted or self.candidate_background_control_version < 2 or self.previous_recovery_compatible, 'BACKGROUND_CONTROL_ROLLBACK_INCOMPATIBLE')
+        if self.start_attempted and self.candidate_background_control_version >= 2:
+            self.verify_previous_recovery_files()
         def restore_user_code():
             require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
             for name, content in self.rollback_code.items():
@@ -597,6 +662,9 @@ class Runtime:
 
     def restore_previous_service(self):
         require(self.certified_stopped, 'SHUTDOWN_NOT_VERIFIED')
+        require(not self.start_attempted or self.candidate_background_control_version < 2 or self.previous_recovery_compatible, 'BACKGROUND_CONTROL_ROLLBACK_INCOMPATIBLE')
+        if self.start_attempted and self.candidate_background_control_version >= 2:
+            self.verify_previous_recovery_files()
         self.guard(before=True)
         if not self.start_attempted and hasattr(self, 'before_data'):
             require(self.queues.stopped_hashes(self.paths['data'], self) == self.before_data, 'COLD_DATA_CHANGED')
@@ -636,22 +704,23 @@ class Runtime:
         except BaseException as error:
             failed_phase = self.phase
             rollback_verified = False
+            rollback_error = None
             recovery = 'not_needed' if not self.stop_requested else 'manual_required'
             if self.stage_attempted:
                 try:
                     self.rollback_code_only()
                     rollback_verified = True
-                except BaseException:
-                    pass  # No code switch after an uncertified shutdown.
+                except BaseException as rollback_failure:
+                    rollback_error = str(rollback_failure) if str(rollback_failure) in ('BACKGROUND_CONTROL_ROLLBACK_INCOMPATIBLE', 'SHUTDOWN_NOT_VERIFIED', 'PROTECTED_FILE_CHANGED', 'PROTECTED_PATH_CHANGED', 'PREVIOUS_RELEASE_FILE_SET_CHANGED') else 'ROLLBACK_UNVERIFIED'
             if self.certified_stopped and (not self.stage_attempted or rollback_verified):
                 try:
                     self.restore_previous_service()
                     recovery = 'restored'
                 except BaseException:
                     recovery = 'restore_failed'
-            safe_errors = {'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
+            safe_errors = {'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED', 'BACKGROUND_CONTROL_PROFILE_INVALID', 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED', 'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
             code = str(error) if str(error) in safe_errors else 'UPDATE_FAILED'
-            self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, inspectionRequired=recovery not in ('not_needed', 'restored'))
+            self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, rollbackErrorCode=rollback_error, inspectionRequired=recovery not in ('not_needed', 'restored'))
             raise
 
 

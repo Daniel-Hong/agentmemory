@@ -6,6 +6,12 @@
 - Persist fixed manual/deployment/memory/legacy/storage-error holds and bounded recovery attempts. Only memory-only holds may recover after strict headroom/stability/freshness checks through the existing storage-certified admission path; manual/unknown/other holds remain. Keep pressure sampling live through pending storage-certified pause/resume, reject out-of-order samples, and await both transitions at shutdown. No external notifications or new jobs.
 - Synthetic RED/GREEN and comparison details: docs/customizations/DURABILITY-READBACK-COST.md and PROTECTION-RECOVERY.md. Independent storage/recovery/integration reviews clear after race and test-gap fixes; final combined verification is recorded in docs/customizations/DURABILITY-PROTECTION-VERIFICATION.md; production.11/running work and original user edits preserved. Operational activation/restart remains separately approved. Long-term memory recording pending separate manual review.
 
+## Recovery build preparation (development only)
+
+- Prepare a pinned clean-source v2-compatible recovery profile with automatic memory recovery compiled off; preserve holds/budget, pressure protection and storage certification. Add strict package capability declarations and explicit Viewer status. Offline builds reuse existing dependencies; no kit enrollment, activation or operational changes.
+- Refuse direct v2-to-v1 downgrade and unsafe automatic code rollback after v2 startup. Require a hash-protected, explicitly recovery-disabled v2 previous runtime; otherwise certify shutdown and leave stopped for manual inspection. Do not rewind data. The initial stock .11 failure-to-recovery activation path still needs a separately reviewed administrator transaction; a recovery artifact alone does not complete operational rollback readiness.
+- Synthetic verification and deployment restrictions: docs/customizations/RECOVERY-BUILD-PREPARATION.md. Long-term memory remains pending separate manual review.
+
 ## Measurement preparation history (daniel.11)
 
 - Deployment preparation: user authorized measurement-only apply/restart/observation. Prepare a distinct daniel.11 package from the reviewed cd09b0e code without incorporating unrelated original Viewer/CHANGELOG edits. Current daniel.10 guard and preservation verified; pre-existing persistent pause will be preserved unless separately authorized to resume. No timeout, credentials, provider, concurrency or scheduling changes. Applied status requires later actual receipts and observation.

@@ -248,3 +248,7 @@ it('shows memory protection hold separately from current normal pressure and man
 it('does not imply another hold exists when a cancelled memory recovery remains held',()=>{
  const c=fixtures();c.operations.control={status:'paused',holds:['memory']};c.operations.health={memoryPressure:{level:'high',recoveryStatus:'held'}};const html=c.operationsPanelHtml();expect(html).toContain('보호 중지 유지 · 재개 조건 확인 필요');expect(html).not.toContain('다른 중지 원인 확인 필요');
 });
+it('shows recovery-disabled build explicitly without promising automatic recovery',()=>{
+ const c=fixtures();c.operations.control={status:'paused',holds:['memory']};c.operations.health={memoryPressure:{level:'normal',recoveryStatus:'disabled',automaticMemoryRecovery:false}};
+ const html=c.operationsPanelHtml();expect(html).toContain('호환 복구 빌드 · 자동 회복 비활성');expect(html).not.toContain('메모리 보호는 안정 확인 후 자동 회복합니다');
+});

@@ -16,7 +16,7 @@ export function createBackgroundControl({clock=Date.now}={}){
  let transition=null,holds=new Set(),revision=0,recovery={attempts:0,nextAttemptAt:0};
  const record=(paused,resumePending,remaining=holds)=>({version:2,paused,resumePending,holds:[...remaining].sort(),recovery:{...recovery}});
  const writeRecord=(paused,resumePending,remaining)=>kv.set(NAMESPACE,'manual-pause',record(paused,resumePending,remaining));
- const snapshot=()=>({holds:[...holds].sort(),recovery:{...recovery,maxAttempts:MEMORY_RECOVERY_MAX_ATTEMPTS},status,pausedRequested:requested,activeOperations:active.size,error,diagnostics,
+ const snapshot=()=>({formatVersion:2,holds:[...holds].sort(),recovery:{...recovery,maxAttempts:MEMORY_RECOVERY_MAX_ATTEMPTS},status,pausedRequested:requested,activeOperations:active.size,error,diagnostics,
    transition:transition?{...transition,elapsedMs:Math.max(0,(transition.completedAt??clock())-transition.startedAt),stageElapsedMs:Math.max(0,(transition.completedAt??clock())-transition.stageStartedAt)}:null});
  function begin(action){transition={action,stage:'request',startedAt:clock(),stageStartedAt:clock()};error=null;diagnostics=null;}
  function stage(value){transition.stage=value;transition.stageStartedAt=clock();if(value==='complete')transition.completedAt=clock();}

@@ -3,7 +3,7 @@ import type { HttpRequest } from "@iii-dev/helpers/http";
 import type { StateKV } from "../state/kv.js";
 export interface BackgroundControl {
  init(store:StateKV,finish?:()=>Promise<void>):Promise<void>;
- snapshot():{holds:string[];recovery:{attempts:number;nextAttemptAt:number;maxAttempts:number};status:string;pausedRequested:boolean;activeOperations:number;error:string|null;diagnostics:unknown;transition:unknown};
+ snapshot():{formatVersion:2;holds:string[];recovery:{attempts:number;nextAttemptAt:number;maxAttempts:number};status:string;pausedRequested:boolean;activeOperations:number;error:string|null;diagnostics:unknown;transition:unknown};
  isPaused():boolean;
  run<T>(fn:()=>Promise<T>):Promise<T|{success:false;deferred:true;retained:true;reason:string}>;
  infer<T>(fn:()=>Promise<T>):Promise<T>;

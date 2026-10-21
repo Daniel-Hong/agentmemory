@@ -1,4 +1,5 @@
 import {readFile} from 'node:fs/promises';
+export const MEMORY_RECOVERY_ENABLED = true;
 const GiB=1024**3;
 const SAFE_APIS=new Set(['api::liveness','api::health','api::config-flags','api::background-control-get','api::background-control-set']);
 
@@ -10,7 +11,7 @@ export async function readHostMemory(){
 }
 
 export function createMemoryPressureGuard({control,readSample=readHostMemory,schedule=true,clock=Date.now}={}){
- let state={level:'unknown',totalBytes:null,availableBytes:null,reserveBytes:null,criticalBytes:null,checkedAt:null,rejectedRequests:0,recoveryStatus:'observing',stableSince:null},timer=null,active=null,pendingRecovery=null,pendingPause=null,stopped=false;
+ let state={automaticMemoryRecovery:MEMORY_RECOVERY_ENABLED,level:'unknown',totalBytes:null,availableBytes:null,reserveBytes:null,criticalBytes:null,checkedAt:null,rejectedRequests:0,recoveryStatus:'observing',stableSince:null},timer=null,active=null,pendingRecovery=null,pendingPause=null,stopped=false;
  let lastSampleAt=null,stableSince=null,sampleSequence=0;
  async function readFresh(){
   const sequence=++sampleSequence,before=clock(),m=await readSample(),now=clock();
@@ -31,6 +32,7 @@ export function createMemoryPressureGuard({control,readSample=readHostMemory,sch
     if(!pendingPause)pendingPause=control.change('pause',{source:'memory'}).then(()=>{state.pauseError=null;},()=>{state.pauseError='background_pause_failed';}).finally(()=>{pendingPause=null;});
     return;
    }
+   if(!MEMORY_RECOVERY_ENABLED){state.recoveryStatus='disabled';return;}
    if(pendingRecovery){state.recoveryStatus='recovering';return;}
    const c=control.snapshot();
    if(!c.holds?.includes('memory')){state.recoveryStatus='observing';return;}
