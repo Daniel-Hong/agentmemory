@@ -323,6 +323,18 @@ class WholeTransitionTests(unittest.TestCase):
         self.assertTrue(self.new_transition().apply()['alreadyCommitted'])
         self.assertIn('adminTrustTransitionSha256',manager.retry_binding(self.failed_id,str(uuid.uuid4())))
 
+    def test_old_single_epoch_admission_rejects_intact_current_release(self):
+        helper=self.transition.enrollment_module(original=True)
+        policy=json.loads(self.policy.read_text())
+        primary=json.loads((self.primary.public/'kit.json').read_text())
+        policy['runtimeHashes']={n:primary['files'][n] for n in self.module.RUNTIME}
+        self.current.guard()
+        original_receipt=self.current.receipt.read_bytes()
+        with self.assertRaisesRegex(RuntimeError,'CURRENT_BASELINE_UNVERIFIED'):
+            helper.current_baseline(policy,owner=os.getuid(),anchor=self.root,runtime_paths=self.paths)
+        self.assertEqual(self.current.receipt.read_bytes(),original_receipt)
+        self.assertEqual(self.raw.read_bytes(),self.original_data)
+
     def admit_retry(self):
         manager=self.transition.manager();new=str(uuid.uuid4())
         def current(root):

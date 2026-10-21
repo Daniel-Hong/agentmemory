@@ -1,5 +1,10 @@
 # Changelog
 
+## Body-free current-baseline selection diagnosis (development only)
+
+- Add a fixed read-only diagnostic separating original policy/runtime admission from catalog, activation identity, drop-in and preservation metadata mismatches. Print only bounded boolean/count/fixed-name comparisons; never private policy or receipt bodies, and never import kits or write state.
+- Reproduce intact older-release rejection under a newer-only runtime policy. Prior whole-path fixtures used the updated helper and older-matching policy, missing this deployment boundary. Actual private policy remains unconfirmed; no speculative core/trust change, root preparation, restart or deployment retry performed.
+
 ## Exact empty-shell preparation refresh (development only)
 
 - Extend the existing preparation wrapper for only the diagnosed old staging and empty failed shell. Preserve old core/review bytes and shell identities in a fixed private archive; install the pinned read-only hash correction and actual AI review, then invoke only --prepare. No user source-review ceremony, operating transition, service action or deployment retry.
