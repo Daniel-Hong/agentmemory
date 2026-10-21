@@ -152,4 +152,49 @@ class RefreshTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'PREPARATION_BUSY'):self.refresh()
         self.assertFalse(self.archive.exists());self.assertEqual(self.calls,[])
 
+class BaselineRefreshTests(unittest.TestCase):
+    resume=PrepareTests.resume
+    def setUp(self):
+        RefreshTests.setUp(self)
+        self.m.refresh_failed_empty(self.bundle,self.hashes,self.new_pins,self.source,self.work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=lambda c:None,out=self.output)
+        self.prior_files={p:p.read_bytes() for p in self.archive.rglob('*') if p.is_file()}
+        self.prior_inode=(self.archive/'failed-shell').stat().st_ino
+        self.work.mkdir(mode=0o700)
+        for name in ('before','after','original-kits','original-failure'):(self.work/name).mkdir(mode=0o700)
+        self.second_inode=self.work.stat().st_ino;self.before_review=self.approval.read_bytes()
+        self.source.write_bytes(b'# synthetic baseline correction\n');self.final_pins={**self.new_pins,'admin-trust-transition.py':hashlib.sha256(self.source.read_bytes()).hexdigest()};self.calls=[]
+        self.second_archive=self.work.with_name(self.work.name+'-before-baseline-selection-fix')
+    def refresh(self,run=None,fault=None):
+        return self.m.refresh_failed_empty(self.bundle,self.new_pins,self.final_pins,self.source,self.work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=run or (lambda c:self.calls.append(c)),out=self.output,fault=fault,previous_pins=self.hashes)
+    def test_second_refresh_preserves_both_failed_shells_and_exact_ai_history(self):
+        self.assertEqual(self.refresh(),'PREPARE_COMPLETED')
+        self.assertEqual(self.prior_files,{p:p.read_bytes() for p in self.archive.rglob('*') if p.is_file()})
+        self.assertEqual((self.archive/'failed-shell').stat().st_ino,self.prior_inode)
+        self.assertEqual((self.second_archive/'failed-shell').stat().st_ino,self.second_inode)
+        self.assertEqual((self.second_archive/'source-review.before.json').read_bytes(),self.before_review)
+        record=json.loads(self.approval.read_bytes());self.assertEqual(record['files'],self.final_pins);self.assertFalse(record['preparationAuthorization']['userCodeReviewClaimed']);self.assertFalse(record['stagingRefreshInvocation']['operatingTransitionApproved'])
+        self.assertEqual(self.calls,[[self.m.PYTHON,'-I',str(self.bundle/'admin-trust-transition.py'),'--prepare']])
+    def test_nonempty_second_shell_or_missing_prior_history_never_overwrites(self):
+        p=self.work/'before/retain';p.write_bytes(b'evidence')
+        with self.assertRaisesRegex(RuntimeError,'FAILED_PREPARATION_NOT_EMPTY'):self.refresh()
+        self.assertEqual(p.read_bytes(),b'evidence');self.assertEqual(self.approval.read_bytes(),self.before_review);self.assertFalse(self.second_archive.exists())
+        p.unlink();(self.archive/'core.before').write_bytes(b'changed')
+        with self.assertRaisesRegex(RuntimeError,'PRIOR_REFRESH_CHANGED'):self.refresh()
+        self.assertFalse(self.second_archive.exists());self.assertEqual(self.calls,[])
+    def test_second_stage_partial_failures_cannot_be_repeated(self):
+        for stop in ('snapshots_saved','shell_preserved','core_replaced','review_replaced'):
+            f=BaselineRefreshTests();f.setUp()
+            try:
+                def fail(stage):
+                    if stage==stop:raise OSError('synthetic interruption')
+                with self.assertRaises(OSError):f.refresh(fault=fail)
+                self.assertEqual(f.prior_files,{p:p.read_bytes() for p in f.archive.rglob('*') if p.is_file()})
+                with self.assertRaises(RuntimeError):f.refresh()
+                self.assertEqual(f.calls,[])
+            finally:f.doCleanups()
+    def test_duplicate_second_refresh_never_dispatches_twice(self):
+        self.refresh();before=self.approval.read_bytes()
+        with self.assertRaises(RuntimeError):self.refresh()
+        self.assertEqual(self.approval.read_bytes(),before);self.assertEqual(len(self.calls),1)
+
 if __name__=='__main__':unittest.main()

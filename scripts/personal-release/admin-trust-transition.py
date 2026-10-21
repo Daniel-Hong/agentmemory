@@ -10,6 +10,7 @@ from importlib.machinery import SourceFileLoader
 import io
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -317,6 +318,25 @@ class Transition:
                     item=tarfile.TarInfo(name);item.size=len(data);item.mode=0o600;tar.addfile(item,io.BytesIO(data))
         return raw.getvalue()
 
+    def verified_original_baseline(self,current,original):
+        spec=self.specs['current'];kit=json.loads(original['kit.json'])
+        require(current.kit==kit and str(current.public)==str(self.public/spec['id']),'ORIGINAL_KIT_CHANGED')
+        receipt_raw=self.read(current.receipt,user=True);receipt=json.loads(receipt_raw)
+        post=current.post_files()
+        identity={'applied':True,'candidateHash':spec['packageSha256'],'sourceCommit':spec['sourceCommit'],'installedFileHashes':post}
+        require(all(receipt.get(k)==v for k,v in identity.items()),'CURRENT_RECEIPT_UNVERIFIED')
+        saved=receipt.get('preservationReceipt',{});archive=Path(saved.get('archive',''))
+        require(archive.parent==current.paths['archives'] and re.fullmatch(re.escape(spec['id'])+r'-[0-9]+\.tar\.gz',archive.name) is not None,'CURRENT_ARCHIVE_UNVERIFIED')
+        require(isinstance(saved.get('archiveSha256'),str) and re.fullmatch('[a-f0-9]{64}',saved['archiveSha256']) is not None,'CURRENT_ARCHIVE_UNVERIFIED')
+        current.guard()
+        for name,expected in post.items():self.hash_observe(name,expected)
+        for row in current.baseline['archives']:self.hash_observe(row['path'],row['sha256'])
+        self.hash_observe(archive,saved['archiveSha256'])
+        module=self.checked_runtime_module(current.public,spec['id'],original=True)
+        module.verify_archive(archive,saved['archiveSha256'],current.archive_files())
+        require(self.read(current.receipt,user=True)==receipt_raw,'CURRENT_RECEIPT_CHANGED')
+        return self.next_baseline(current.public,kit,current.baseline,current.release,receipt,spec['kitSha256'],current.receipt),receipt_raw
+
     def prepare(self,failed_id='86ecf1cd-e714-4def-ad80-73b5e0b57141'):
         require(not self.work.exists(),'TRANSITION_ALREADY_PREPARED')
         self.trusted(self.state/'private')
@@ -326,15 +346,11 @@ class Transition:
             self.inactive_updates();self.process_exclusion()
             service=self.service_identity();activity=self.activity()
             manager=self.manager();original={role:self.expected_kit(role,manager) for role in self.specs}
-            current=self.runtime(self.specs['current']['id']);current.guard()
+            current=self.runtime(self.specs['current']['id'])
             policy=self.record(self.policy_path);marker=self.record(self.marker)
             helper=self.enrollment_module(original=True);helper.load_policy(self.policy_path,owner=self.owner,anchor=self.root)
             for name,expected in policy['assets'].items():self.hash_observe(name,expected)
-            for name,expected in current.post_files().items():self.hash_observe(name,expected)
-            for row in current.baseline['archives']:self.hash_observe(row['path'],row['sha256'])
-            saved_preservation=self.record(current.receipt,user=True)['preservationReceipt']
-            self.hash_observe(saved_preservation['archive'],saved_preservation['archiveSha256'])
-            old_baseline=helper.current_baseline(policy,owner=self.owner,anchor=self.root,runtime_paths=current.paths)
+            old_baseline,verified_receipt=self.verified_original_baseline(current,original['current'])
             require(all(json.loads(original[r]['baseline.json'])==old_baseline for r in ('primary','recovery')),'ORIGINAL_BASELINE_CHANGED')
             binding=manager.retry_binding(failed_id,'00000000-0000-4000-8000-000000000000')
             require(binding['candidateId']==self.specs['primary']['id'],'ORIGINAL_FAILURE_CHANGED')
@@ -349,7 +365,8 @@ class Transition:
             after[self.p(EXECUTABLES[2])]=enroll_code
             # Only the already reviewed .16 runtime becomes the candidate runtime.
             for name in RUNTIME:after[self.library/name]=original['primary'][name]
-            newkits={};oldreceipt=self.record(current.receipt,user=True);newreceipt=copy.deepcopy(oldreceipt)
+            require(self.read(current.receipt,user=True)==verified_receipt,'CURRENT_RECEIPT_CHANGED')
+            newkits={};oldreceipt=json.loads(verified_receipt);newreceipt=copy.deepcopy(oldreceipt)
             installed=dict(oldreceipt['installedFileHashes'])
             for path in EXECUTABLES[:2]:installed[str(self.p(path))]=digest(replacement)
             baseline=copy.deepcopy(json.loads(original['current']['baseline.json']))
@@ -376,7 +393,7 @@ class Transition:
             archive_data=self.archive(newkits['current'],release15,current.version)
             after[archive_path]=archive_data
             newreceipt['preservationReceipt']={'archive':str(archive_path),'archiveSha256':digest(archive_data),'readBackVerified':True}
-            newreceipt['adminTrustTransition']={'intentSha256':intent_sha,'priorReceiptSha256':digest(self.read(current.receipt,user=True)),'priorPreservationReceipt':oldreceipt['preservationReceipt'],'codeOnly':True}
+            newreceipt['adminTrustTransition']={'intentSha256':intent_sha,'priorReceiptSha256':digest(verified_receipt),'priorPreservationReceipt':oldreceipt['preservationReceipt'],'codeOnly':True}
             after[current.receipt]=encoded(newreceipt)
             next_baseline=self.next_baseline(self.public/self.specs['current']['id'],json.loads(newkits['current']['kit.json']),baseline,release15,newreceipt,digest(newkits['current']['kit.json']),current.receipt)
             for role in ('primary','recovery'):newkits[role]=revise(role,next_baseline)
@@ -414,6 +431,8 @@ class Transition:
             ordered=[self.p(p) for p in EXECUTABLES]+sorted(p for p in after if p not in {self.p(q) for q in EXECUTABLES})
             for path in ordered:
                 raw=after[path];old=self.put(path,raw,uid=self.uid if path==archive_path else self.owner,gid=self.gid if path==archive_path else os.getgid(),mode=0o600 if path==archive_path else 0o644)
+                if path==current.receipt:require(old==verified_receipt,'CURRENT_RECEIPT_CHANGED')
+                if path==archive_path:require(old is None,'NEW_ARCHIVE_ALREADY_EXISTS')
                 if old is not None:self.store('before',old)
                 self.store('after',raw)
             plan={'format':FORMAT,'intent':intent,'intentSha256':intent_sha,'service':service,'activity':activity,'failedProof':binding,'originalFailure':failure_snapshots,'lineage':lineage,'targets':self.targets,'observed':{p:v for p,v in self.observed.items() if not Path(p).is_relative_to(self.work)},'order':[str(p) for p in ordered]}

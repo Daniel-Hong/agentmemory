@@ -77,9 +77,9 @@ class WholeTransitionTests(unittest.TestCase):
         self.library=self.root/'usr/local/lib/agentmemory-candidate-enrollment';self.library.mkdir(parents=True,mode=0o755)
         assets={}
         for name in ('kit-runtime.py','kit-queues.py','kit-integrity.py','prepare-dashboard-kit.py','enroll-reviewed-kit.py'):
-            raw=(self.current.public/name).read_bytes() if name in ('kit-runtime.py','kit-queues.py','kit-integrity.py') else (HERE/name).read_bytes()
+            raw=(HERE/'fixtures/pre-transition-runtime.py.txt').read_bytes() if name=='kit-runtime.py' else (self.current.public/name).read_bytes() if name in ('kit-queues.py','kit-integrity.py') else (HERE/name).read_bytes()
             self.write(self.library/name,raw,0o644);assets[str(self.library/name)]=self.runtime.sha(self.library/name)
-        helper=self.root/'usr/local/libexec/agentmemory-candidate-enroll';self.write(helper,(HERE/'candidate-enrollment.py').read_bytes()+b'\n# synthetic old policy epoch\n',0o755)
+        helper=self.root/'usr/local/libexec/agentmemory-candidate-enroll';self.write(helper,(HERE/'fixtures/pre-transition-enrollment.py.txt').read_bytes(),0o755)
         for p in [helper,*(self.root/'usr/local/libexec'/n for n in ('agentmemory-update-request','agentmemory-update-runner'))]:assets[str(p)]=self.runtime.sha(p)
         policy={'schemaVersion':1,'policyId':'synthetic-fixed-policy','validatorVersion':'1','delegatingReview':'synthetic administrator','requestUid':1000,'requestGid':1000,'assets':assets,'runtimeHashes':{n:self.runtime.sha(self.library/n) for n in ('kit-runtime.py','kit-queues.py','kit-integrity.py')},'packageContract':{},'extraArtifacts':[],'legacyBaseline':self.initial_legacy,'library':str(self.library),'runner':str(self.root/'usr/local/libexec/agentmemory-update-runner'),'state':str(self.state),'dropin':str(self.paths['dropin']),'publicKits':str(self.paths['public']),'archives':str(self.paths['archives'])}
         self.policy=self.root/'etc/agentmemory-candidate-enrollment/policy.json';self.write(self.policy,json.dumps(policy).encode(),0o644)
@@ -109,6 +109,57 @@ class WholeTransitionTests(unittest.TestCase):
 
     def prepare_review(self):
         t=self.transition;result=t.prepare(self.failed_id);plan=json.loads((t.work/'plan.json').read_text());self.write(t.work/'review.json',json.dumps({'format':self.module.FORMAT,'planSha256':self.module.digest(self.module.encoded(plan)),'executionClosureReviewed':True,'reviewedBy':'synthetic administrator'}).encode());return result,plan
+
+    def test_fixed_current_derivation_refuses_bad_activation_before_archive_access(self):
+        original=self.current.receipt.read_bytes();receipt=json.loads(original)
+        receipt['sourceCommit']='0'*40;self.write(self.current.receipt,json.dumps(receipt).encode())
+        with self.assertRaisesRegex(RuntimeError,'CURRENT_RECEIPT_UNVERIFIED'):self.transition.prepare(self.failed_id)
+        self.assertFalse((self.transition.work/'plan.json').exists());self.assertEqual(self.raw.read_bytes(),self.original_data)
+
+    def test_fixed_current_derivation_refuses_unrelated_preservation_path(self):
+        receipt=json.loads(self.current.receipt.read_bytes());receipt['preservationReceipt']['archive']=str(self.root/'private-unrelated')
+        self.write(self.current.receipt,json.dumps(receipt).encode())
+        with self.assertRaisesRegex(RuntimeError,'CURRENT_ARCHIVE_UNVERIFIED'):self.transition.prepare(self.failed_id)
+        self.assertFalse((self.transition.work/'plan.json').exists())
+
+    def test_fixed_current_derivation_keeps_full_archive_member_validation(self):
+        receipt=json.loads(self.current.receipt.read_bytes());archive=Path(receipt['preservationReceipt']['archive'])
+        import tarfile
+        output=io.BytesIO()
+        with tarfile.open(archive) as old,tarfile.open(fileobj=output,mode='w:gz') as replacement:
+            for index,item in enumerate(old.getmembers()):
+                raw=old.extractfile(item).read()
+                if index==0:raw=b'X'*len(raw)
+                replacement.addfile(item,io.BytesIO(raw))
+        self.write(archive,output.getvalue());receipt['preservationReceipt']['archiveSha256']=self.runtime.sha(archive);self.write(self.current.receipt,json.dumps(receipt).encode())
+        with self.assertRaisesRegex(RuntimeError,'ARCHIVE_READBACK_FAILED'):self.transition.prepare(self.failed_id)
+        self.assertFalse((self.transition.work/'plan.json').exists())
+
+    def test_fixed_current_derivation_detects_receipt_change_after_guard(self):
+        original={name:(self.current.public/name).read_bytes() for name in ('kit.json','baseline.json','release.json')}
+        real=self.current.guard
+        def race():
+            real();v=json.loads(self.current.receipt.read_bytes());v['unexpected']='change';self.write(self.current.receipt,json.dumps(v).encode())
+        with patch.object(self.current,'guard',race),self.assertRaisesRegex(RuntimeError,'CURRENT_RECEIPT_CHANGED'):
+            self.transition.verified_original_baseline(self.current,original)
+
+    def test_receipt_change_after_verified_derivation_cannot_create_plan(self):
+        real=self.transition.verified_original_baseline
+        def race(*args):
+            value=real(*args);receipt=json.loads(self.current.receipt.read_bytes());receipt['candidateHash']='0'*64;self.write(self.current.receipt,json.dumps(receipt).encode());return value
+        with patch.object(self.transition,'verified_original_baseline',race),self.assertRaisesRegex(RuntimeError,'CURRENT_RECEIPT_CHANGED'):
+            self.transition.prepare(self.failed_id)
+        self.assertFalse((self.transition.work/'plan.json').exists())
+
+    def test_receipt_change_at_target_capture_cannot_create_plan(self):
+        real=self.transition.put
+        def race(path,*args,**kwargs):
+            if path==self.current.receipt:
+                receipt=json.loads(self.current.receipt.read_bytes());receipt['candidateHash']='0'*64;self.write(self.current.receipt,json.dumps(receipt).encode())
+            return real(path,*args,**kwargs)
+        with patch.object(self.transition,'put',race),self.assertRaisesRegex(RuntimeError,'CURRENT_RECEIPT_CHANGED'):
+            self.transition.prepare(self.failed_id)
+        self.assertFalse((self.transition.work/'plan.json').exists())
 
     def test_modified_runtime_is_rejected_before_import_execution(self):
         marker=self.root/'untrusted-import-marker'
@@ -217,6 +268,29 @@ class WholeTransitionTests(unittest.TestCase):
         self.assertEqual(self.manager.job_path(self.failed_id).read_bytes(),self.original_failure)
         self.assertFalse((work/'review.json').exists());self.assertFalse((work/'receipt.json').exists())
 
+    def test_second_empty_failure_refresh_then_historical_policy_full_transition_and_16(self):
+        wrapper=base.load('prepare-trust-transition');work=self.transition.work
+        corrected=(HERE/'admin-trust-transition.py').read_bytes();source=self.root/'baseline-corrected-source';self.write(source,corrected)
+        old=b'# synthetic first installed core\n';middle=b'# synthetic first hash correction\n'
+        self.write(self.bundle/'admin-trust-transition.py',old,0o644)
+        first={n:self.runtime.sha(self.bundle/n) for n in wrapper.PINS};self.write(self.bundle/'source-review.json',wrapper.encoded(wrapper.approved_record(first)),0o600)
+        work.mkdir(mode=0o700)
+        for name in ('before','after','original-kits','original-failure'):(work/name).mkdir(mode=0o700)
+        self.write(source,middle);second={**first,'admin-trust-transition.py':self.module.digest(middle)}
+        wrapper.refresh_failed_empty(self.bundle,first,second,source,work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=lambda c:None,out=io.StringIO())
+        prior=work.with_name(work.name+'-before-user-hash-fix');prior_files={p:p.read_bytes() for p in prior.rglob('*') if p.is_file()}
+        work.mkdir(mode=0o700)
+        for name in ('before','after','original-kits','original-failure'):(work/name).mkdir(mode=0o700)
+        second_inode=work.stat().st_ino;self.write(source,corrected);third={**second,'admin-trust-transition.py':self.module.digest(corrected)}
+        def run(command):self.assertEqual(command[-1],'--prepare');self.new_transition().prepare(self.failed_id)
+        wrapper.refresh_failed_empty(self.bundle,second,third,source,work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=run,out=io.StringIO(),previous_pins=first)
+        self.assertEqual(prior_files,{p:p.read_bytes() for p in prior.rglob('*') if p.is_file()})
+        self.assertEqual(work.with_name(work.name+'-before-baseline-selection-fix').joinpath('failed-shell').stat().st_ino,second_inode)
+        with self.assertRaises(RuntimeError):wrapper.refresh_failed_empty(self.bundle,second,third,source,work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=run,out=io.StringIO(),previous_pins=first)
+        plan=json.loads((work/'plan.json').read_text());self.write(work/'review.json',json.dumps({'format':self.module.FORMAT,'planSha256':self.module.digest(self.module.encoded(plan)),'executionClosureReviewed':True,'reviewedBy':'synthetic AI reviewer'}).encode())
+        self.transition.apply();manager,job=self.admit_retry();primary=self.new_runtime('client-release-16');primary.apply();self.assert_next_baseline(primary)
+        self.assertEqual(self.raw.read_bytes(),self.original_data);self.assertEqual(self.manager.job_path(self.failed_id).read_bytes(),self.original_failure)
+
     def test_prepare_does_not_modify_operating_targets(self):
         before=self.current.receipt.read_bytes();old_runner=(self.root/'usr/local/libexec/agentmemory-update-runner').read_bytes()
         result,plan=self.prepare_review()
@@ -323,17 +397,27 @@ class WholeTransitionTests(unittest.TestCase):
         self.assertTrue(self.new_transition().apply()['alreadyCommitted'])
         self.assertIn('adminTrustTransitionSha256',manager.retry_binding(self.failed_id,str(uuid.uuid4())))
 
-    def test_old_single_epoch_admission_rejects_intact_current_release(self):
+    def test_exact_historical_helper_and_policy_reject_intact_current_release(self):
         helper=self.transition.enrollment_module(original=True)
-        policy=json.loads(self.policy.read_text())
-        primary=json.loads((self.primary.public/'kit.json').read_text())
-        policy['runtimeHashes']={n:primary['files'][n] for n in self.module.RUNTIME}
-        self.current.guard()
-        original_receipt=self.current.receipt.read_bytes()
+        self.assertEqual(self.runtime.sha(self.root/'usr/local/libexec/agentmemory-candidate-enroll'),self.module.OLD_ENROLL_SHA)
+        self.assertEqual(self.runtime.sha(self.library/'kit-runtime.py'),'9b33a051f3106f565626e50ea70e72655bac4710dbea01ad5bc40ade32fff10c')
+        policy=helper.load_policy(self.policy,owner=os.getuid(),anchor=self.root)
+        self.current.guard();original_receipt=self.current.receipt.read_bytes()
         with self.assertRaisesRegex(RuntimeError,'CURRENT_BASELINE_UNVERIFIED'):
             helper.current_baseline(policy,owner=os.getuid(),anchor=self.root,runtime_paths=self.paths)
         self.assertEqual(self.current.receipt.read_bytes(),original_receipt)
         self.assertEqual(self.raw.read_bytes(),self.original_data)
+
+    def test_historical_admitted_candidate_still_cannot_replace_current_identity(self):
+        older=self.issue(False,replacement=self.old,revision=11,automatic=True)
+        for parent in (self.paths['public'],self.state/'incoming'):
+            path=parent/'client-release-11';self.write(path/'kit-runtime.py',(HERE/'fixtures/pre-transition-runtime.py.txt').read_bytes(),0o644 if parent==self.paths['public'] else 0o600)
+            meta=json.loads((path/'kit.json').read_text());meta['files']['kit-runtime.py']=self.runtime.sha(path/'kit-runtime.py');self.write(path/'kit.json',json.dumps(meta).encode(),0o644 if parent==self.paths['public'] else 0o600)
+        self.manager.enroll(self.state/'incoming/client-release-11')
+        helper=self.transition.enrollment_module(original=True);policy=helper.load_policy(self.policy,owner=os.getuid(),anchor=self.root)
+        with self.assertRaisesRegex(RuntimeError,'CURRENT_BASELINE_UNVERIFIED'):
+            helper.current_baseline(policy,owner=os.getuid(),anchor=self.root,runtime_paths=self.paths)
+        self.prepare_review();self.transition.apply();self.assertEqual(self.raw.read_bytes(),self.original_data)
 
     def admit_retry(self):
         manager=self.transition.manager();new=str(uuid.uuid4())

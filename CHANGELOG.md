@@ -1,5 +1,10 @@
 # Changelog
 
+## Fixed original-release baseline derivation (development only)
+
+- Validate the pinned .15 runtime, complete installed protected files and archive contents, then require exact equality with original registered .16/.17 baselines. Preserve the original policy validation while avoiding its incompatible runtime-discovery selector; do not admit mismatched runtimes or rewrite a baseline to pass. Bind verified receipt bytes through plan/target capture and reject archive creation races.
+- Use exact historical enrollment/runtime source fixtures for the policy epoch that prior tests missed. Cover full transition/.16/.17, corrupted archives, receipt races, historical catalog candidates and both retained failed preparation shells. Extend only the fixed preparation wrapper for this second known empty-shell state; preserve prior history and refuse partial/duplicate/changed states. No operating changes performed; separate staging/preparation authority remains necessary.
+
 ## Body-free current-baseline selection diagnosis (development only)
 
 - Add a fixed read-only diagnostic separating original policy/runtime admission from catalog, activation identity, drop-in and preservation metadata mismatches. Print only bounded boolean/count/fixed-name comparisons; never private policy or receipt bodies, and never import kits or write state.
