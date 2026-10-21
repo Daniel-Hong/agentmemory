@@ -293,6 +293,122 @@ class Runner:
         self.write(self.job_path(value['jobId']), value)
         return value
 
+    def failed_candidates(self, selected):
+        failed = []
+        for path in (self.state / 'public/jobs').glob('*.json'):
+            self.trusted(path)
+            value = read_json(path, self.trusted_uid)
+            if value.get('candidateId') == selected and value.get('status') in ('failed', 'interrupted'):
+                failed.append(value)
+        return failed
+
+    def retry_binding(self, failed_id, request_id):
+        job_id(failed_id)
+        job_id(request_id)
+        failed = self.job(failed_id)
+        selected = candidate_id(failed.get('candidateId'))
+        if failed.get('status') != 'failed' or failed.get('errorCode') != 'PROGRAM_FAILED' or failed.get('retryOf') or len(self.failed_candidates(selected)) != 1:
+            raise Rejected('RETRY_FAILURE_UNVERIFIED')
+        approved = next((c for c in self.catalog() if c['id'] == selected and c.get('approved') is True), None)
+        if approved is None:
+            raise Rejected('UNKNOWN_CANDIDATE')
+        root = self.state / 'vault' / selected
+        metadata = self.checked_kit(root, approved['kitSha256'])
+        baseline = root / 'baseline.json'
+        if 'baseline.json' not in metadata['files']:
+            raise Rejected('RETRY_FAILURE_UNVERIFIED')
+        transaction = self.state / 'private/release-kits' / selected / 'transaction.json'
+        self.trusted(transaction)
+        state = read_json(transaction, self.trusted_uid, 4096)
+        required = {'phase':'failed','failedPhase':'constructed','recoveryStatus':'not_needed','dataRewound':False,'codeRollbackVerified':False,'rollbackErrorCode':None,'shutdownCertified':False,'shutdownReceiptSha256':None,'inspectionRequired':False}
+        if any(k not in state or type(state[k]) is not type(v) or state[k] != v for k,v in required.items()):
+            raise Rejected('RETRY_FAILURE_UNVERIFIED')
+        try:
+            if not (datetime.datetime.fromisoformat(failed['createdAt']) <= datetime.datetime.fromisoformat(state['at']) <= datetime.datetime.fromisoformat(failed['updatedAt'])):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise Rejected('RETRY_FAILURE_UNVERIFIED') from None
+        log = self.state / 'private' / (failed_id + '.log')
+        self.trusted(log)
+        descriptor = os.open(log, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != self.trusted_uid or stat.S_IMODE(info.st_mode) != 0o600:
+                raise Rejected('RETRY_FAILURE_UNVERIFIED')
+            raw = stream.read(8193)
+        expected = {'errorCode':'CLIENT_PROCESS_ACTIVE','dataRewound':False}
+        try:
+            lines = raw.splitlines()
+            if len(raw) > 8192 or len(lines) != 2 or lines[0] != b'PHASE: failed' or json.loads(lines[1]) != expected:
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise Rejected('RETRY_FAILURE_UNVERIFIED') from None
+        return {'version':1,'failedJobId':failed_id,'requestId':request_id,'candidateId':selected,'packageSha256':metadata['packageSha256'],'kitSha256':approved['kitSha256'],'baselineSha256':sha(baseline),'failedJobSha256':sha(self.job_path(failed_id)),'transactionSha256':sha(transaction),'logSha256':sha(log)}
+
+    def verify_retry_current(self, root):
+        # Import only the immutable, closure-reviewed vault runtime. No installed
+        # application/user-writable code is imported by the administrator runner.
+        code = """import importlib.util,json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+s=importlib.util.spec_from_file_location('reviewed_retry_runtime',root/'kit-runtime.py')
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+r=m.Runtime(root)
+r.require_client_idle();r.guard(before=True);r.verify_dependency_reuse()
+m.require(not r.version.exists() and not r.receipt.exists(),'RELEASE_ALREADY_PRESENT')
+m.require(r.system.main_pid()>0,'CURRENT_SERVICE_REQUIRED');r.system.verify_identity()
+h=r.api('health')
+m.require(h.get('status')=='healthy' and h.get('storageDurability',{}).get('mutationFailures')==0 and h.get('memoryPressure',{}).get('level')=='normal','CURRENT_HEALTH_UNVERIFIED')
+c=r.api('background/control')['control']
+m.require(c.get('error') is None and c.get('status') in ('running','paused'),'CURRENT_CONTROL_UNVERIFIED')
+print(json.dumps({'verified':True}))
+"""
+        metadata = self.checked_kit(root)
+        if metadata['entrypoint'] != 'kit-runtime.py' or not {'kit-runtime.py','kit-queues.py','kit-integrity.py','baseline.json'} <= set(metadata['files']):
+            raise Rejected('RETRY_RUNTIME_UNSUPPORTED')
+        try:
+            result = subprocess.run(['/usr/bin/python3','-I','-B','-c',code,str(root)], check=True, timeout=60, env=ENV, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if result.stdout.strip() != b'{"verified": true}':
+                raise ValueError()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            raise Rejected('RETRY_CURRENT_UNVERIFIED') from None
+        return {'verified':True}
+
+    def retry_preflight(self, failed_id, request_id):
+        with self.lock():
+            job_id(failed_id);job_id(request_id)
+            claim = self.state / 'private' / ('preflight-retry-' + failed_id + '.json')
+            self.trusted(claim.parent)
+            if claim.exists() or claim.is_symlink():
+                self.trusted(claim)
+                saved = read_json(claim, self.trusted_uid, 4096, private=True)
+                if saved.get('requestId') != request_id:
+                    raise Rejected('RETRY_ALREADY_CLAIMED')
+                if not self.job_path(request_id).exists():
+                    raise Rejected('RETRY_STATE_UNCERTAIN')
+                result = self.job(request_id)
+                if result.get('retryBinding') != saved:
+                    raise Rejected('RETRY_STATE_UNCERTAIN')
+                return result  # A duplicate never dispatches again.
+            if self.job_path(request_id).exists() or (self.spool / (request_id + '.json')).exists():
+                raise Rejected('RETRY_REQUEST_EXISTS')
+            binding = self.retry_binding(failed_id, request_id)
+            for path in (self.state / 'public/jobs').glob('*.json'):
+                if read_json(path, self.trusted_uid).get('status') in ('queued','running','interrupted'):
+                    raise Rejected('BUSY')
+            self.verify_retry_current(self.state / 'vault' / binding['candidateId'])
+            # Burn the one-use claim before queue creation: uncertain IO/crash
+            # requires administrator inspection, never another automatic attempt.
+            self.write(claim, binding, 0o600)
+            result = self.save_job({'jobId':request_id,'candidateId':binding['candidateId'],'createdAt':now(),'bootId':boot_id(),'retryOf':failed_id,'retryBinding':binding}, 'queued','queued')
+        try:
+            subprocess.run(['/usr/bin/systemctl','start','--no-block','agentmemory-update@'+request_id+'.service'],check=True,env=ENV,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd='/')
+        except (OSError, subprocess.SubprocessError):
+            # Preserve queued state: dispatch outcome may be uncertain. The
+            # consumed claim prevents duplicate automatic dispatch.
+            raise Rejected('RETRY_DISPATCH_UNCONFIRMED') from None
+        return result
+
     def request(self, identifier):
         job_id(identifier)
         request = read_json(self.spool / (identifier + '.json'), self.request_uid, 4096, private=True)
@@ -305,8 +421,10 @@ class Runner:
                 result = self.job(identifier)
                 if result['candidateId'] != selected:
                     raise Rejected('JOB_CONFLICT')
-                if result['status'] != 'queued':
+                if result['status'] != 'queued' or result.get('retryOf'):
                     return result
+                if self.failed_candidates(selected):
+                    raise Rejected('CANDIDATE_PREVIOUSLY_FAILED')
                 if result.get('bootId') != boot_id():
                     return self.save_job(result, 'interrupted', 'inspection_required', 'UPDATE_INTERRUPTED')
             else:
@@ -317,6 +435,8 @@ class Runner:
                 for existing in (self.state / 'public/jobs').glob('*.json'):
                     if read_json(existing, self.trusted_uid)['status'] in ('queued', 'running', 'interrupted'):
                         raise Rejected('BUSY')
+                if self.failed_candidates(selected):
+                    raise Rejected('CANDIDATE_PREVIOUSLY_FAILED')
                 result = self.save_job({'jobId': identifier, 'candidateId': selected, 'createdAt': now(), 'bootId': boot_id()}, 'queued', 'queued')
         try:
             subprocess.run(['/usr/bin/systemctl', 'start', '--no-block', 'agentmemory-update@' + identifier + '.service'], check=True, env=ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd='/')
@@ -340,6 +460,14 @@ class Runner:
                     raise Rejected('UNKNOWN_CANDIDATE')
                 root = self.state / 'vault' / selected
                 metadata = self.checked_kit(root, approved['kitSha256'])
+                if result.get('retryOf'):
+                    binding = self.retry_binding(result['retryOf'],identifier)
+                    claim = read_json(self.state / 'private' / ('preflight-retry-'+result['retryOf']+'.json'), self.trusted_uid,4096,private=True)
+                    if result.get('retryBinding') != binding or claim != binding:
+                        raise Rejected('RETRY_BINDING_CHANGED')
+                    self.verify_retry_current(root)
+                elif self.failed_candidates(selected):
+                    raise Rejected('CANDIDATE_PREVIOUSLY_FAILED')
                 self.trusted(self.state / 'private')
                 fd = os.open(self.state / 'private' / (identifier + '.log'), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, 'wb') as log:
@@ -416,6 +544,8 @@ def main():
         if len(sys.argv) != 2:
             raise Rejected('INVALID_ARGUMENTS')
         result = runner.request(sys.argv[1])
+    elif len(sys.argv) == 4 and sys.argv[1] == '--retry-preflight-failure':
+        result = runner.retry_preflight(sys.argv[2],sys.argv[3])
     elif len(sys.argv) == 3 and sys.argv[1] in ('--run-job', '--enroll', '--acknowledge-recovery'):
         if sys.argv[1] == '--run-job':
             result = runner.run_job(sys.argv[2])

@@ -1,5 +1,10 @@
 # Changelog
 
+## Administrator preflight retry (development only)
+
+- Add root-only, once-only retry for a proven CLIENT_PROCESS_ACTIVE failure before service stop or code change. Preserve original failure evidence and bind execution to candidate/package/baseline; recheck current guards before queueing and execution. Ordinary requests reject failed candidates and cannot redispatch administrator retries.
+- Keep web/sudo authority unchanged; fail closed on partial writes, changed bindings, unknown/partial failures and dispatch uncertainty. Synthetic tests include successful execution exactly once. No operating installation or retry performed. Pinned root-asset hashes require separately reviewed trust-transition preparation before installation. Details: docs/customizations/PREFLIGHT-RETRY.md.
+
 ## Explicit two-file client transition (preparation only)
 
 - Keep default compatibility rejection; allow only administrator-reviewed before/after hashes for the retained Ubuntu capture bundle and manifest, with the other eleven files and hook commands unchanged. Use existing client tickets, user-identity atomic writes and verified code-only rollback; no privileged client-body reads, permission expansion or operating installation.

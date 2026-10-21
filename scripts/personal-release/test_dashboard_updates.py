@@ -236,7 +236,8 @@ class DashboardUpdatesTest(unittest.TestCase):
         self.assertTrue(acknowledged['recoveryAcknowledged'])
         self.assertEqual(acknowledged['errorCode'], 'UPDATE_INTERRUPTED')
         self.assertEqual([e['status'] for e in acknowledged['events']], ['queued', 'running', 'interrupted', 'failed'])
-        self.queue(self.request())
+        with self.assertRaisesRegex(m.Rejected, 'CANDIDATE_PREVIOUSLY_FAILED'):
+            self.runner.request(self.request())
 
     def test_same_boot_recovery_checks_unit_state_and_protects_dispatch_interval(self):
         self.enroll()
