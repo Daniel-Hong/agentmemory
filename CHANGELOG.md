@@ -1,5 +1,10 @@
 # Changelog
 
+## Exact empty-shell preparation refresh (development only)
+
+- Extend the existing preparation wrapper for only the diagnosed old staging and empty failed shell. Preserve old core/review bytes and shell identities in a fixed private archive; install the pinned read-only hash correction and actual AI review, then invoke only --prepare. No user source-review ceremony, operating transition, service action or deployment retry.
+- Refuse changed state, duplicate/concurrent execution and partial-refresh redispatch. Validate four failure boundaries, old review-byte compatibility and full corrected preparation with service-owned 0775 paths: 221 Python tests and 3,282 application tests passed, with four existing application skips. Actual root refresh remains unexecuted; partial failure requires inspection/manual repair.
+
 ## Service-identity read-only hash correction (development only)
 
 - Fix the transition tool's mismatch with existing service-owned 0775 code directories: perform only home-file hash observations through the verified original runtime's privilege-dropping helper. Preserve strict root code/trust/write checks, no-follow traversal, expected hashes and file/directory replacement checks. No chmod or operating update performed.

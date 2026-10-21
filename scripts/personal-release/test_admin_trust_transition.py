@@ -198,6 +198,25 @@ class WholeTransitionTests(unittest.TestCase):
         self.bundle.chmod(0o775)
         with self.assertRaisesRegex(RuntimeError,'PATH_REFUSED'):self.transition.module(self.bundle/'dashboard-updates.py')
 
+    def test_fixed_refresh_preserves_failed_shell_then_runs_complete_corrected_prepare(self):
+        wrapper=base.load('prepare-trust-transition');core=self.bundle/'admin-trust-transition.py'
+        corrected=core.read_bytes();source=self.root/'corrected-core.source';self.write(source,corrected,0o644)
+        self.write(core,corrected+b'\n# synthetic old coordination epoch\n',0o644)
+        old_pins={n:self.runtime.sha(self.bundle/n) for n in wrapper.PINS};new_pins={**old_pins,'admin-trust-transition.py':wrapper.hashlib.sha256(corrected).hexdigest()}
+        prior=wrapper.encoded(wrapper.approved_record(old_pins));self.write(self.bundle/'source-review.json',prior,0o600)
+        work=self.transition.work;work.mkdir(mode=0o700)
+        for n in ('before','after','original-kits','original-failure'):(work/n).mkdir(mode=0o700)
+        original_inode=work.stat().st_ino;actions=list(self.system.actions);receipt=self.current.receipt.read_bytes();commands=[]
+        def run(command):
+            commands.append(command);self.assertEqual(command[-1],'--prepare');self.new_transition().prepare(self.failed_id)
+        result=wrapper.refresh_failed_empty(self.bundle,old_pins,new_pins,source,work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=run,out=io.StringIO())
+        self.assertEqual(result,'PREPARE_COMPLETED');self.assertEqual(len(commands),1);self.assertTrue((work/'plan.json').is_file())
+        archive=work.with_name(work.name+'-before-user-hash-fix')
+        self.assertEqual((archive/'failed-shell').stat().st_ino,original_inode);self.assertEqual((archive/'source-review.before.json').read_bytes(),prior)
+        self.assertEqual(self.system.actions,actions);self.assertEqual(self.current.receipt.read_bytes(),receipt);self.assertEqual(self.raw.read_bytes(),self.original_data)
+        self.assertEqual(self.manager.job_path(self.failed_id).read_bytes(),self.original_failure)
+        self.assertFalse((work/'review.json').exists());self.assertFalse((work/'receipt.json').exists())
+
     def test_prepare_does_not_modify_operating_targets(self):
         before=self.current.receipt.read_bytes();old_runner=(self.root/'usr/local/libexec/agentmemory-update-runner').read_bytes()
         result,plan=self.prepare_review()

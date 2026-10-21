@@ -87,4 +87,69 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(self.calls,[])
         with self.assertRaisesRegex(RuntimeError,'REVIEW_STATE_NOT_PENDING'):self.resume()
 
+class RefreshTests(unittest.TestCase):
+    resume=PrepareTests.resume
+    def setUp(self):
+        PrepareTests.setUp(self)
+        self.assertTrue(hasattr(self.m,'refresh_failed_empty'),'bounded empty-shell refresh missing')
+        self.resume();self.calls.clear();self.m.PREPARE_MAY_HAVE_STARTED=False
+        self.old_review=self.approval.read_bytes();self.old_core=(self.bundle/'admin-trust-transition.py').read_bytes()
+        self.work.mkdir(mode=0o700)
+        for name in ('before','after','original-kits','original-failure'):(self.work/name).mkdir(mode=0o700)
+        self.old_shell_inode=self.work.stat().st_ino
+        self.source=self.root/'corrected-core';self.source.write_bytes(b'# synthetic corrected core\n')
+        self.new_pins={**self.hashes,'admin-trust-transition.py':hashlib.sha256(self.source.read_bytes()).hexdigest()}
+        self.archive=self.work.with_name(self.work.name+'-before-user-hash-fix')
+    def refresh(self,run=None,fault=None):
+        return self.m.refresh_failed_empty(self.bundle,self.hashes,self.new_pins,self.source,self.work,owner=os.getuid(),gid=os.getgid(),anchor=self.root,run=run or (lambda c:self.calls.append(c)),out=self.output,fault=fault)
+    def test_known_empty_failure_is_preserved_and_only_corrected_prepare_runs(self):
+        self.assertEqual(self.refresh(),'PREPARE_COMPLETED')
+        self.assertFalse(self.work.exists());self.assertEqual((self.archive/'failed-shell').stat().st_ino,self.old_shell_inode)
+        self.assertEqual((self.archive/'source-review.before.json').read_bytes(),self.old_review)
+        self.assertEqual((self.archive/'core.before').read_bytes(),self.old_core)
+        self.assertEqual((self.bundle/'admin-trust-transition.py').read_bytes(),self.source.read_bytes())
+        record=json.loads(self.approval.read_bytes());self.assertEqual(record['files'],self.new_pins)
+        self.assertEqual(record['reviewedBy'],'Codex AI reviewer /root/preflight_retry_review')
+        self.assertFalse(record['preparationAuthorization']['userCodeReviewClaimed']);self.assertFalse(record['preparationAuthorization']['operatingTransitionApproved'])
+        self.assertEqual(self.calls,[[self.m.PYTHON,'-I',str(self.bundle/'admin-trust-transition.py'),'--prepare']])
+    def test_nonempty_shell_and_extra_plan_are_refused_without_modification(self):
+        for path in (self.work/'before/keep',self.work/'plan.json'):
+            path.write_text('preserve')
+            with self.assertRaisesRegex(RuntimeError,'FAILED_PREPARATION_NOT_EMPTY'):self.refresh()
+            self.assertEqual(self.approval.read_bytes(),self.old_review);self.assertEqual(path.read_text(),'preserve');self.assertFalse(self.archive.exists());path.unlink()
+        self.assertEqual(self.calls,[])
+    def test_wrong_source_or_unexpected_review_is_refused_before_preservation(self):
+        self.source.write_bytes(b'changed')
+        with self.assertRaisesRegex(RuntimeError,'CORRECTED_SOURCE_HASH_MISMATCH'):self.refresh()
+        self.assertFalse(self.archive.exists());self.assertTrue(self.work.exists())
+        self.source.write_bytes(b'# synthetic corrected core\n');value=json.loads(self.old_review);value['unexpected']=True;self.approval.write_text(json.dumps(value))
+        with self.assertRaisesRegex(RuntimeError,'PRIOR_REVIEW_CHANGED'):self.refresh()
+        self.assertFalse(self.archive.exists());self.assertEqual(self.calls,[])
+    def test_duplicate_or_existing_archive_never_overwrites_or_redispatches(self):
+        self.archive.mkdir()
+        with self.assertRaisesRegex(RuntimeError,'REFRESH_EVIDENCE_EXISTS'):self.refresh()
+        self.assertEqual(self.approval.read_bytes(),self.old_review);self.assertEqual(self.calls,[])
+        self.archive.rmdir();self.refresh();before=self.approval.read_bytes()
+        with self.assertRaises(RuntimeError):self.refresh()
+        self.assertEqual(self.approval.read_bytes(),before);self.assertEqual(len(self.calls),1)
+    def test_partial_stage_failures_preserve_proof_and_never_dispatch(self):
+        for stop in ('snapshots_saved','shell_preserved','core_replaced','review_replaced'):
+            with self.subTest(stage=stop):
+                f=RefreshTests();f.setUp()
+                try:
+                    def fail(stage):
+                        if stage==stop:raise OSError('synthetic interruption')
+                    with self.assertRaises(OSError):f.refresh(fault=fail)
+                    self.assertEqual((f.archive/'source-review.before.json').read_bytes(),f.old_review)
+                    self.assertEqual((f.archive/'core.before').read_bytes(),f.old_core)
+                    self.assertEqual(f.calls,[])
+                    with self.assertRaises(RuntimeError):f.refresh()
+                finally:f.doCleanups()
+    def test_refresh_uses_same_lock_as_old_wrapper(self):
+        lock=self.bundle/'.prepare-wrapper.lock'
+        with lock.open('r+b') as file:
+            fcntl.flock(file,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with self.assertRaisesRegex(RuntimeError,'PREPARATION_BUSY'):self.refresh()
+        self.assertFalse(self.archive.exists());self.assertEqual(self.calls,[])
+
 if __name__=='__main__':unittest.main()
