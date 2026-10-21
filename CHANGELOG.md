@@ -1,5 +1,10 @@
 # Changelog
 
+## Body-free prepared-plan review evidence (development only)
+
+- Add one fixed read-only export for the prepared plan/intent and 36 targets after OS permissions blocked actual AI review. Reconstruct proposed trust metadata, validate staged code archive contents and hash-bound original snapshots, and return only fixed aliases, modes and comparison facts. No private bodies, review.json write, apply, service control or retry.
+- Keep actual AI plan review and user operating approval distinct. Synthetic validation of the exporter does not claim review of the inaccessible operating plan is complete.
+
 ## Fixed original-release baseline derivation (development only)
 
 - Validate the pinned .15 runtime, complete installed protected files and archive contents, then require exact equality with original registered .16/.17 baselines. Preserve the original policy validation while avoiding its incompatible runtime-discovery selector; do not admit mismatched runtimes or rewrite a baseline to pass. Bind verified receipt bytes through plan/target capture and reject archive creation races.

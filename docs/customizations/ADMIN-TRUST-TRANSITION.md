@@ -150,3 +150,17 @@ A nonempty/changed preparation, stale code/review, changed original evidence, an
 Complete-path review also checked subsequent code reads/write-target parents: readable operating metadata shows installed code parents are not group-writable and the code archive/current receipt/release roots are 0700. Service-owned 0775 read-only hashes keep the existing privilege-drop path. Current private failed-job/log/transaction proof and live process/service state are not re-read by the agent; the unchanged original guards must validate these under root at preparation/execution time. No additional root read is needed to establish the selector defect, but this is not a guarantee that mutable operational preconditions remain unchanged.
 
 Validation: full Python suite 240 passed, plus 21 wrapper cases rerun after exact prior-audit validation. Independent review identified a receipt reread race; two RED/GREEN regressions verify its correction, and final review found no important issue. Build/skills/application/docs verification is recorded in the accompanying evidence dossier. Actual root refresh, preparation, trust migration, restart and deployment remain unperformed.
+
+## Actual prepared-plan review access
+
+The administrator completed preparation with plan SHA256 `dcac8099a293abe1f4ebc72ff3284bcb45ffd9f63042b529d5e273b5c196a442`, intent SHA256 `bb8c3711a3ac16ef96c166871a35e0e240210e1c0138d77e2eefda1282016437` and 36 targets. The agent's direct O_RDONLY/O_NOFOLLOW read of that fixed root-private plan was denied by OS permissions. No sudo/root retry or permission change was attempted. Source review and synthetic tests alone do not complete review of the actual plan.
+
+The minimum read-only evidence command is:
+
+```sh
+sudo python3 -I /home/daniel/Documents/Codex/2026-10-21/task/agentmemory-diagnostics/scripts/personal-release/export-trust-plan-review.py
+```
+
+It pins the exact plan/intent/count and three root-staged code digests. It reconstructs the proposed metadata from hash-bound original snapshots using the reviewed transition rules, compares all staged target bytes, validates the new code archive's complete member set/hashes, checks original failure snapshots, role-specific safe modes, current target ownership/mode metadata and the entire exact entrypoint-first ordering. Only fixed target aliases, modes, booleans and the already supplied plan/intent/count are printed. It does not export policy/receipt/record bodies, private map values or user identities. It executes only the pinned core's definitions/read helpers; no kit imports, locks, subprocesses, review recording, trust writes, service control or deployment retry occur. Snapshot verification is bounded by existing read limits. Live state must still pass the existing check/apply guards.
+
+After receiving this actual output, the agents must assess it and state the genuine AI review result. Only after operating authorization may that result be recorded atomically in root-owned review.json, bound to this exact plan SHA and attributed to the actual AI reviewer. This is not a request for the user to certify source review or enter a reviewer name. The existing fixed --check then --apply path follows; neither this exporter nor preparation grants operating approval. A review-recording command must be based on the completed actual review, not invented in advance. Actual .16 retry remains separate after a verified committed transition.
