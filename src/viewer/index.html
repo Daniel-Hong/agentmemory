@@ -1444,6 +1444,15 @@
     .refresh-controls label { display: flex; align-items: center; gap: 4px; }
     .refresh-controls select { width: auto; padding: 3px; color: var(--ink); background: var(--bg); border: 1px solid var(--border); }
     .operations-card { margin-top: 16px; min-width: 0; overflow-wrap: anywhere; }
+    .health-section-title { margin:0 0 12px; font-family:var(--font-ui); font-size:15px; color:var(--ink); }
+    .health-attention { border-left:3px solid var(--yellow); padding:12px 16px; margin:14px 0; background:var(--bg); border-radius:4px; }
+    .health-attention .hnote { margin:6px 0; font-size:13px; color:var(--ink-secondary); }
+    .health-diagnostics { margin:16px 0; min-width:0; }
+    .health-diagnostics>summary { cursor:pointer; padding:12px 0; font-family:var(--font-ui); font-weight:600; }
+    .health-action-group { border-top:1px solid var(--border); margin-top:16px; padding-top:16px; }
+    .health-action-group .hnote { margin:8px 0 0; }
+    #view-health>section, #view-health>details { overflow-wrap:anywhere; }
+    @media(max-width:600px) { .health-attention { padding:10px 12px; } .health-action-group .btn { min-height:40px; } }
     .operations-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:16px 0; }
     .operations-summary>div { border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; }
     .operations-summary span,.operations-summary small { display:block; color:var(--ink-muted); line-height:1.6; font-family:var(--font-ui); }
@@ -2646,19 +2655,30 @@
       var resume = control.status === 'paused';
       var disabled = operations.controlBusy || !!operations.controlError || !['running','paused','error'].includes(control.status);
       var controlLabel = operations.controlBusy ? operations.controlAction === 'resume' ? '재개 중' : '일시정지 요청 중' : labels[control.status] || '미확인';
-      var html = '<section class="card operations-card" id="health-operations" aria-labelledby="operations-title"><div class="card-title" id="operations-title">운영 상태</div>';
-      if (h.status === 'critical' || h.memoryPressure && h.memoryPressure.level === 'critical') html += '<p role="alert" class="mem-note err">서버 점검 필요 · 아래 상태 보고서와 메모리 경고를 확인하세요.</p>';
-      html += '<div class="operations-actions"><strong role="status">백그라운드: '+esc(operations.controlError ? '미확인 · 마지막 확인 '+controlLabel : controlLabel)+'</strong><button type="button" class="btn" data-action="'+(resume ? 'resume-background' : 'pause-background')+'"'+(disabled ? ' disabled' : '')+'>'+(operations.controlBusy ? controlLabel+'…' : resume ? '재개' : control.status === 'error' ? '저장 상태 다시 확인' : '일시정지')+'</button><button type="button" class="btn" data-action="refresh-operations"'+(operations.loading ? ' disabled' : '')+'>'+(operations.loading ? '조회 중…' : '현황 새로고침')+'</button></div>';
+      var html = '<section class="card operations-card" id="health-operations" aria-labelledby="operations-title"><h2 class="health-section-title" id="operations-title">작업 진행 현황</h2>';
+      html += '<strong role="status">백그라운드: '+esc(operations.controlError ? '미확인 · 마지막 확인 '+controlLabel : controlLabel)+'</strong>';
+      var actions = '<div class="health-action-group" aria-label="백그라운드 작업"><h3 class="health-section-title">작업 관리</h3><div class="operations-actions"><button type="button" class="btn" data-action="refresh-operations"'+(operations.loading ? ' disabled' : '')+'>'+(operations.loading ? '조회 중…' : '현황 새로고침')+'</button><button type="button" class="btn" data-action="'+(resume ? 'resume-background' : 'pause-background')+'"'+(disabled ? ' disabled' : '')+'>'+(operations.controlBusy ? controlLabel+'…' : resume ? '재개' : control.status === 'error' ? '저장 상태 다시 확인' : '일시정지')+'</button><button type="button" class="btn" data-action="capture-review-open">수집 격리·복구 이력 보기</button></div><p class="hnote">저장 전 실패한 수집 기록은 격리·복구 이력에서 확인합니다.</p>';
+      html += '<section class="health-attention" id="health-attention" aria-labelledby="health-attention-title"><h3 class="health-section-title" id="health-attention-title">확인할 상태</h3>';
+      if (h.status === 'critical' || h.memoryPressure && h.memoryPressure.level === 'critical') html += '<p role="alert" class="mem-note err">서버 점검 필요 · 상태 보고서와 메모리 경고를 확인하세요.</p>';
       html += operations.controlBusy && (control.transition || {}).action !== operations.controlAction ? '<p class="hnote" role="status">요청 전달 중 · 서버의 진행 단계를 확인하고 있습니다.</p>' : controlDiagnosticHtml(control);
-      html += '<p class="hnote">일시정지는 신규 백그라운드 처리를 보류합니다. 진행 작업과 저장을 확인한 뒤 완료되며, 기록 수집·색인 저장은 계속됩니다. '+(h.memoryPressure && h.memoryPressure.automaticMemoryRecovery === false ? '호환 복구 빌드는 자동 회복을 수행하지 않습니다.' : '메모리 보호는 안정 확인 후 자동 회복합니다.')+' 수동·배포·원인 미상·저장 오류 중지는 별도 확인이 필요합니다. 재개를 눌러도 메모리·배포 중지는 유지됩니다.</p>';
+
       var holdLabels = {manual:'수동 중지',deployment:'배포 중지',memory:'메모리 보호',legacy_unknown:'기존 중지 · 원인 미상',storage_error:'저장 검증 오류'};
-      var heldReasons = Array.isArray(control.holds) ? control.holds.map(function(reason) { return Object.prototype.hasOwnProperty.call(holdLabels,reason) ? holdLabels[reason] : null; }).filter(Boolean) : [];
+      var heldReasons = Array.isArray(control.holds) ? control.holds.map(function(reason) { return Object.prototype.hasOwnProperty.call(holdLabels,reason) ? holdLabels[reason] : '원인 미상 중지'; }).filter(Boolean) : [];
       var recoveryLabels = {disabled:'호환 복구 빌드 · 자동 회복 비활성',pressure:'메모리 압력 지속',held:'보호 중지 유지 · 재개 조건 확인 필요',attempt_limit:'자동 회복 횟수 제한 · 수동 확인 필요',backoff:'반복 보호 중지 · 재시도 대기',stabilizing:'정상 메모리 안정 확인 중',recovering:'저장 검증 후 자동 회복 중',recovered:'자동 회복 완료',sample_error:'메모리 표본 확인 실패 · 자동 회복 보류'};
       if (heldReasons.length) html += '<p class="hnote" role="status">유지 중인 중지: '+esc(heldReasons.join(' · '))+'</p>';
       var recoveryState = h.memoryPressure && h.memoryPressure.recoveryStatus;
       if (Object.prototype.hasOwnProperty.call(recoveryLabels,recoveryState)) html += '<p class="hnote" role="status">'+esc(recoveryLabels[recoveryState])+'</p>';
       if (control.status === 'error') html += '<p role="alert" class="mem-note err">처리는 보류 중입니다. 저장 확인이 끝나지 않아 재개할 수 없습니다.</p>';
       [operations.error,operations.controlError,operations.controlRequestError].filter(Boolean).forEach(function(error) { html += '<p role="alert" class="mem-note err">'+esc(error)+'</p>'; });
+      html += memoryPressureStatus(h.memoryPressure);
+      if (!h.providerReadiness || h.providerReadiness.status !== 'ready' || h.providerReadiness.stale || Number.isFinite(Date.parse(h.providerReadiness.nextCheckAt)) && Date.now() > Date.parse(h.providerReadiness.nextCheckAt)+5000) html += readinessStatusHtml(h.providerReadiness);
+      if (h.snapshotRecovery && ['error','retrying','stopped'].includes(h.snapshotRecovery.status)) html += snapshotStatus(h.snapshotRecovery);
+      if (!['running','pausing','resuming','paused','error'].includes(control.status)) html += '<p class="hnote" role="status">백그라운드 실행 상태 미확인 · 현황을 다시 조회하세요.</p>';
+      if (work.quarantined) html += '<p class="hnote" role="status">요약·후처리 격리 '+work.quarantined+'건 · 사용자 점검이 필요하며 자동 재처리하지 않습니다.</p>';
+      var inbox = ((store.report || {}).capture || {}).inbox;
+      if (inbox && (inbox.dead || inbox.retrying)) html += '<p class="hnote" role="status">수집 저장 전 실패: 격리 '+fmtNum(inbox.dead || 0)+'건 · 재시도 '+fmtNum(inbox.retrying || 0)+'건 · 수집 격리·복구 이력에서 확인하세요.</p>';
+      ((store.health || {}).notes || []).forEach(function(note) { html += '<p class="hnote" role="status">'+esc(humanizeHealthFlag(note))+'</p>'; });
+      html += '</section>';
       var pendingLabel = total === null ? minimum === null ? '미확인' : '확인된 최소 '+minimum.toLocaleString()+'건 · 전체 잔여량 미확인' : total.toLocaleString()+'건';
       var active = Number.isSafeInteger(control.activeOperations) ? control.activeOperations.toLocaleString()+'개' : '미확인';
       var recentAt = [h.captureProgress && h.captureProgress.lastCompletedAt,h.embeddingRecovery && h.embeddingRecovery.lastSuccessAt].filter(function(v){return v && Number.isFinite(Date.parse(v));}).sort().pop();
@@ -2670,7 +2690,6 @@
       html += operationsProgressHtml(work,h,control);
       var embeddingCode = (h.embeddingRecovery || {}).lastError;
       if (embeddingCode && embeddingCode !== 'CAPTURE_PENDING_EMBEDDING' && /^[A-Z0-9_]{1,80}$/.test(embeddingCode)) html += '<p class="operations-notice" role="status">임베딩: 최근 실패 또는 재시도 기록 · <code>'+esc(embeddingCode)+'</code> · 최근 완료량과 함께 확인하세요.</p>';
-      html += '<p><button type="button" class="btn" data-action="capture-review-open">수집 격리·복구 이력 보기</button><small> 저장 전 실패한 수집 기록은 별도로 확인합니다.</small></p>';
       html += '<details id="operations-details"'+(operations.detailsOpen ? ' open' : '')+'><summary>오류·공급자·세션 상세</summary><div class="hnote">같은 기록이 여러 처리 단계에 포함될 수 있습니다. 세션 종료와 요약 완료는 다릅니다. 격리 기록은 자동 재처리하지 않습니다.</div>';
       html += memoryPressureStatus(h.memoryPressure)+snapshotStatus(h.snapshotRecovery)+readinessStatusHtml(h.providerReadiness);
       if (work.rows.length) {
@@ -2685,7 +2704,9 @@
       if (typeof job.result === 'string') html += '<pre class="operations-result">'+esc(job.result.slice(0,24000))+'</pre>';
       if (job.threadId && /^[A-Za-z0-9_-]{1,100}$/.test(job.threadId)) html += '<p class="hnote">Codex 대화 ID: <code>'+esc(job.threadId)+'</code></p>';
       if (operations.jobError) html += '<p role="status" class="hnote">과거 기록을 조회하지 못했습니다.</p>';
-      html += '<p class="hnote">대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details></section>';
+      actions += '<p class="hnote">일시정지는 신규 백그라운드 처리를 보류합니다. 진행 작업과 저장을 확인한 뒤 완료되며, 기록 수집·색인 저장은 계속됩니다. '+(h.memoryPressure && h.memoryPressure.automaticMemoryRecovery === false ? '호환 복구 빌드는 자동 회복을 수행하지 않습니다.' : '메모리 보호는 안정 확인 후 자동 회복합니다.')+' 수동·배포·원인 미상·저장 오류 중지는 별도 확인이 필요합니다. 재개를 눌러도 메모리·배포 중지는 유지됩니다.</p>';
+      actions += '</div>';
+      html += '<p class="hnote">대기 건수 0도 강제 전원 차단이 안전하다는 뜻은 아닙니다.</p></details>'+actions+'</section>';
       return html;
     }
 
@@ -7509,7 +7530,7 @@
     function healthVerdictHtml(r) {
       var level = r ? r.status : 'unknown';
       var text = r ? (r.headline || (r.status === 'ok' ? 'Every check passed.' : 'Some checks need attention.')) : 'Waiting for the first health report from the server.';
-      var html = '<div class="card" style="margin-top:0;">';
+      var html = '<section class="card" id="health-overview" aria-labelledby="health-overview-title"><h2 class="health-section-title" id="health-overview-title">전체 상태</h2>';
       var badgeText = level === 'unknown' ? 'waiting' : level;
       var paused = !autoRefresh.enabled || conn.state !== 'live' && !hasFreshHttpSnapshot();
       var quiet = !paused && store.lastHealthAt && Date.now() - store.lastHealthAt > HEALTH_STALE_MS;
@@ -7525,14 +7546,19 @@
       if (state.health.error) html += '<div class="mem-note err" style="margin-top:10px;">' + esc(state.health.error) + '</div>';
       if (r && r.problems.length) {
         html += '<div style="margin-top:12px;">' + r.problems.map(problemHtml).join('') + '</div>';
-      } else if (r) {
+      } else if (r && r.status === 'ok') {
         html += '<p class="hnote" style="margin-top:10px;font-size:12px;">No problems found: the engine is connected, the search index matches the stored observations and no function is failing.</p>';
+      } else if (r) {
+        html += '<p class="hnote" style="margin-top:10px;font-size:12px;color:var(--ink-secondary);">상태 보고서의 세부 진단을 확인하세요. 개별 문제 목록이 비어 있어도 정상 상태를 의미하지 않습니다.</p>';
       }
-      html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:11px;color:var(--ink-faint);font-family:var(--font-ui);">' +
+      return html + '</section>';
+    }
+
+    function healthReportActionsHtml() {
+      return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;font-size:11px;color:var(--ink-faint);font-family:var(--font-ui);">' +
         '<button class="btn" data-action="refresh-health"' + (state.health.checking ? ' disabled' : '') + '>' + (state.health.checking ? 'Checking…' : 'Re-check now') + '</button>' +
         '<span>Machine checks (keys, engine binary, pid files):</span>' + cmdBlock((customPort() ? 'AGENTMEMORY_URL=' + agentUrl() + ' ' : '') + 'npx @agentmemory/agentmemory doctor') +
         '<a class="empty-link" href="' + esc(REST) + '/agentmemory/status" target="_blank" rel="noopener">same report as a plain page &rarr;</a>' + copyBtn('curl -s ' + apiBase() + '/status', 'curl command') + '</div>';
-      return html + '</div>';
     }
 
     function engineCardHtml(r, snap) {
@@ -7663,7 +7689,7 @@
       var drainedAt = (cap.spool || []).map(function(s) { return s.stats && s.stats.lastDrainAt; }).filter(Boolean).sort().pop();
       var dropped = (cap.spool || []).reduce(function(n, s) { return n + ((s.stats && s.stats.dropped) || 0); }, 0);
       html += hrow('Inbox', inbox ? esc(fmtNum(inbox.pending) + ' pending · ' + fmtNum(inbox.retrying) + ' retrying · ' + fmtNum(inbox.dead) + ' dead') : 'not checked', 'captureInbox',
-        inbox && inbox.dead ? '<span style="overflow-wrap:anywhere;">' + esc(inbox.lastError || 'Could not be stored.') + '</span> <button type="button" class="btn" data-action="capture-review-open">수집 격리 확인·선택 재시도</button>' :
+        inbox && inbox.dead ? '<span style="overflow-wrap:anywhere;">' + esc(inbox.lastError || 'Could not be stored.') + '</span> · 작업 관리에서 수집 격리·복구 이력을 확인하세요.' :
         inbox && inbox.retrying ? '<span style="overflow-wrap:anywhere;">' + esc('Retried every ' + durationText(cap.policy.retryIntervalMs) + ' with backoff, up to ' + cap.policy.maxAttempts + ' attempts' + (inbox.lastError ? '. Last error: ' + inbox.lastError : '.')) + '</span>' :
         'Empty means every accepted observation is stored.');
       html += hrow('Since start', esc(fmtNum(since.accepted || 0) + ' accepted · ' + fmtNum(since.completed || 0) + ' stored · ' + fmtNum(since.duplicates || 0) + ' duplicates skipped · ' + fmtNum(since.recovered || 0) + ' recovered by retry · ' + fmtNum(since.deadLettered || 0) + ' dead'), null,
@@ -7814,8 +7840,11 @@
 
     function renderHealth() {
       var el = document.getElementById('view-health');
-      var focused = document.activeElement, insideOperations = focused && focused.closest('#health-operations');
-      var focusedAction = insideOperations && focused.getAttribute('data-action');
+      var focused = document.activeElement, insideHealth = focused && el.contains(focused);
+      var focusedAction = insideHealth && focused.getAttribute('data-action');
+      var focusedDetails = insideHealth && focused.tagName === 'SUMMARY' && focused.parentElement.id;
+      var detailStates = {};
+      el.querySelectorAll('details[id]').forEach(function(detail) { detailStates[detail.id] = detail.open; });
       if (!store.snapshot) {
         setViewHtml(el, skeleton(10));
         return;
@@ -7824,25 +7853,31 @@
       var snap = store.health || {};
       var idx = store.indexes || {};
       var c = store.counts || {};
-      var html = '<div class="inline-note"><strong>운영 현황</strong> · 남은 작업과 실제 완료 추세를 확인하세요. <a class="empty-link" href="'+esc(REST)+'/agentmemory/status" target="_blank" rel="noopener">상태 보고서 전체 보기</a></div>';
+      var html = healthVerdictHtml(r);
       html += operationsPanelHtml();
-      html += healthVerdictHtml(r);
-      html += '<div class="hgrid">' + engineCardHtml(r, snap) + indexCardHtml(r, idx, c) + captureCardHtml(r) + llmCardHtml(r) + flagsCardHtml(r) + processCardHtml(snap) + recordsCardHtml(c) + '</div>';
+      html += '<details class="health-diagnostics" id="health-diagnostics"><summary>기술 진단 상세 · 연결·색인·공급자·프로세스</summary><div class="hgrid">' + engineCardHtml(r, snap) + indexCardHtml(r, idx, c) + captureCardHtml(r) + llmCardHtml(r) + flagsCardHtml(r) + processCardHtml(snap) + recordsCardHtml(c) + '</div>';
       html += consolidationPanelHtml(store.consolidationStatus, c);
-      html += functionsCardHtml(r);
+      html += functionsCardHtml(r) + '</details>';
+      html += '<section class="card health-action-group" aria-labelledby="health-report-actions"><h2 class="health-section-title" id="health-report-actions">진단 보고서</h2>'+healthReportActionsHtml()+'</section>';
       setViewHtml(el, html);
+      el.querySelectorAll('details[id]').forEach(function(detail) {
+        if (Object.prototype.hasOwnProperty.call(detailStates,detail.id)) detail.open = detailStates[detail.id];
+      });
       var progressDetails=el.querySelector('#operations-progress-details');
       if(progressDetails)progressDetails.addEventListener('toggle',function(){operations.progressOpen=progressDetails.open;});
       var operationDetails = el.querySelector('#operations-details');
       if (operationDetails) operationDetails.addEventListener('toggle', function() { operations.detailsOpen = operationDetails.open; });
-      if (insideOperations && operationDetails) {
-        var nextFocus = focusedAction && /^[a-z-]+$/.test(focusedAction) ? el.querySelector('#health-operations [data-action="'+focusedAction+'"]') : null;
-        if (!nextFocus || nextFocus.disabled) nextFocus = operationDetails.querySelector('summary');
-        nextFocus.focus({preventScroll:true});
+      if (insideHealth) {
+        var nextFocus = focusedAction && /^[a-z-]+$/.test(focusedAction) ? el.querySelector('[data-action="'+focusedAction+'"]') : focusedDetails && /^[a-z-]+$/.test(focusedDetails) ? el.querySelector('#'+focusedDetails+'>summary') : null;
+        if (nextFocus && nextFocus.disabled) nextFocus = operationDetails && operationDetails.querySelector('summary');
+        if (nextFocus) nextFocus.focus({preventScroll:true});
       }
       var reveal = state.health.reveal && document.getElementById('health-' + state.health.reveal);
       if (reveal) {
         state.health.reveal = '';
+        for (var ancestor = reveal.parentElement; ancestor && ancestor !== el; ancestor = ancestor.parentElement) {
+          if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+        }
         reveal.scrollIntoView({ block: 'start' });
       }
     }

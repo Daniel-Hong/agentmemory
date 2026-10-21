@@ -1,5 +1,11 @@
 # Changelog
 
+## Singleton readback and HEALTH layout (development only)
+
+- Start a lone namespace waiter on the original uncapped single-consumer projection, without admitting late followers; keep the bounded shared path for scans that start with multiple waiters. Remove cancelled participants' selected keys before the singleton scan. Existing certification, deadlines, fsync, signatures and cancellation remain. Late subset sharing is deliberately reduced; synthetic comparison reports that cost.
+- Reorder HEALTH into overall state, visible attention/progress and grouped actions, then collapsible technical diagnostics. Preserve pause/resume meaning, permissions, critical status, open details/focus and existing action handlers. Validate desktop/mobile with synthetic actual-browser fixtures.
+- Existing web updates can apply registered approved candidates; administrator review/enrollment remains a separate boundary. No new privileged endpoint, policy change, operational deployment, model call or external notification. Validation and limits: docs/customizations/SINGLETON-HEALTH-REFRESH.md.
+
 ## Concurrent readback sharing (development only)
 
 - Coalesce compatible in-flight namespace scans with bounded pending key unions and started-scan subset joins. Keep independent expectations, dirty revisions, original deadlines, file/directory fsync and final full-signature checks; never cache completed success. Isolate request aborts and drain physical readers at shutdown.

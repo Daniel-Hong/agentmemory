@@ -20,9 +20,9 @@ function context(names: string[], extra: Record<string, unknown> = {}) {
   return ctx;
 }
 function fixtures(extra: Record<string, unknown> = {}) {
-  return context(["esc", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
+  return context(["esc", "fmtNum", "humanizeHealthFlag", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
     operations: { health: {}, sessions: [], control: null, job: null, available: false, loading: false, error: '', controlError: '', jobError: '', checking: false, submitting: false, controlBusy: false, detailsOpen: false },
-    conn: { state: 'offline' }, autoRefresh: { enabled: true, seconds: 30 }, ...extra,
+    store: {}, conn: { state: 'offline' }, autoRefresh: { enabled: true, seconds: 30 }, ...extra,
   });
 }
 

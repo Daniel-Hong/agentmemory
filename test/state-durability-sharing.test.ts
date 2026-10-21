@@ -73,10 +73,30 @@ it('honors separate request deadlines when the scan owner expires first',async()
   const fence=createStateDurabilityFence({storePath:dir,timeoutMs:500,pollIntervalMs:5});let release!:()=>void,entered!:()=>void;
   const ready=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r);
   hooks.beforeRead=async()=>{entered();await gate;};
-  const a=fence.waitForKeys({get:async()=>1},[{scope:'synthetic',key:'a'}]);const expired=expect(a).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT'});await ready;
+  const a=fence.waitForKeys({get:async()=>1},[{scope:'synthetic',key:'a'}]);const expired=expect(a).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT'});
+  const peer=fence.waitForKeys({get:async()=>1},[{scope:'synthetic',key:'a'}]);const peerExpired=expect(peer).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT'});await ready;
   await vi.advanceTimersByTimeAsync(300);
-  const b=fence.waitForKeys({get:async()=>1},[{scope:'synthetic',key:'a'}]);await vi.advanceTimersByTimeAsync(201);await expired;release();
+  const b=fence.waitForKeys({get:async()=>1},[{scope:'synthetic',key:'a'}]);await vi.advanceTimersByTimeAsync(201);await Promise.all([expired,peerExpired]);release();
   expect(await b).toMatchObject({synced:true});expect(hooks.reads).toBe(1);
-  expect((fence.snapshot() as any).readSharing).toMatchObject({startedReads:1,sharedRequests:1,activeReads:0,activeWaiters:0});
+  expect((fence.snapshot() as any).readSharing).toMatchObject({startedReads:1,sharedRequests:2,activeReads:0,activeWaiters:0});
  }finally{vi.useRealTimers();}
+});
+it('certifies an oversized singleton with one scan and both fsyncs',async()=>{
+ const {path,fence}=await fixture(2000),value='x'.repeat(5*1024*1024);await writeFile(path,JSON.stringify({a:value}));
+ expect(await fence.waitForKeys({get:async()=>value},[{scope:'synthetic',key:'a'}])).toMatchObject({synced:true});
+ expect(hooks.reads).toBe(1);expect(hooks.syncs).toBe(2);
+ expect((fence.snapshot() as any).readSharing).toMatchObject({projectionFallbacks:0,activeReads:0,activeWaiters:0});
+});
+it('does not certify an oversized singleton whose current value differs',async()=>{
+ const {path,fence}=await fixture(200),value='x'.repeat(5*1024*1024);await writeFile(path,JSON.stringify({a:value}));
+ await expect(fence.waitForKeys({get:async()=>value+'mismatch'},[{scope:'synthetic',key:'a'}])).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT'});
+ expect(hooks.reads).toBe(1);expect(hooks.syncs).toBe(0);
+ expect((fence.snapshot() as any).measurements.recent[0].retryReasons.not_committed).toBeGreaterThan(0);
+});
+it('rechecks an oversized singleton replaced during fsync',async()=>{
+ const {path,fence}=await fixture(2000),value='x'.repeat(5*1024*1024),body=JSON.stringify({a:value});await writeFile(path,body);let replaced=false;
+ hooks.directorySync=async()=>{if(!replaced){replaced=true;await writeFile(path+'.next',body);await rename(path+'.next',path);}};
+ expect(await fence.waitForKeys({get:async()=>value},[{scope:'synthetic',key:'a'}])).toMatchObject({synced:true});
+ expect(hooks.reads).toBe(2);expect(hooks.syncs).toBe(4);
+ expect((fence.snapshot() as any).measurements.recent[0].retryReasons.namespace_changed).toBeGreaterThan(0);
 });

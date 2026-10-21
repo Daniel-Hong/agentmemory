@@ -1,5 +1,7 @@
 # 동시 readback 공유 — 개발 사본
 
+이 문서는 최초 공유 구현의 기록이다. 운영 .14 후속 singleton 최적화와 변경된 late-join 조건은 [SINGLETON-HEALTH-REFRESH.md](SINGLETON-HEALTH-REFRESH.md)를 참조한다.
+
 현재 운영 .13은 변경하지 않는다. 사용자가 승인한 동시 readback 공유 수정·합성 비교에 한정한다. 기존 .13의 whole-file parser/negative mismatch reuse 및 backfill enqueueBatch를 유지하며, 전역 LLM 직렬화·입력 예산·poll100ms·capture동시성4·요청별15초 기한·스케줄링·저장 형식을 바꾸지 않는다. 개인 기억이나 원문·운영 설정을 시험에 사용하지 않는다.
 
 ## 구현

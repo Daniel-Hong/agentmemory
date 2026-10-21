@@ -27,3 +27,11 @@ it('does not retain a large unselected value or skip its validation',async()=>{
 it.each([-1,0.5,NaN])('rejects invalid reader projection budgets %s without reading a file',async maxSelectedBytes=>{
  await expect(readNamespaceEntries('/synthetic/not-present',{maxSelectedBytes} as any)).rejects.toMatchObject({code:'state_namespace_projection_limit_invalid'});
 });
+
+it('reads a singleton selected value above the shared budget only once',async()=>{
+ const value='x'.repeat(5*1024*1024),path=await fixture(JSON.stringify({a:value}));
+ const reader=createSharedNamespaceReader();
+ const result=await reader.read(path,{keys:new Set(['a'])});
+ expect(result.values.get('a')).toBe(value);
+ expect(reader.snapshot()).toMatchObject({startedReads:1,projectionFallbacks:0,sharedRequests:0,activeReads:0,activeWaiters:0,sharedJobs:0});
+});

@@ -19,7 +19,9 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     job.started=true;
     try{
       if(!job.waiters.size)return;
-      const result=await actual(job.path,{...job.options,keys:job.keys,signal:job.controller.signal,maxSelectedBytes,
+      const singleton=job.waiters.size===1;
+      if(singleton){job.joinable=false;job.keys=[...job.waiters][0].keys;}
+      const result=await actual(job.path,{...job.options,keys:job.keys,signal:job.controller.signal,...(singleton?{}:{maxSelectedBytes}),
         onRead:info=>{job.joinable=false;notify(()=>job.options.onRead?.(info));}});
       job.joinable=false;
       for(const waiter of [...job.waiters])waiter.finish(null,result);
@@ -41,13 +43,13 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     }
     const joined=Boolean(job);
     if(!job){
-      job={path,options,keys,started:false,joinable:true,controller:new AbortController(),waiters:new Set()};
+      job={path,options,keys:new Set(keys),started:false,joinable:true,controller:new AbortController(),waiters:new Set()};
       jobs.add(job);counts.peakSharedJobs=Math.max(counts.peakSharedJobs,jobs.size);
       queueMicrotask(()=>void start(job));
     }else if(!job.started){for(const key of keys)job.keys.add(key);}
     if(joined){counts.sharedRequests++;notify(options.onShared);}
     const result=await new Promise((resolve,reject)=>{
-      const waiter={finish(error,value){
+      const waiter={keys,finish(error,value){
         if(!job.waiters.delete(waiter))return;
         options.signal?.removeEventListener('abort',abort);
         if(!job.waiters.size){job.joinable=false;job.controller.abort();}
