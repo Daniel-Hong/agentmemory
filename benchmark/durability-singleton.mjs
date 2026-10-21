@@ -50,7 +50,7 @@ if(process.argv[2]==='--child'){
     }finally{await rm(work,{recursive:true,force:true});}
    }
   }
-  const summary={synthetic:true,productionData:false,providerCalls:0,baselineSource:baseline,fixtureBytes:bytes,fixtureSha256,selectedBytes,rounds,results,limitations:['Synthetic JSON, page cache and expected-value allocations do not establish operational speedups.','Logical parser bytes are not physical disk IO; peak RSS includes expected values and runtime overhead.','Started singleton scans are private: late followers lose sharing to retain the shared projection bound.','Actual multi-waiter oversized projections retain baseline fallback; no global RSS or direct-read concurrency bound is added.','Certification deadline, fsync and final signature verification are unchanged.']};
+  const summary={synthetic:true,productionData:false,providerCalls:0,baselineSource:baseline,fixtureBytes:bytes,fixtureSha256,selectedBytes,rounds,results,limitations:['Synthetic JSON, page cache and expected-value allocations do not establish operational speedups.','Logical parser bytes are not physical disk IO; peak RSS includes expected values and runtime overhead.','Late subsets may share within the projection bound; crossing the bound closes admission before an exclusive scan continues.','Actual multi-waiter oversized projections retain baseline fallback; no global RSS or direct-read concurrency bound is added.','Certification deadline, fsync and final signature verification are unchanged.']};
   if(output)await writeFile(output,JSON.stringify(summary,null,2)+'\n');console.log(JSON.stringify(summary));
  }finally{await rm(dir,{recursive:true,force:true});}
 }

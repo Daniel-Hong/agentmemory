@@ -99,19 +99,18 @@ it('drains baseline fallback reads launched after a shared projection overflow',
  expect(reader.snapshot()).toMatchObject({activeReads:0,activeWaiters:0,sharedJobs:0});
 });
 
-it('keeps a started singleton private so a late subset cannot bypass the shared budget',async()=>{
+it('allows a late subset to join a singleton scan until its projection needs private overflow',async()=>{
  const {reader,calls,request}=harness();const a=request();await turn();
- const b=request();await turn();expect(calls).toHaveLength(2);
- expect(calls.every(call=>call.opts.maxSelectedBytes===undefined)).toBe(true);
- for(const call of calls)call.finish();await Promise.all([a,b]);
- expect(reader.snapshot()).toMatchObject({sharedRequests:0,projectionFallbacks:0,activeReads:0,activeWaiters:0});
+ const b=request();await turn();expect(calls).toHaveLength(1);
+ expect(calls[0].opts.maxSelectedBytes).toBe(4*1024*1024);
+ calls[0].finish();await Promise.all([a,b]);
+ expect(reader.snapshot()).toMatchObject({sharedRequests:1,projectionFallbacks:0,activeReads:0,activeWaiters:0});
 });
 it('selects only the remaining pending waiter keys when another waiter cancels before start',async()=>{
  const {reader,calls,request}=harness(),controller=new AbortController();
  const cancelled=request(['cancelled-large'],controller),rejected=expect(cancelled).rejects.toMatchObject({name:'AbortError'});
  const surviving=request(['small']);controller.abort();await rejected;await turn();
- expect([...calls[0].opts.keys]).toEqual(['small']);
- expect(calls[0].opts.maxSelectedBytes).toBeUndefined();calls[0].finish();
+ expect([...calls[0].opts.keys]).toEqual(['small']);calls[0].finish();
  expect([...(await surviving).values.keys()]).toEqual(['small']);
  expect(reader.snapshot()).toMatchObject({activeReads:0,activeWaiters:0,sharedJobs:0});
 });
@@ -121,4 +120,20 @@ it('drops a cancelled follower key from a surviving pending owner projection',as
  const rejected=expect(cancelled).rejects.toMatchObject({name:'AbortError'});controller.abort();await rejected;await turn();
  expect([...calls[0].opts.keys]).toEqual(['small']);calls[0].finish();
  expect([...(await surviving).values.keys()]).toEqual(['small']);
+});
+it('closes late admission before permitting an oversized private projection',async()=>{
+ const {reader,calls,request}=harness();const first=request();await turn();
+ expect(calls[0].opts.allowProjectionOverflow()).toBe(true);
+ const late=request();await turn();expect(calls).toHaveLength(2);
+ for(const call of calls)call.finish();await Promise.all([first,late]);
+ expect(reader.snapshot()).toMatchObject({startedReads:2,sharedRequests:0,projectionFallbacks:0});
+});
+it('refuses private overflow when a cancelled started participant left additional projection keys',async()=>{
+ const {reader,calls,request}=harness(),controller=new AbortController();
+ const surviving=request(['small']),cancelled=request(['large'],controller),rejected=expect(cancelled).rejects.toMatchObject({name:'AbortError'});
+ await turn();controller.abort();await rejected;
+ expect(calls[0].opts.allowProjectionOverflow()).toBe(false);
+ calls[0].fail(Object.assign(Error('overflow'),{code:'state_namespace_projection_limit'}));await turn();await turn();
+ expect(calls).toHaveLength(2);expect([...calls[1].opts.keys]).toEqual(['small']);calls[1].finish();await surviving;
+ expect(reader.snapshot()).toMatchObject({projectionFallbacks:1,activeReads:0,activeWaiters:0,sharedJobs:0});
 });

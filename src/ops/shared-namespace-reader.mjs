@@ -20,8 +20,14 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     try{
       if(!job.waiters.size)return;
       const singleton=job.waiters.size===1;
-      if(singleton){job.joinable=false;job.keys=[...job.waiters][0].keys;}
-      const result=await actual(job.path,{...job.options,keys:job.keys,signal:job.controller.signal,...(singleton?{}:{maxSelectedBytes}),
+      if(singleton)job.keys=[...job.waiters][0].keys;
+      const result=await actual(job.path,{...job.options,keys:job.keys,signal:job.controller.signal,maxSelectedBytes,
+        allowProjectionOverflow:()=>{
+          if(job.waiters.size!==1)return false;
+          const waiter=[...job.waiters][0];
+          if([...job.keys].some(key=>!waiter.keys.has(key)))return false;
+          job.joinable=false;return true;
+        },
         onRead:info=>{job.joinable=false;notify(()=>job.options.onRead?.(info));}});
       job.joinable=false;
       for(const waiter of [...job.waiters])waiter.finish(null,result);
@@ -33,7 +39,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   }
   async function shared(path,options){
     const keys=new Set(options.keys??[]);
-    if(options.onEntry||options.maxSelectedBytes!==undefined){counts.directFallbacks++;return actual(path,options);}
+    if(options.onEntry||options.maxSelectedBytes!==undefined||options.allowProjectionOverflow!==undefined){counts.directFallbacks++;return actual(path,options);}
     let job=[...jobs].find(j=>j.joinable&&j.path===path&&j.waiters.size<maxWaiters&&
       (j.options.checkIntervalBytes??0)===(options.checkIntervalBytes??0)&&
       (j.options.chunkSize??64*1024)===(options.chunkSize??64*1024)&&

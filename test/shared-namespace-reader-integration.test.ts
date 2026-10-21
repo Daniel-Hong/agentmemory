@@ -35,3 +35,36 @@ it('reads a singleton selected value above the shared budget only once',async()=
  expect(result.values.get('a')).toBe(value);
  expect(reader.snapshot()).toMatchObject({startedReads:1,projectionFallbacks:0,sharedRequests:0,activeReads:0,activeWaiters:0,sharedJobs:0});
 });
+it('lets an explicit projection policy continue the same private scan once',async()=>{
+ const value='x'.repeat(80),path=await fixture(JSON.stringify({a:value,b:value}));let calls=0;
+ const result=await readNamespaceEntries(path,{keys:new Set(['a','b']),maxSelectedBytes:32,allowProjectionOverflow:()=>{calls++;return true;}} as any);
+ expect([...result.values.values()]).toEqual([value,value]);expect(calls).toBe(1);
+});
+it('propagates projection policy failure and cancellation without reporting a completed scan',async()=>{
+ const path=await fixture(JSON.stringify({a:'x'.repeat(80)})),controller=new AbortController(),reports:any[]=[];
+ await expect(readNamespaceEntries(path,{keys:new Set(['a']),maxSelectedBytes:32,allowProjectionOverflow:()=>{throw Object.assign(Error('synthetic policy'),{code:'POLICY_FAILED'});},onRead:info=>reports.push(info)} as any)).rejects.toMatchObject({code:'POLICY_FAILED'});
+ await expect(readNamespaceEntries(path,{keys:new Set(['a']),maxSelectedBytes:32,signal:controller.signal,allowProjectionOverflow:()=>{controller.abort();return true;},onRead:info=>reports.push(info)} as any)).rejects.toMatchObject({name:'AbortError'});
+ expect(reports).toHaveLength(2);expect(reports.every(x=>!x.complete)).toBe(true);
+});
+it('keeps a real oversized private scan separate from followers after the limit boundary',async()=>{
+ const value='x'.repeat(5*1024*1024),path=await fixture(JSON.stringify({a:value}));let release!:()=>void,entered!:()=>void,reads=0;
+ const gate=new Promise<void>(r=>release=r),ready=new Promise<void>(r=>entered=r);
+ const reader=createSharedNamespaceReader({read:async(path,options)=>{
+  const first=++reads===1;
+  return readNamespaceEntries(path,{...options,allowProjectionOverflow:async()=>{
+   const permitted=options.allowProjectionOverflow();if(first){entered();await gate;}return permitted;
+  }});
+ }});
+ const first=reader.read(path,{keys:new Set(['a'])});await ready;
+ const follower=await reader.read(path,{keys:new Set(['a'])});release();
+ expect((await first).values.get('a')).toBe(value);expect(follower.values.get('a')).toBe(value);
+ expect(reader.snapshot()).toMatchObject({startedReads:2,projectionFallbacks:0,sharedRequests:0,activeReads:0,activeWaiters:0});
+});
+it('still validates corrupt unselected data after continuing a private oversized projection',async()=>{
+ const path=await fixture('{"a":"'+ 'x'.repeat(80)+'","bad":NaN}'),reader=createSharedNamespaceReader({maxSelectedBytes:32});
+ await expect(reader.read(path,{keys:new Set(['a'])})).rejects.toMatchObject({code:'state_namespace_corrupt'});
+ expect(reader.snapshot()).toMatchObject({startedReads:1,projectionFallbacks:0,completeReads:0});
+});
+it('rejects an invalid projection policy before opening a file',async()=>{
+ await expect(readNamespaceEntries('/synthetic/not-present',{allowProjectionOverflow:true} as any)).rejects.toMatchObject({code:'state_namespace_projection_policy_invalid'});
+});

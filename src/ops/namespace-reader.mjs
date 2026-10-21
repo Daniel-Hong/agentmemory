@@ -7,23 +7,28 @@ const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctime
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,checkIntervalBytes=0,maxSelectedBytes=Infinity}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow}={}){
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
   if(!Number.isSafeInteger(checkIntervalBytes)||checkIntervalBytes<0)throw fail('state_namespace_check_interval_invalid');
   if(maxSelectedBytes!==Infinity&&(!Number.isSafeInteger(maxSelectedBytes)||maxSelectedBytes<0))throw fail('state_namespace_projection_limit_invalid');
+  if(allowProjectionOverflow!==undefined&&typeof allowProjectionOverflow!=='function')throw fail('state_namespace_projection_policy_invalid');
   const handle=await open(path,'r'),decoder=new StringDecoder('utf8'),utf8=new TextDecoder('utf-8',{fatal:true});
   const values=new Map(),seen=new Set();let stream,fileBytes=null,complete=false;
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
-  let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0,lastSignatureCheck=0,selectedBytes=0;
+  let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0,lastSignatureCheck=0,selectedBytes=0,privateProjection=false;
   async function consume(text){
     const delimiter=/["\\]/g;
     if(state==='value')valueStart=0;
     async function finish(end){
       if(valueStart!==null)valueParts.push(text.slice(valueStart,end));
       const json=valueParts.join('');maxEntryChars=Math.max(maxEntryChars,json.length);
-      if(keys?.has(key)&&maxSelectedBytes!==Infinity){
+      if(keys?.has(key)&&maxSelectedBytes!==Infinity&&!privateProjection){
         selectedBytes+=Buffer.byteLength(json,'utf8')+Buffer.byteLength(key,'utf8');
-        if(selectedBytes>maxSelectedBytes)throw fail('state_namespace_projection_limit');
+        if(selectedBytes>maxSelectedBytes){
+          const permitted=await allowProjectionOverflow?.();signal?.throwIfAborted();
+          if(permitted!==true)throw fail('state_namespace_projection_limit');
+          privateProjection=true;
+        }
       }
       let value;try{value=JSON.parse(json);}catch{throw fail('state_namespace_corrupt');}
       if(keys?.has(key))values.set(key,value);

@@ -2,7 +2,7 @@
 
 ## Singleton readback and HEALTH layout (development only)
 
-- Start a lone namespace waiter on the original uncapped single-consumer projection, without admitting late followers; keep the bounded shared path for scans that start with multiple waiters. Remove cancelled participants' selected keys before the singleton scan. Existing certification, deadlines, fsync, signatures and cancellation remain. Late subset sharing is deliberately reduced; synthetic comparison reports that cost.
+- Continue an oversized exclusive projection in the same scan only after atomically closing admission; retain late subset sharing within the original shared projection bound. Preserve fallback for multiple waiters or cancelled additional keys and trim cancelled pending keys. Existing certification, deadlines, fsync, signatures, cancellation and drain remain. The initial start-time admission closure was superseded after its late-subset regression was measured.
 - Reorder HEALTH into overall state, visible attention/progress and grouped actions, then collapsible technical diagnostics. Preserve pause/resume meaning, permissions, critical status, open details/focus and existing action handlers. Validate desktop/mobile with synthetic actual-browser fixtures.
 - Existing web updates can apply registered approved candidates; administrator review/enrollment remains a separate boundary. No new privileged endpoint, policy change, operational deployment, model call or external notification. Validation and limits: docs/customizations/SINGLETON-HEALTH-REFRESH.md.
 
