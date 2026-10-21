@@ -1,3 +1,5 @@
+import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
+import { registerCaptureReceipts } from "../capture/receipts.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -89,6 +91,7 @@ export interface CaptureProgress {
   stallAfterMs: number;
 }
 export interface CaptureStatus {
+  legacyOutbox?: OutboxMetadata;
   progress?: CaptureProgress;
   policy: CapturePolicy;
   inbox: {
@@ -213,6 +216,8 @@ export function registerCaptureFunctions(
   kv: StateKV,
   options: { restPort?: number; durableAfterMs?: number } = {},
 ): CaptureController {
+  registerCaptureReceipts(sdk,kv);
+  const inspectOutbox=createOutboxMetadata(join(getEnvVar("AGENTMEMORY_HOME")||join(homedir(),".agentmemory"),"hook-outbox"));
   const policy = capturePolicy();
   const counterEpoch = randomUUID();
   const mark: SentMark = {
@@ -604,7 +609,7 @@ export function registerCaptureFunctions(
       seen.add(summary.path);
       spool.push(summary);
     }
-    return { policy, inbox, progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
+    return { policy, inbox, legacyOutbox:await inspectOutbox(), progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));

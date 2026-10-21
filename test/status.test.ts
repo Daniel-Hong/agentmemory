@@ -553,3 +553,10 @@ it('keeps legacy audit evidence instead of recommending destructive removal',()=
 it('describes queued recovery without prescribing a restart or claiming all capped work is queued',()=>{
  for(const [state,text] of [['queued','durable'],['limited','batch limit']] as const){const report=evaluateStatus(inputs({index:{...inputs().index,pendingVectorBackfill:5,vectorBackfillState:state}}));const advice=report.problems.find(p=>p.code==='index-vector-backfill-pending')?.fix||'';expect(advice).toContain(text);expect(advice).not.toContain('Check the embedding provider key');}
 });
+
+it('keeps unresolved legacy ownership visible independently of old spool attempt history',()=>{
+ const report=evaluateStatus(inputs({capture:{policy:{retryIntervalMs:10000,maxAttempts:5},inbox:null,spool:[],sinceStart:{},legacyOutbox:{records:14,available:true,complete:true}} as never}));
+ expect(codes(report)).toContain('capture-legacy-outbox');
+ expect(report.problems.find(p=>p.code==='capture-legacy-outbox')?.message).toContain('14');
+ expect(report.status).toBe('warn');
+});

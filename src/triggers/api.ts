@@ -710,6 +710,19 @@ export function registerApiTriggers(
     },
   );
 
+  sdk.registerFunction("api::capture-receipts", async (req:HttpRequest):Promise<Response>=>{
+    const denied=checkAuth(req,secret);if(denied)return denied;
+    const q=req.query_params??{}, key=q['key'],digest=q['digest'],shard=q['shard'];
+    const offset=Number(q['offset']??0),limit=Number(q['limit']??100),budgetMs=Number(q['budgetMs']??15_000);
+    const valid=Number.isSafeInteger(budgetMs)&&budgetMs>=1&&budgetMs<=15_000&&(key!==undefined
+      ? Object.keys(q).every(k=>['key','digest','budgetMs'].includes(k))&&typeof key==='string'&&/^cap_[a-f0-9]{40}$/.test(key)&&(digest===undefined||typeof digest==='string'&&/^[a-f0-9]{64}$/.test(digest))
+      : Object.keys(q).every(k=>['shard','offset','limit'].includes(k))&&typeof shard==='string'&&/^[a-f0-9]{2}$/.test(shard)&&Number.isSafeInteger(offset)&&offset>=0&&offset<=2000&&Number.isSafeInteger(limit)&&limit>=1&&limit<=500);
+    if(!valid)return {status_code:400,body:{error:'INVALID_RECEIPT_QUERY'}};
+    try{return {status_code:200,headers:{'Cache-Control':'no-store'},body:await sdk.trigger({function_id:key?'mem::capture-receipt':'mem::capture-receipt-page',payload:key?{key,budgetMs,...(digest?{digest}:{})}:{shard,offset,limit}})};}
+    catch{return {status_code:503,body:{error:'CAPTURE_RECEIPT_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-receipts',config:{api_path:'/agentmemory/capture/receipts',http_method:'GET'}});
+
   sdk.registerFunction("api::capture",
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);

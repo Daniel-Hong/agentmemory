@@ -9,7 +9,7 @@ export function createStateDurabilityFence(options: { storePath: string; timeout
  forgetKeys(keys: DirtyKey[]): void;
  stableKeys(options?: { minAgeMs?: number; limit?: number }): DirtyKey[];
  wait(kv: Reader): Promise<FenceResult>;
- waitForKeys(kv: Reader, keys: DirtyKey[]): Promise<FenceResult>;
+ waitForKeys(kv: Reader, keys: DirtyKey[], options?: { deadline?: number; expectedValues?: unknown[] }): Promise<FenceResult>;
  flushStable(kv: Reader, options?: { minAgeMs?: number; limit?: number }): Promise<unknown>;
  freeze(): void;
  drain(): Promise<void>;

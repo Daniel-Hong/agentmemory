@@ -1,5 +1,11 @@
 # Changelog
 
+## Capture receipts and single-decode readback (development only)
+
+- Add authenticated body-free exact receipt verification and bounded completed-event metadata pages. Pin receipt expectations and shorten only explicitly supplied deadlines; retain originals on mismatch, timeout, deletion or unavailable proof. Preserve ordinary managed-spool ownership and existing capture backoff.
+- Keep oversized legacy payloads complete through the existing full-payload handoff and freshly verified durable receipt; do not truncate or raise spool limits. Show retained local legacy ownership separately from historical failed append attempts, using bounded cached directory metadata only.
+- Remove redundant UTF-8 decoding while preserving full validation, shared-read bounds, fsync and final signatures. Synthetic 220 MiB parser comparison improved median wall time 13.6%, with unchanged read bytes; operating performance is not established. Details, limits, validation and later rollout boundary: docs/customizations/CAPTURE-RECEIPTS-NORMALIZATION.md.
+
 ## Singleton readback and HEALTH layout (development only)
 
 - Continue an oversized exclusive projection in the same scan only after atomically closing admission; retain late subset sharing within the original shared projection bound. Preserve fallback for multiple waiters or cancelled additional keys and trim cancelled pending keys. Existing certification, deadlines, fsync, signatures, cancellation and drain remain. The initial start-time admission closure was superseded after its late-subset regression was measured.

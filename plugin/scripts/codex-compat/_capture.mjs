@@ -1,8 +1,70 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { homedir, platform } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+//#region src/functions/privacy.ts
+const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
+const SECRET_PATTERN_SOURCES = [
+	/(?:api[_-]?key|secret|token|password|credential|auth)[\s]*[=:]\s*["']?[A-Za-z0-9_\-/.+]{20,}["']?/gi,
+	/Bearer\s+[A-Za-z0-9._\-+/=]{20,}/gi,
+	/sk-proj-[A-Za-z0-9\-_]{20,}/g,
+	/(?:sk|pk|rk|ak)-[A-Za-z0-9][A-Za-z0-9\-_]{19,}/g,
+	/sk-ant-[A-Za-z0-9\-_]{20,}/g,
+	/gh[pus]_[A-Za-z0-9]{36,}/g,
+	/github_pat_[A-Za-z0-9_]{22,}/g,
+	/xoxb-[A-Za-z0-9\-]+/g,
+	/AKIA[0-9A-Z]{16}/g,
+	/AIza[A-Za-z0-9\-_]{35}/g,
+	/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+	/npm_[A-Za-z0-9]{36}/g,
+	/glpat-[A-Za-z0-9\-_]{20,}/g,
+	/dop_v1_[A-Za-z0-9]{64}/g
+];
+const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:"'<>]*:[^\s/?#@"'<>]+@/gi;
+function stripPrivateData(input) {
+	let result = input.replace(PRIVATE_TAG_RE, "[REDACTED]");
+	result = result.replace(new RegExp(PRIVATE_KEY_BLOCK_RE.source, PRIVATE_KEY_BLOCK_RE.flags), "[REDACTED_SECRET]");
+	result = result.replace(new RegExp(URL_CREDENTIALS_RE.source, URL_CREDENTIALS_RE.flags), "$1[REDACTED_SECRET]@");
+	for (const source of SECRET_PATTERN_SOURCES) {
+		const pattern = new RegExp(source.source, source.flags);
+		result = result.replace(pattern, "[REDACTED_SECRET]");
+	}
+	return result;
+}
+function scrubRecord(value) {
+	if (typeof value === "string") return stripPrivateData(value);
+	if (Array.isArray(value)) return value.map((item) => scrubRecord(item));
+	if (value !== null && typeof value === "object") {
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return value;
+		const out = {};
+		for (const [key, item] of Object.entries(value)) out[key] = scrubRecord(item);
+		return out;
+	}
+	return value;
+}
+//#endregion
+//#region src/capture/receipt-digest.ts
+function canonical(value) {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, canonical(item)]));
+	return value;
+}
+function captureSourceDigest(hookType, timestamp, raw) {
+	return createHash("sha256").update(JSON.stringify([
+		hookType,
+		timestamp,
+		canonical(raw)
+	])).digest("hex");
+}
+function capturePayloadDigest(body) {
+	const clean = scrubRecord(body.data);
+	const raw = JSON.parse(stripPrivateData(JSON.stringify(clean)));
+	return captureSourceDigest(body.hookType, body.timestamp, raw);
+}
+//#endregion
 //#region src/secret-store.ts
 const SECRET_KEY = "AGENTMEMORY_SECRET";
 function agentmemoryHomeDir() {
@@ -213,37 +275,6 @@ function resolveDataDir(options = {}) {
 		dataDir: forInstance(defaultDir),
 		source: "default"
 	};
-}
-//#endregion
-//#region src/functions/privacy.ts
-const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
-const SECRET_PATTERN_SOURCES = [
-	/(?:api[_-]?key|secret|token|password|credential|auth)[\s]*[=:]\s*["']?[A-Za-z0-9_\-/.+]{20,}["']?/gi,
-	/Bearer\s+[A-Za-z0-9._\-+/=]{20,}/gi,
-	/sk-proj-[A-Za-z0-9\-_]{20,}/g,
-	/(?:sk|pk|rk|ak)-[A-Za-z0-9][A-Za-z0-9\-_]{19,}/g,
-	/sk-ant-[A-Za-z0-9\-_]{20,}/g,
-	/gh[pus]_[A-Za-z0-9]{36,}/g,
-	/github_pat_[A-Za-z0-9_]{22,}/g,
-	/xoxb-[A-Za-z0-9\-]+/g,
-	/AKIA[0-9A-Z]{16}/g,
-	/AIza[A-Za-z0-9\-_]{35}/g,
-	/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-	/npm_[A-Za-z0-9]{36}/g,
-	/glpat-[A-Za-z0-9\-_]{20,}/g,
-	/dop_v1_[A-Za-z0-9]{64}/g
-];
-const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
-const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:"'<>]*:[^\s/?#@"'<>]+@/gi;
-function stripPrivateData(input) {
-	let result = input.replace(PRIVATE_TAG_RE, "[REDACTED]");
-	result = result.replace(new RegExp(PRIVATE_KEY_BLOCK_RE.source, PRIVATE_KEY_BLOCK_RE.flags), "[REDACTED_SECRET]");
-	result = result.replace(new RegExp(URL_CREDENTIALS_RE.source, URL_CREDENTIALS_RE.flags), "$1[REDACTED_SECRET]@");
-	for (const source of SECRET_PATTERN_SOURCES) {
-		const pattern = new RegExp(source.source, source.flags);
-		result = result.replace(pattern, "[REDACTED_SECRET]");
-	}
-	return result;
 }
 //#endregion
 //#region src/capture/spool.ts
@@ -879,23 +910,61 @@ function keepUntilDurable(eventId, body, mark, target) {
 		retained: retainSent(url, eventId, body, mark, { dir: target?.dir })
 	};
 }
+async function durableReceipt(body, target, deadline) {
+	try {
+		const key = "cap_" + createHash("sha256").update(`${body.project}\u0000${body.sessionId}\u0000${body.eventId}`).digest("hex").slice(0, 40);
+		const digest = capturePayloadDigest(body);
+		const budgetMs = Math.min(15e3, deadline - Date.now());
+		if (budgetMs <= 0) return false;
+		const query = new URLSearchParams({
+			key,
+			digest,
+			budgetMs: String(budgetMs)
+		});
+		const response = await fetch(`${target.url}/agentmemory/capture/receipts?${query}`, {
+			method: "GET",
+			headers: target.headers,
+			signal: AbortSignal.timeout(budgetMs)
+		});
+		if (!response.ok) return false;
+		const receipt = await response.json();
+		return receipt.key === key && receipt.state === "completed" && receipt.durable === true;
+	} catch {
+		return false;
+	}
+}
 async function handoffObservation(body, timeoutMs, target) {
 	const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
 	const payload = {
 		...body,
 		eventId
 	};
+	const deadline = Date.now() + timeoutMs;
+	const remaining = () => Math.max(0, deadline - Date.now());
+	const oversized = Buffer.byteLength(JSON.stringify(payload)) > spoolPolicy().maxRecordBytes;
+	if (oversized && await durableReceipt({
+		...body,
+		eventId
+	}, target, deadline)) return "duplicate";
 	let reason = "server-error";
 	try {
-		const { outcome, mark, acknowledged } = await post(payload, timeoutMs, target);
+		if (!remaining()) return "pending";
+		const { outcome, mark, acknowledged } = await post(payload, remaining(), target);
 		if (outcome === "delivered" || outcome === "duplicate") {
+			if (oversized) return await durableReceipt({
+				...body,
+				eventId
+			}, target, deadline) ? outcome : "pending";
 			if (!mark || !acknowledged) return "pending";
 			const { requeued } = reconcileSent(target.url, mark.bootId, { dir: target.dir });
 			if (!retainSent(target.url, eventId, payload, mark, {
 				dir: target.dir,
 				preserveImages: true,
 				requireReceipt: true
-			})) return "pending";
+			})) return await durableReceipt({
+				...body,
+				eventId
+			}, target, deadline) ? outcome : "pending";
 			if (requeued > 0 && target.url === REST_URL) startDrainChild();
 			return outcome;
 		}
@@ -904,6 +973,7 @@ async function handoffObservation(body, timeoutMs, target) {
 		const name = err instanceof Error ? err.name : "";
 		reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
 	}
+	if (oversized) return "pending";
 	if (!appendSpool(target.url, eventId, payload, reason, {
 		dir: target.dir,
 		preserveImages: true,

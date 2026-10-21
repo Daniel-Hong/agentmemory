@@ -1,3 +1,4 @@
+import { createCaptureReceiptPage } from '../capture/receipt-page.js'
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
 import { getEnvVar } from '../config.js'
@@ -112,6 +113,7 @@ export class StateKV {
   readonly durability: ReturnType<typeof createStateDurabilityFence> | null
   readonly observationReader: ReturnType<typeof createObservationReader> | null
   readonly graphFileList: ReturnType<typeof createGraphFileList> | null
+  readonly captureReceiptPage: ReturnType<typeof createCaptureReceiptPage> | null
   readonly auditReader: ReturnType<typeof createAuditReader> | null
 
   constructor(
@@ -126,6 +128,7 @@ export class StateKV {
     this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this }) : null
     this.graphFileList = this.backend === 'file' && storePath ? createGraphFileList({ storePath }) : null
     this.auditReader = this.backend === 'file' && storePath ? createAuditReader({ storePath, kv: this }) : null
+    this.captureReceiptPage = this.backend === 'file' && storePath ? createCaptureReceiptPage(storePath) : null
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {

@@ -41,15 +41,19 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
   }
   async function drain(){while(active.size)await Promise.allSettled([...active]);await readSharing.drain();}
-  async function waitForKeys(kv,selected){
+  async function waitForKeys(kv,selected,{deadline,expectedValues}={}){
+    if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
+    if(expectedValues!==undefined&&(!Array.isArray(expectedValues)||expectedValues.length!==selected.length))throw Error('state_durability_expectations_invalid');
+    const pinned=expectedValues===undefined?undefined:structuredClone(expectedValues);
+    const budgetMs=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.max(0,deadline-clock()));
     const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
     let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED';
     const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began)});
     const failed=()=>{const diagnostics=details();lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
-    async function capture(scope,key){
-      const remaining=timeoutMs-(clock()-began);if(remaining<=0)throw failed();
+    async function capture(scope,key,index){
+      const remaining=budgetMs-(clock()-began);if(remaining<=0)throw failed();
       let timer;
-      try{return await Promise.race([kv.get(scope,key),new Promise((_,reject)=>{timer=setTimeout(()=>reject(failed()),remaining);})]);}
+      try{const value=(await Promise.race([kv.get(scope,key),new Promise((_,reject)=>{timer=setTimeout(()=>reject(failed()),remaining);})]))??null;if(pinned&&!isDeepStrictEqual(value,pinned[index]))throw Object.assign(Error('state_expectation_changed'),{code:'STATE_EXPECTATION_CHANGED'});return pinned?pinned[index]:value;}
       finally{clearTimeout(timer);}
     }
     for(const {scope} of selected)if(!expected.has(scope))expected.set(scope,new Map());
@@ -58,7 +62,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     try{
     try{
       // Bound SDK concurrency; serial capture alone can exhaust the publication deadline.
-      for(let offset=0;offset<selected.length;offset+=4)await Promise.all(selected.slice(offset,offset+4).map(async({scope,key})=>{expected.get(scope).set(key,(await capture(scope,key))??null);capturedKeyCount++;}));
+      for(let offset=0;offset<selected.length;offset+=4)await Promise.all(selected.slice(offset,offset+4).map(async({scope,key},index)=>{expected.get(scope).set(key,(await capture(scope,key,offset+index))??null);capturedKeyCount++;}));
     }catch(error){lastCode=error?.code==='STATE_DURABILITY_TIMEOUT'?'STATE_CAPTURE_TIMEOUT':typeof error?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(error.code)?error.code:'STATE_CAPTURE_FAILED';throw failed();}
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));
     async function check(){
@@ -69,7 +73,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
           if(current===mismatch){measurement?.skipUnchangedMismatch();throw Error('state_namespace_not_committed');}
           unchangedMismatches.delete(file.scope);
         }
-        const controller=new AbortController(),remaining=timeoutMs-(clock()-began);
+        const controller=new AbortController(),remaining=budgetMs-(clock()-began);
         if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         const timer=setTimeout(()=>controller.abort(),remaining);
         try{const read=await readSharing.read(file.path,{keys:new Set(expected.get(file.scope).keys()),checkIntervalBytes:1024*1024,signal:controller.signal,onShared:()=>measurement?.sharedRead(),onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
@@ -80,17 +84,17 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       }
       return {absent,signatures};
     }
-    while(clock()-began<timeoutMs){
+    while(clock()-began<budgetMs){
       const handles=[];
       try{
         // Foreground capture may supersede a drained background value before disk publication.
-        for(const item of selectedRevisions){
+        for(const [index,item] of selectedRevisions.entries()){
           const current=touched.get(item.scope)?.get(item.key)?.revision;
           if(current!==undefined&&current!==item.revision){
             measurement?.enter('capture');
             item.revision=current;
             unchangedMismatches.delete(item.scope);
-            expected.get(item.scope).set(item.key,(await capture(item.scope,item.key))??null);
+            expected.get(item.scope).set(item.key,(await capture(item.scope,item.key,index))??null);
           }
         }
         stage='readback';
@@ -107,7 +111,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
           let current;try{current=signature(await stat(file.path,{bigint:true}));}catch(error){if(error.code!=='ENOENT')throw error;}
           if(current!==signatures.get(file.path))throw Error('state_namespace_changed');
         }
-        if(clock()-began>=timeoutMs)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
+        if(clock()-began>=budgetMs)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         forgetKeys(selectedRevisions);
         lastVerification={status:'verified',at:clock(),...details(),errorCode:null};
         outcome='verified';
@@ -115,7 +119,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       }catch(error){lastCode=typeof error.code==='string'?error.code:typeof error.message==='string'&&error.message.startsWith('state_')?error.message:'STATE_SYNC_FAILED';measurement?.retry(lastCode,stage);}
       finally{measurement?.enter('cleanup');await Promise.allSettled(handles.map(handle=>handle.close()));}
       measurement?.enter('retryWait');
-      await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,timeoutMs-(clock()-began)))));
+      await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,budgetMs-(clock()-began)))));
     }
     throw failed();
     }finally{measurement?.finish(outcome,lastCode,stage);}

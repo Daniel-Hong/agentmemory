@@ -48,8 +48,24 @@ describe("custom legacy outbox handoff to official capture", () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(receipt), { status }));
     const { handoffObservation } = await import("../src/hooks/_capture.js");
     const large = { ...payload, data: { image: "A".repeat(300_000) } };
-    expect(await handoffObservation(large, 100, { url, headers: {}, dir })).toBe(status === 201 ? "pending" : "dropped");
+    expect(await handoffObservation(large, 100, { url, headers: {}, dir })).toBe("pending");
     expect(readdirSync(dir).some(name => name.endsWith(".jsonl"))).toBe(false);
+  });
+  it("releases oversized ownership only for a matching durable receipt without resending", async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const u=new URL(String(input));
+      return new Response(JSON.stringify({key:u.searchParams.get('key'),state:'completed',durable:true}),{status:200});
+    });
+    const { handoffObservation }=await import('../src/hooks/_capture.js');
+    expect(await handoffObservation({...payload,data:{tool_output:'한'.repeat(100_000)}},100,{url,headers:{},dir})).toBe('duplicate');
+    expect(vi.mocked(fetch).mock.calls.every(([,options])=>options?.method==='GET')).toBe(true);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+  it.each([false,'true',undefined])("retains oversized originals when durable proof is %s",async(durable)=>{
+    vi.mocked(fetch).mockImplementation(async (input,options)=>new Response(JSON.stringify(options?.method==='GET'?{key:new URL(String(input)).searchParams.get('key'),state:'completed',durable}:receipt),{status:200}));
+    const {handoffObservation}=await import('../src/hooks/_capture.js');
+    expect(await handoffObservation({...payload,data:{tool_output:'x'.repeat(300_000)}},100,{url,headers:{},dir})).toBe('pending');
+    expect(readdirSync(dir).some(name=>name.endsWith('.jsonl'))).toBe(false);
   });
   it("hands off an unreachable event to the fsynced managed spool", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("synthetic-offline"));

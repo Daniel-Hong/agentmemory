@@ -551,6 +551,10 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
       fix: `They are sent on the next hook call and at every start. To send them now: npx @agentmemory/agentmemory capture --drain, or curl -X POST ${base}/capture/drain ${CURL_AUTH_HEADER}.`,
     });
   }
+  const legacy=capture.legacyOutbox;
+  if(legacy&&(!legacy.available||!legacy.complete||(legacy.records??0)>0)){
+    problems.push({level:'warn',code:'capture-legacy-outbox',message:legacy.available?`${legacy.complete?'':'At least '}${legacy.records??0} local legacy outbox records retain ownership pending verified handoff. Their presence does not prove server-side loss; receipt reconciliation is still required.`:'Local legacy outbox ownership could not be checked; retention and delivery remain unverified.',fix:'Preserve originals. Check body-free capture receipts and the existing client retry worker. Do not delete, reset counters, or bulk replay to clear this warning. This metadata-only local check is cached for up to 60 seconds and does not cover remote clients.'});
+  }
   let dropped = 0;
   let latest: { at: number; reason: string; maxBytes: number; maxAgeHours: number } | null = null;
   for (const spool of capture.spool) {
@@ -564,7 +568,7 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
     problems.push({
       level: "warn",
       code: "capture-spool-dropped",
-      message: `The local capture spool recorded ${plural(dropped, "failed append attempt")} in total (latest reason: ${latest.reason}). Repeated failures may refer to the same event; permanent loss is not established by this counter.`,
+      message: `Historical spool attempts: ${plural(dropped, "failed append attempt")} in total (latest reason: ${latest.reason}). Repeated failures may refer to the same event; permanent loss is not established by this counter.`,
       fix: `The spool holds at most ${Math.round(latest.maxBytes / 1024)} KiB for ${latest.maxAgeHours} hours. Check the host durable outbox and event receipts before deciding whether a record is missing. Preserve pending records; increasing total spool capacity alone does not fix oversized individual records.`,
     });
   }

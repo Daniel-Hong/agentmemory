@@ -1446,7 +1446,7 @@ fi
 | Prometheus / Grafana | iii OTEL + health monitor |
 | Vlastní systémy pluginů | `iii worker add <name>` |
 
-**224 zdrojových souborů · ~53,000 řádků kódu · 3,200+ testů · 317 funkcí · 64 KV scopes**, vše na třech primitivech. Žádné `agentmemory plugin install`. Systém pluginů je samo iii.
+**228 zdrojových souborů · ~53,000 řádků kódu · 3,200+ testů · 320 funkcí · 64 KV scopes**, vše na třech primitivech. Žádné `agentmemory plugin install`. Systém pluginů je samo iii.
 
 ---
 

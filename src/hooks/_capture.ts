@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { capturePayloadDigest } from "../capture/receipt-digest.js";
 import { spawn } from "node:child_process";
 import { resolveClientSecret } from "../secret-store.js";
 import { deriveEventId, hasHostIdentity } from "../capture/event-id.js";
@@ -9,6 +11,7 @@ import {
   reconcileSent,
   retainSent,
   spoolHasRecords,
+  spoolPolicy,
   type SendOutcome,
   type SentMark,
   type SpoolRecord,
@@ -90,17 +93,36 @@ function keepUntilDurable(eventId: string, body: Record<string, unknown>, mark: 
   return { requeued, retained: retainSent(url, eventId, body, mark, { dir: target?.dir }) };
 }
 
-// Legacy outbox ownership changes only after a fsynced managed record exists.
+async function durableReceipt(body: ObserveBody, target: CaptureTarget, deadline: number): Promise<boolean> {
+  try {
+    const key='cap_'+createHash('sha256').update(`${body.project}\u0000${body.sessionId}\u0000${body.eventId}`).digest('hex').slice(0,40);
+    const digest=capturePayloadDigest(body);
+    const budgetMs=Math.min(15_000,deadline-Date.now());if(budgetMs<=0)return false;
+    const query=new URLSearchParams({key,digest,budgetMs:String(budgetMs)});
+    const response=await fetch(`${target.url}/agentmemory/capture/receipts?${query}`,{method:'GET',headers:target.headers,signal:AbortSignal.timeout(budgetMs)});
+    if(!response.ok)return false;
+    const receipt=await response.json() as Record<string,unknown>;
+    return receipt.key===key&&receipt.state==='completed'&&receipt.durable===true;
+  }catch{return false;}
+}
+
+// Legacy ownership requires a fsynced managed copy or a freshly verified durable receipt.
 export async function handoffObservation(body: ObserveBody, timeoutMs: number, target: CaptureTarget): Promise<CaptureHandoffOutcome> {
   const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
   const payload = { ...body, eventId } as unknown as Record<string, unknown>;
+  const deadline=Date.now()+timeoutMs;
+  const remaining=()=>Math.max(0,deadline-Date.now());
+  const oversized=Buffer.byteLength(JSON.stringify(payload))>spoolPolicy().maxRecordBytes;
+  if(oversized&&await durableReceipt({...body,eventId},target,deadline))return 'duplicate';
   let reason = "server-error";
   try {
-    const { outcome, mark, acknowledged } = await post(payload, timeoutMs, target);
+    if(!remaining())return "pending";
+    const { outcome, mark, acknowledged } = await post(payload, remaining(), target);
     if (outcome === "delivered" || outcome === "duplicate") {
+      if(oversized)return await durableReceipt({...body,eventId},target,deadline)?outcome:'pending';
       if (!mark || !acknowledged) return "pending";
       const { requeued } = reconcileSent(target.url, mark.bootId, { dir: target.dir });
-      if (!retainSent(target.url, eventId, payload, mark, { dir: target.dir, preserveImages: true, requireReceipt: true })) return "pending";
+      if (!retainSent(target.url, eventId, payload, mark, { dir: target.dir, preserveImages: true, requireReceipt: true })) return await durableReceipt({...body,eventId},target,deadline)?outcome:"pending";
       if (requeued > 0 && target.url === REST_URL) startDrainChild();
       return outcome;
     }
@@ -109,6 +131,7 @@ export async function handoffObservation(body: ObserveBody, timeoutMs: number, t
     const name = err instanceof Error ? err.name : "";
     reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
   }
+  if(oversized)return "pending";
   if (!appendSpool(target.url, eventId, payload, reason, { dir: target.dir, preserveImages: true, requireReceipt: true }).spooled) return "dropped";
   if (target.url === REST_URL) startDrainChild();
   return "spooled";

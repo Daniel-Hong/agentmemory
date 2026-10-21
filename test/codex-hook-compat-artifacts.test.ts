@@ -17,6 +17,7 @@ let url: string;
 let status: number;
 let invalidReceipt: boolean;
 let bootId: string;
+let durableProof: boolean;
 const requests: Array<{ path: string; body: any }> = [];
 const sha = (value: Buffer) => createHash("sha256").update(value).digest("hex");
 const event = { sessionId: "synthetic-legacy", project: "compat", cwd: "/tmp/compat", hookType: "post_tool_use", timestamp: "2026-10-15T00:00:00Z", data: { tool_output: "x".repeat(4501) } };
@@ -34,7 +35,7 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
 beforeEach(async () => {
-  status = 201; invalidReceipt = false; bootId = "compatboot000001"; requests.length = 0;
+  status = 201; invalidReceipt = false; durableProof = false; bootId = "compatboot000001"; requests.length = 0;
   home = mkdtempSync(join(tmpdir(), "am-compat-home-"));
   vi.stubEnv("AGENTMEMORY_CAPTURE_SPOOL_DIR", join(home, "spool"));
   vi.stubEnv("AGENTMEMORY_CAPTURE_DRAIN_CHILD", "1");
@@ -42,9 +43,10 @@ beforeEach(async () => {
   server = createServer(async (req, res) => {
     let text = ""; for await (const part of req) text += part;
     expect(req.headers.authorization).toBe("Bearer synthetic-secret");
-    requests.push({ path: req.url!, body: JSON.parse(text) });
+    requests.push({ path: req.url!, body: text ? JSON.parse(text) : null });
     res.setHeader("content-type", "application/json");
-    if (req.url === "/agentmemory/context") res.end(JSON.stringify({ context: "synthetic context" }));
+    if (req.url?.startsWith('/agentmemory/capture/receipts?')) { const query=new URL(req.url,'http://fixture').searchParams;res.end(JSON.stringify({key:query.get('key'),state:durableProof?'completed':'unknown',durable:durableProof})); }
+    else if (req.url === "/agentmemory/context") res.end(JSON.stringify({ context: "synthetic context" }));
     else if (req.url !== "/agentmemory/observe") res.end(JSON.stringify({ success: true }));
     else { res.statusCode = status; res.end(JSON.stringify(invalidReceipt ? { observationId: "synthetic-observation" } : status >= 400 ? { success: false, error: "synthetic-refusal" } : { status: status === 200 ? "duplicate" : "accepted", state: "completed", observationId: "synthetic-observation", bootId, durableAfterMs: 60_000 })); }
   });
@@ -119,6 +121,16 @@ describe("explicit custom compatibility build artifacts", () => {
     expect(await instance.flush()).toBe(false);
     const kept = records(join(home, "legacy"), n => n.endsWith(".json"))[0];
     expect(kept.body).toEqual(original.body); expect(kept.attempts).toBe(1);
+  });
+  it.each([503,413,201])("preserves a large original through HTTP %i until a durable receipt exists",async(code)=>{
+    status=code;const instance=await client();await instance.enqueue('/agentmemory/observe',{...event,data:{tool_output:'한😀'.repeat(70_000)}});
+    const original=records(join(home,'legacy'),n=>n.endsWith('.json'))[0];
+    expect(await instance.flush()).toBe(false);
+    const kept=records(join(home,'legacy'),n=>n.endsWith('.json'))[0];expect(kept.body).toEqual(original.body);expect(kept.attempts).toBe(1);
+    kept.nextAttemptAt=0;const name=readdirSync(join(home,'legacy')).find(n=>n.endsWith('.json'))!;writeFileSync(join(home,'legacy',name),JSON.stringify(kept));
+    durableProof=true;requests.length=0;
+    expect(await instance.flush()).toBe(true);expect(records(join(home,'legacy'),n=>n.endsWith('.json'))).toEqual([]);
+    expect(requests.some(r=>r.path==='/agentmemory/observe')).toBe(false);
   });
   it("hands a 503 event to a managed spool with its full raw body and stable ID", async () => {
     status = 503;
