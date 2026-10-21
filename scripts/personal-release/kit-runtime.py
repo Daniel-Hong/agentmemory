@@ -1,6 +1,8 @@
 #!/usr/bin/python3 -I
 """Closed dashboard transaction. Root never imports installed or outputs code."""
 import datetime
+import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -177,6 +179,10 @@ class System:
         require(action in ('start', 'stop'), 'UNSUPPORTED_SERVICE_ACTION')
         subprocess.run(['/usr/bin/systemctl', action, 'agentmemory.service'], check=True, timeout=720, env=ENV, stdin=subprocess.DEVNULL)
 
+    def inactive(self):
+        value = subprocess.check_output(['/usr/bin/systemctl', 'show', 'agentmemory.service', '-p', 'ActiveState', '--value'], text=True, timeout=15, env=ENV).strip()
+        return value in ('inactive', 'failed')
+
     def main_pid(self):
         return int(subprocess.check_output(['/usr/bin/systemctl', 'show', 'agentmemory.service', '-p', 'MainPID', '--value'], text=True, timeout=15, env=ENV).strip())
 
@@ -229,6 +235,7 @@ class Runtime:
         self.stop_requested = False
         self.certified_stopped = False
         self.candidate_background_control_version = 1
+        self.candidate_automatic_memory_recovery = None
         self.previous_recovery_compatible = False
         self.previous_recovery_files = {}
         self.previous_recovery_directory = None
@@ -324,6 +331,7 @@ class Runtime:
         if 'agentmemoryCompatibility' in proposed:
             require(isinstance(profile, dict) and set(profile) == {'backgroundControlVersion', 'automaticMemoryRecovery'} and type(profile['backgroundControlVersion']) is int and profile['backgroundControlVersion'] == 2 and type(profile['automaticMemoryRecovery']) is bool, 'BACKGROUND_CONTROL_PROFILE_INVALID')
         self.candidate_background_control_version = 1 if profile is None else profile['backgroundControlVersion']
+        self.candidate_automatic_memory_recovery = None if profile is None else profile['automaticMemoryRecovery']
         require(all(proposed.get(field, {}) == current.get(field, {}) for field in ('dependencies', 'optionalDependencies', 'engines')), 'DEPENDENCY_REUSE_NOT_COMPATIBLE')
 
     def previous_release_paths(self, directory):
@@ -632,6 +640,8 @@ class Runtime:
                  'runtimeVerified': True, 'verificationComplete': False, 'dataRewound': False,
                  'backgroundHeld': True, 'remoteClientsVerified': False, 'memorySaved': False,
                  'privateBackup': str(self.backup), 'dataIntegrity': self.integrity_result}
+        if hasattr(self, 'stopped_recovery_plan_sha'):
+            value['stoppedRecoveryPlanSha256'] = self.stopped_recovery_plan_sha
         emit(self.receipt, value)
         return {'finished': True}
 
@@ -684,6 +694,144 @@ class Runtime:
                     raise
                 time.sleep(1)
 
+
+    @contextlib.contextmanager
+    def recovery_lock(self):
+        directory = self.paths['private'].parent.parent
+        trusted(directory, self.owner, self.anchor)
+        descriptor = os.open(directory / 'dispatch.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == self.owner and not info.st_mode & 0o077, 'UNSAFE_LOCK')
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError('RECOVERY_BUSY') from None
+            yield
+        finally:
+            os.close(descriptor)
+
+    def reviewed_public(self):
+        trusted(self.public, self.owner, self.anchor)
+        require(sha(self.public / 'kit.json') == sha(self.root / 'kit.json'), 'PUBLIC_KIT_CHANGED')
+        for name, digest in self.kit['files'].items():
+            trusted(self.public / name, self.owner, self.anchor)
+            require(sha(self.public / name) == digest, 'PUBLIC_KIT_CHANGED')
+
+    def recovery_control(self):
+        rows = self.integrity.namespace(self.paths['data'] / 'state_store.db/mem%3Abackground-control%3Av1.bin')
+        saved = rows.get('manual-pause')
+        reasons = {'manual', 'deployment', 'memory', 'legacy_unknown', 'storage_error'}
+        require(isinstance(saved, dict) and saved.get('version') == 2 and saved.get('paused') is True and saved.get('resumePending') is False, 'RECOVERY_CONTROL_UNVERIFIED')
+        holds, budget = saved.get('holds'), saved.get('recovery')
+        require(isinstance(holds, list) and holds and all(isinstance(h, str) and h in reasons for h in holds) and len(set(holds)) == len(holds), 'RECOVERY_CONTROL_UNVERIFIED')
+        require(isinstance(budget, dict) and type(budget.get('attempts')) is int and 0 <= budget['attempts'] <= 3 and type(budget.get('nextAttemptAt')) in (int, float) and math.isfinite(budget['nextAttemptAt']) and budget['nextAttemptAt'] >= 0, 'RECOVERY_CONTROL_UNVERIFIED')
+        return {'holds': sorted(holds), 'recovery': {'attempts': budget['attempts'], 'nextAttemptAt': budget['nextAttemptAt']}}
+
+    def require_stopped(self, receipt):
+        self.system.verify_identity()
+        require(self.system.inactive() and self.system.main_pid() == 0, 'RECOVERY_SERVICE_NOT_STOPPED')
+        worker = int((self.paths['runtime'] / 'worker.pid').read_text())
+        engine = int((self.paths['runtime'] / 'iii.pid').read_text())
+        require(min(worker, engine) > 0 and worker != engine and not self.system.alive(worker) and not self.system.alive(engine), 'RECOVERY_PROCESS_REMAINS')
+        require(receipt.get('pid') == worker and receipt.get('verified') is True and receipt.get('durability', {}).get('synced') is True and receipt['durability'].get('mutationFailures') == 0, 'SHUTDOWN_NOT_VERIFIED')
+
+    def stopped_recovery_snapshot(self, failed_root):
+        allowed = (self.paths['public'], self.paths['private'].parent.parent / 'vault')
+        require(self.root.parent in allowed and self.root.name == self.kit['id'], 'RECOVERY_KIT_PATH_REFUSED')
+        failed_root = Path(failed_root)
+        require(failed_root.is_absolute() and '..' not in failed_root.parts and any(failed_root.parent == parent for parent in allowed), 'RECOVERY_KIT_PATH_REFUSED')
+        failed = Runtime(failed_root, paths=self.paths, owner=self.owner, anchor=self.anchor, service_uid=self.uid, service_gid=self.gid, system=self.system)
+        require(failed.root.name == failed.kit['id'], 'RECOVERY_KIT_PATH_REFUSED')
+        require(self.kit['id'] != failed.kit['id'] and self.version != failed.version and self.baseline == failed.baseline, 'RECOVERY_BASELINE_MISMATCH')
+        previous = read_json(self.baseline['receiptPath'])
+        require(self.baseline['receiptIdentity'].get('applied') is True and all(previous.get(key) == value for key, value in self.baseline['receiptIdentity'].items()), 'BASELINE_RECEIPT_CHANGED')
+        self.reviewed_public();failed.reviewed_public()
+        self.verify_dependency_reuse()
+        require(self.candidate_background_control_version == 2 and self.candidate_automatic_memory_recovery is False, 'RECOVERY_PROFILE_REQUIRED')
+        failed.guard(allow_staged=True)
+        transaction = failed.work / 'transaction.json'
+        trusted(transaction, self.owner, self.anchor)
+        state = read_json(transaction)
+        require(state.get('phase') == 'failed' and state.get('recoveryStatus') == 'manual_required' and state.get('shutdownCertified') is True, 'FAILED_STATE_UNVERIFIED')
+        shutdown = self.paths['runtime'] / 'shutdown-receipt.json'
+        require(state.get('shutdownReceiptSha256') == sha(shutdown), 'SHUTDOWN_RECEIPT_CHANGED')
+        receipt = read_json(shutdown)
+        timestamp = datetime.datetime.fromisoformat(receipt['at'].replace('Z', '+00:00')).timestamp()
+        ended = datetime.datetime.fromisoformat(state['at'].replace('Z', '+00:00')).timestamp()
+        require(math.isfinite(timestamp) and timestamp <= ended, 'SHUTDOWN_RECEIPT_STALE')
+        self.require_stopped(receipt)
+        return {'version': 1, 'recoveryKit': str(self.root), 'recoveryKitSha256': sha(self.root / 'kit.json'), 'failedKit': str(failed_root), 'failedKitSha256': sha(failed_root / 'kit.json'), 'failedTransactionSha256': sha(transaction), 'shutdownReceiptSha256': sha(shutdown), 'dataHashes': self.queues.stopped_hashes(self.paths['data'], self), 'failedCode': failed.post_files(), 'control': self.recovery_control()}
+
+    def prepare_stopped_recovery(self, failed_root, output):
+        with self.recovery_lock():
+            output = Path(output)
+            require(output == self.work / 'stopped-recovery-plan.json' and not output.exists(), 'RECOVERY_PLAN_PATH_REFUSED')
+            require(not self.version.exists() and not self.receipt.exists(), 'RECOVERY_PARTIAL_REQUIRES_INSPECTION')
+            plan = self.stopped_recovery_snapshot(failed_root)
+            trusted(self.work.parent, self.owner, self.anchor)
+            self.work.mkdir(mode=0o700, exist_ok=True)
+            emit(output, plan)
+            return {'planSha256': sha(output), 'prepared': True, 'dataRewound': False}
+
+    def verify_recovery_admission(self, expected):
+        health = self.api('health')
+        control = self.api('background/control')['control']
+        require(health.get('version') == self.kit['version'] and health.get('status') in ('healthy', 'degraded') and health.get('storageDurability', {}).get('mutationFailures') == 0, 'RECOVERY_RUNTIME_UNVERIFIED')
+        require(health.get('memoryPressure', {}).get('automaticMemoryRecovery') is False and control.get('formatVersion') == 2 and control.get('pausedRequested') is True and control.get('status') == 'paused', 'RECOVERY_RUNTIME_UNVERIFIED')
+        require(set(expected['holds']).issubset(control.get('holds', [])) and all(control.get('recovery', {}).get(key) == value for key, value in expected['recovery'].items()), 'RECOVERY_HOLDS_CHANGED')
+
+    def recover_stopped(self, plan_path, expected_sha):
+        with self.recovery_lock():
+            plan_path = Path(plan_path)
+            require(plan_path == self.work / 'stopped-recovery-plan.json' and re.fullmatch('[a-f0-9]{64}', expected_sha or ''), 'RECOVERY_PLAN_PATH_REFUSED')
+            trusted(plan_path, self.owner, self.anchor)
+            require(sha(plan_path) == expected_sha, 'RECOVERY_PLAN_CHANGED')
+            plan = read_json(plan_path)
+            require(plan.get('recoveryKit') == str(self.root) and plan.get('recoveryKitSha256') == sha(self.root / 'kit.json'), 'RECOVERY_KIT_CHANGED')
+            if self.receipt.exists():
+                completed_path = self.work / 'transaction.json'
+                trusted(completed_path, self.owner, self.anchor)
+                completed = read_json(completed_path)
+                require(completed.get('phase') == 'applied_pending_live_acceptance' and completed.get('stoppedRecoveryPlanSha256') == expected_sha, 'RECOVERY_PARTIAL_REQUIRES_INSPECTION')
+                self.system.verify_identity()
+                require(not self.system.inactive() and self.system.main_pid() > 0, 'RECOVERY_RUNTIME_UNVERIFIED')
+                receipt = read_json(self.receipt)
+                require(receipt.get('stoppedRecoveryPlanSha256') == expected_sha, 'RECOVERY_PARTIAL_REQUIRES_INSPECTION')
+                self.guard();self.verify_recovery_admission(plan['control'])
+                return {'alreadyRecovered': True, 'verificationComplete': False, 'dataRewound': False}
+            require(not self.version.exists(), 'RECOVERY_PARTIAL_REQUIRES_INSPECTION')
+            require(self.stopped_recovery_snapshot(plan['failedKit']) == plan, 'RECOVERY_PLAN_CHANGED')
+            self.stop_requested = True;self.certified_stopped = True
+            self.stop_receipt = read_json(self.paths['runtime'] / 'shutdown-receipt.json')
+            try:
+                self.backup_latest()
+                require(self.queues.stopped_hashes(self.paths['data'], self) == plan['dataHashes'], 'COLD_DATA_CHANGED')
+                self.stage_attempted = True
+                run_as_user(self.user_stage, self.uid, self.gid)
+                self.record('versioned_package_verified')
+                self.activate()
+                self.start_attempted = True;self.certified_stopped = False
+                self.system.service('start')
+                self.record('new_version_started')
+                self.verify_runtime();self.verify_recovery_admission(plan['control'])
+                self.preservation = run_as_user(self.user_preserve, self.uid, self.gid)
+                self.stopped_recovery_plan_sha = expected_sha
+                run_as_user(self.user_finish, self.uid, self.gid)
+                self.guard();self.record('applied_pending_live_acceptance', stoppedRecoveryPlanSha256=expected_sha)
+                return {'recovered': True, 'verificationComplete': False, 'dataRewound': False}
+            except BaseException:
+                if self.start_attempted:
+                    try:self.stop()
+                    except BaseException:pass
+                if self.receipt.exists():
+                    def invalidate_receipt():
+                        value = read_json(self.receipt);value.update(applied=False, inspectionRequired=True);emit(self.receipt, value)
+                    try:run_as_user(invalidate_receipt, self.uid, self.gid)
+                    except BaseException:pass
+                self.record('failed', recoveryStatus='manual_required', inspectionRequired=True, shutdownCertified=self.certified_stopped, shutdownReceiptSha256=sha(self.paths['runtime'] / 'shutdown-receipt.json') if self.certified_stopped else None)
+                raise
+
     def apply(self):
         try:
             self.preflight()
@@ -720,16 +868,21 @@ class Runtime:
                     recovery = 'restore_failed'
             safe_errors = {'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED', 'BACKGROUND_CONTROL_PROFILE_INVALID', 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED', 'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
             code = str(error) if str(error) in safe_errors else 'UPDATE_FAILED'
-            self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, rollbackErrorCode=rollback_error, inspectionRequired=recovery not in ('not_needed', 'restored'))
+            self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, rollbackErrorCode=rollback_error, shutdownCertified=self.certified_stopped, shutdownReceiptSha256=sha(self.paths['runtime'] / 'shutdown-receipt.json') if self.certified_stopped else None, inspectionRequired=recovery not in ('not_needed', 'restored'))
             raise
 
 
 def main():
-    require(sys.argv[1:] in (['--apply'], ['--guard'], ['--preserve'], ['--check-install-access']), 'UNSUPPORTED_ARGUMENT')
-    if sys.argv[1] in ('--apply', '--check-install-access'):
+    manual = len(sys.argv) == 4 and sys.argv[1] in ('--prepare-stopped-recovery', '--recover-stopped')
+    require(manual or sys.argv[1:] in (['--apply'], ['--guard'], ['--preserve'], ['--check-install-access']), 'UNSUPPORTED_ARGUMENT')
+    if manual or sys.argv[1] in ('--apply', '--check-install-access'):
         require(os.geteuid() == 0, 'ROOT_REQUIRED')
     runtime = Runtime(Path(__file__).absolute().parent)
-    if sys.argv[1] == '--apply':
+    if sys.argv[1] == '--prepare-stopped-recovery':
+        print(json.dumps(runtime.prepare_stopped_recovery(Path(sys.argv[2]), Path(sys.argv[3]))))
+    elif sys.argv[1] == '--recover-stopped':
+        print(json.dumps(runtime.recover_stopped(Path(sys.argv[2]), sys.argv[3])))
+    elif sys.argv[1] == '--apply':
         os.umask(0o077)
         runtime.apply()
     elif sys.argv[1] == '--guard':
