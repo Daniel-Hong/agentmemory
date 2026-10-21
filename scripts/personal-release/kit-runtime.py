@@ -19,6 +19,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 sys.dont_write_bytecode = True
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
@@ -219,7 +220,24 @@ class Runtime:
         require(self.release['sourceCommit'] == self.kit['sourceCommit'] and self.release['packageVersion'] == self.kit['version'] and sha(self.root / 'package.tgz') == self.kit['packageSha256'], 'CANDIDATE_IDENTITY_MISMATCH')
         require(self.release['artifactHashes'] == self.release['verificationFiles'], 'ARTIFACT_TABLE_MISMATCH')
         compatibility = {name: digest for name, digest in self.release['packageFiles'].items() if name.startswith('plugin/scripts/codex-compat/')}
-        require(len(compatibility) == 13 and compatibility == self.baseline['compatibilityFiles'], 'CLIENT_COMPATIBILITY_CHANGED')
+        self.client_changes = {}
+        transition = self.kit.get('clientTransition')
+        if transition is None:
+            require(len(compatibility) == 13 and compatibility == self.baseline['compatibilityFiles'], 'CLIENT_COMPATIBILITY_CHANGED')
+        else:
+            allowed = {'plugin/scripts/codex-compat/_capture.mjs', 'plugin/scripts/codex-compat/manifest.json'}
+            previous = self.baseline['compatibilityFiles']
+            require(len(compatibility) == 13 and set(compatibility) == set(previous) and {name for name in compatibility if compatibility[name] != previous[name]} == allowed, 'CLIENT_COMPATIBILITY_CHANGED')
+            require(isinstance(transition, dict) and set(transition) == {'version', 'files'} and type(transition['version']) is int and transition['version'] == 1 and isinstance(transition['files'], dict) and set(transition['files']) == allowed, 'CLIENT_TRANSITION_INVALID')
+            retained = Path(self.baseline['clientsRetainedAt'])
+            prefix = self.paths['rootfs'] / 'home/daniel/.local/share/agentmemory-personal/releases'
+            require(retained.is_absolute() and '..' not in retained.parts and retained != prefix and retained.is_relative_to(prefix) and retained.resolve() == retained, 'CLIENT_TRANSITION_PATH_INVALID')
+            for name in sorted(allowed):
+                item = transition['files'][name]
+                target = retained / name
+                require(isinstance(item, dict) and set(item) == {'before', 'after'} and item['before'] == previous[name] == self.baseline['protectedFiles'].get(str(target)) and item['after'] == compatibility[name] and all(re.fullmatch('[a-f0-9]{64}', str(item[k])) for k in ('before', 'after')), 'CLIENT_TRANSITION_INVALID')
+                self.client_changes[str(target)] = {'name': name, **item}
+
         self.queues = load_helper(self.root, 'kit-queues.py', owner, self.anchor)
         self.integrity = load_helper(self.root, 'kit-integrity.py', owner, self.anchor)
         self.version = self.paths['releases'] / (self.kit['version'] + '-' + self.kit['sourceCommit'][:8])
@@ -288,6 +306,7 @@ class Runtime:
             result[str(self.paths['bin'] / name)] = hashlib.sha256(self.wrapper_bytes(name.endswith('preserve-customizations'))).hexdigest()
         result[str(self.paths['dropin'])] = hashlib.sha256(self.dropin_bytes()).hexdigest()
         result.update({str(self.version / name): digest for name, digest in self.release['packageFiles'].items()})
+        result.update({name:item['after'] for name,item in self.client_changes.items()})
         return result
 
     def guard(self, *, before=False, allow_staged=False):
@@ -318,6 +337,113 @@ class Runtime:
                 state = read_json(state_path)
                 require(state.get('sourceCommit') == self.kit['sourceCommit'] and state.get('phase') in ('ready_to_start', 'new_version_started', 'runtime_and_data_verified', 'code_archives_readback_verified'), 'ACTIVE_RECEIPT_MISSING')
         return {'verified': True, 'version': self.kit['version']}
+
+    def require_client_idle(self):
+        if not self.client_changes:
+            return
+        directory = self.paths['rootfs'] / 'proc'
+        require(directory.is_dir(), 'CLIENT_PROCESS_UNVERIFIED')
+        scripts = {str(Path(self.baseline['clientsRetainedAt']) / name) for name in self.baseline['compatibilityFiles'] if name.endswith('.mjs')}
+        for process in directory.iterdir():
+            if not process.name.isdigit():
+                continue
+            try:
+                if process.stat().st_uid != self.uid:
+                    continue
+                with (process / 'cmdline').open('rb') as stream:
+                    arguments = stream.read(16384).split(b'\0')
+                require(not any(os.fsencode(name) in arguments for name in scripts), 'CLIENT_PROCESS_ACTIVE')
+            except FileNotFoundError:
+                continue
+            except PermissionError:
+                raise RuntimeError('CLIENT_PROCESS_UNVERIFIED') from None
+
+    @contextlib.contextmanager
+    def client_exclusion(self):
+        require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
+        acquired = []
+        def tickets(directory):
+            rows = []
+            files = list(directory.iterdir())
+            require(len(files) <= 128, 'CLIENT_LOCK_UNVERIFIED')
+            for path in files:
+                if not path.name.endswith('.json'):
+                    continue
+                try:fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                except FileNotFoundError:continue
+                try:
+                    info = os.fstat(fd)
+                    require(stat.S_ISREG(info.st_mode) and info.st_size <= 4096, 'CLIENT_LOCK_UNVERIFIED')
+                    value = json.loads(os.read(fd, 4097))
+                finally:
+                    os.close(fd)
+                require(isinstance(value, dict) and isinstance(value.get('token'), str) and type(value.get('pid')) is int and value['pid'] > 0 and type(value.get('ticket')) is int and 0 <= value['ticket'] < 2**53-1 and type(value.get('choosing')) is bool and re.fullmatch('[a-f0-9-]{36}',value['token']) is not None and path.name == value['token']+'.json', 'CLIENT_LOCK_UNVERIFIED')
+                try:
+                    os.kill(value['pid'], 0)
+                except ProcessLookupError:
+                    continue
+                rows.append(value)
+            return rows
+        try:
+            for name in ('.worker.lock.tickets', '.flush.lock.tickets'):
+                directory = self.paths['runtime'] / 'hook-outbox' / name
+                require(not directory.is_symlink() and not any(p.is_symlink() for p in directory.parents), 'CLIENT_LOCK_UNVERIFIED')
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                token = str(uuid.uuid4());path = directory / (token + '.json')
+                mine = {'token':token,'pid':os.getpid(),'choosing':True,'ticket':0}
+                atomic(path,(json.dumps(mine)+'\n').encode());acquired.append(path)
+                mine.update(ticket=max([0,*[v['ticket'] for v in tickets(directory)]])+1,choosing=False)
+                atomic(path,(json.dumps(mine)+'\n').encode())
+                deadline = time.monotonic() + 0.15
+                while any(v['token'] != token and (v['choosing'] or (v['ticket'],v['token']) < (mine['ticket'],token)) for v in tickets(directory)):
+                    require(time.monotonic() < deadline, 'CLIENT_PROCESS_ACTIVE')
+                    time.sleep(0.005)
+            yield
+        finally:
+            for path in reversed(acquired):
+                try:
+                    os.unlink(path)
+                    descriptor = os.open(path.parent,os.O_RDONLY | os.O_DIRECTORY)
+                    try:os.fsync(descriptor)
+                    finally:os.close(descriptor)
+                except FileNotFoundError:
+                    pass
+
+    def user_capture_clients(self):
+        require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
+        result = {}
+        for name,item in self.client_changes.items():
+            verify_map({name:item['before']})
+            descriptor = os.open(name,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(descriptor)
+                require(stat.S_ISREG(info.st_mode) and info.st_size <= 1024*1024, 'CLIENT_ROLLBACK_UNVERIFIED')
+                with os.fdopen(descriptor,'rb',closefd=False) as stream:content=stream.read(1024*1024+1)
+                require(len(content) <= 1024*1024 and hashlib.sha256(content).hexdigest() == item['before'], 'CLIENT_ROLLBACK_UNVERIFIED')
+                result[name] = {'hex':content.hex(),'mode':stat.S_IMODE(info.st_mode)}
+            finally:os.close(descriptor)
+        return result
+
+    def user_stage_clients(self):
+        if not self.client_changes:
+            return
+        require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
+        with self.client_exclusion():
+            self.copy_client_files()
+
+    def copy_client_files(self):
+        require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
+        for name, item in self.client_changes.items():
+            expected = item['before']
+            if getattr(self, 'stopped_client_state', None) is not None:
+                require(self.stopped_client_state.get(name) == item['after'], 'CLIENT_RECOVERY_STATE_INVALID')
+                expected = item['after']
+            verify_map({name: expected})
+            source = self.version / item['name']
+            require(sha(source) == item['after'], 'CLIENT_TRANSITION_SOURCE_CHANGED')
+            mode = stat.S_IMODE(Path(name).stat().st_mode)
+            atomic(name, source.read_bytes(), mode)
+        verify_map({name:item['after'] for name,item in self.client_changes.items()})
 
     def verify_dependency_reuse(self):
         current = read_json(self.paths['legacy'] / 'package.json')
@@ -402,6 +528,7 @@ class Runtime:
         return {'uid': os.geteuid(), 'gid': os.getegid(), 'installAccessVerified': True}
 
     def preflight(self):
+        self.require_client_idle()
         self.guard(before=True)
         self.verify_dependency_reuse()
         require(not self.version.exists() and not self.receipt.exists(), 'RELEASE_ALREADY_PRESENT')
@@ -536,6 +663,7 @@ class Runtime:
                 atomic(target, content, 0o755 if member.mode & 0o111 else 0o644)
                 seen.add(relative.as_posix())
         require(seen == set(expected), 'PACKAGE_FILE_SET_CHANGED')
+        self.user_stage_clients()
         (self.version / 'node_modules').symlink_to(self.paths['legacy'] / 'node_modules', target_is_directory=True)
         self.paths['bin'].mkdir(parents=True, exist_ok=True)
         for name in WRAPPERS:
@@ -544,6 +672,8 @@ class Runtime:
         return {'staged': True}
 
     def stage(self):
+        self.require_client_idle()
+        self.rollback_clients = run_as_user(self.user_capture_clients,self.uid,self.gid)
         self.rollback_code = {name: (self.paths['bin'] / name).read_bytes() for name in WRAPPERS}
         self.rollback_dropin = self.paths['dropin'].read_bytes()
         require(all(hashlib.sha256(data).hexdigest() == self.baseline['protectedFiles'][str(self.paths['bin'] / name)] for name, data in self.rollback_code.items()), 'ROLLBACK_CODE_CHANGED')
@@ -640,6 +770,8 @@ class Runtime:
                  'runtimeVerified': True, 'verificationComplete': False, 'dataRewound': False,
                  'backgroundHeld': True, 'remoteClientsVerified': False, 'memorySaved': False,
                  'privateBackup': str(self.backup), 'dataIntegrity': self.integrity_result}
+        if self.client_changes:
+            value['clientTransition'] = self.kit['clientTransition']
         if hasattr(self, 'stopped_recovery_plan_sha'):
             value['stoppedRecoveryPlanSha256'] = self.stopped_recovery_plan_sha
         emit(self.receipt, value)
@@ -655,6 +787,14 @@ class Runtime:
             self.verify_previous_recovery_files()
         def restore_user_code():
             require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
+            if self.client_changes:
+                with self.client_exclusion():
+                    for name,saved in self.rollback_clients.items():
+                        content = bytes.fromhex(saved['hex'])
+                        require(hashlib.sha256(content).hexdigest() == self.client_changes[name]['before'], 'CLIENT_ROLLBACK_UNVERIFIED')
+                        verify_map({name:sha(name)})
+                        require(sha(name) in (self.client_changes[name]['before'], self.client_changes[name]['after']), 'CLIENT_ROLLBACK_UNVERIFIED')
+                        atomic(name,content,saved['mode'])
             for name, content in self.rollback_code.items():
                 atomic(self.paths['bin'] / name, content, 0o755)
             if self.receipt.exists():
@@ -802,6 +942,8 @@ class Runtime:
                 return {'alreadyRecovered': True, 'verificationComplete': False, 'dataRewound': False}
             require(not self.version.exists(), 'RECOVERY_PARTIAL_REQUIRES_INSPECTION')
             require(self.stopped_recovery_snapshot(plan['failedKit']) == plan, 'RECOVERY_PLAN_CHANGED')
+            self.stopped_client_state = plan['failedCode'] if self.client_changes else None
+            self.require_client_idle()
             self.stop_requested = True;self.certified_stopped = True
             self.stop_receipt = read_json(self.paths['runtime'] / 'shutdown-receipt.json')
             try:

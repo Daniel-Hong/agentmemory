@@ -1,5 +1,10 @@
 # Changelog
 
+## Explicit two-file client transition (preparation only)
+
+- Keep default compatibility rejection; allow only administrator-reviewed before/after hashes for the retained Ubuntu capture bundle and manifest, with the other eleven files and hook commands unchanged. Use existing client tickets, user-identity atomic writes and verified code-only rollback; no privileged client-body reads, permission expansion or operating installation.
+- Prepare a same-.15-baseline primary/recovery pair preserving the new client files and v2 hold/recovery budgets. Synthetic tests cover refusal, partial failure, real client lock cooperation and stopped/duplicate recovery. Windows access and actual registration, activation or record processing remain excluded. Details: docs/customizations/TWO-FILE-CLIENT-TRANSITION.md.
+
 ## Capture receipts and single-decode readback (development only)
 
 - Add authenticated body-free exact receipt verification and bounded completed-event metadata pages. Pin receipt expectations and shorten only explicitly supplied deadlines; retain originals on mismatch, timeout, deletion or unavailable proof. Preserve ordinary managed-spool ownership and existing capture backoff.
@@ -50,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.16] — 2026-10-21
 ## [0.9.30-daniel.15] — 2026-10-21
 ## [0.9.30-daniel.11] — 2026-10-20
 ## [0.9.30-daniel.10] — 2026-10-20
@@ -509,6 +515,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.16]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.15...v0.9.30-daniel.16
 [0.9.30-daniel.15]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.11...v0.9.30-daniel.15
 [0.9.30-daniel.11]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.10...v0.9.30-daniel.11
 [0.9.30-daniel.10]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.9...v0.9.30-daniel.10

@@ -99,7 +99,8 @@ def baseline_from_kit(kit_path, receipt_path):
     preservation = receipt['preservationReceipt']
     expected = {**{'runtime/' + name: sha(kit_path / name) for name in ('kit.json', *kit['files'])},
                 **{'installed/' + name: digest for name, digest in release['packageFiles'].items()}}
-    return {**prior, 'protectedFiles': protected, 'receiptPath': str(receipt_path),
+    compatibility = {name:digest for name,digest in release['packageFiles'].items() if name.startswith('plugin/scripts/codex-compat/')}
+    return {**prior, 'compatibilityFiles': compatibility, 'protectedFiles': protected, 'receiptPath': str(receipt_path),
             'receiptIdentity': {name: receipt[name] for name in ('applied', 'candidateHash', 'sourceCommit', 'installedFileHashes')},
             'archives': [*prior['archives'], {'path': preservation['archive'], 'sha256': preservation['archiveSha256'], 'files': expected}]}
 
