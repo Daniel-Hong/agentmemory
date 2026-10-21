@@ -1,5 +1,10 @@
 # Changelog
 
+## Interactive trust preparation wrapper (development only)
+
+- Add fixed-hash, fresh-directory-only SSH staging and optional `--prepare` after a real source review. Keep default attestation false, identify AI review evidence separately, and stop safely when review is incomplete. No operating transition, plan approval, restart or retry is included.
+- Distinguish cancellation before launch from uncertain interruption after preparation starts. Core three-file hashes and trust requirements remain unchanged; all development tests use temporary synthetic fixtures.
+
 ## Fixed administrator trust transition (development only)
 
 - Prepare exact .15/.16/.17 trust lineage, new code-preservation archive, administrator binaries and enrollment policy/installation evidence under existing locks. Preserve original packages, approvals and failed-job proof. No web/sudo/unit permission expansion.

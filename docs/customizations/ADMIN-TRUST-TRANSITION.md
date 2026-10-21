@@ -56,3 +56,21 @@ Full service downtime is not measured by synthetic fixtures. The transition itse
 Temporary fixtures exercise real kit/runner/enrollment code with synthetic service/API adapters. They cover exact .15→trust transition→.16 admission/application/next baseline; .16 post-start failure→.17 recovery; every target-prefix failure, fresh-process partial restore, duplicate/concurrent execution, baseline/evidence changes, receipt/write uncertainty, executable pre-import rejection and stale enrollment policy epochs. Hold reasons/recovery budget and synthetic data remain intact.
 
 These results do not prove actual-host installation, real memory preservation, spool normalization, Windows compatibility, inference performance or a successful production retry. Actual root-only metadata and current service/collector conditions still need separately approved checks. No new external dependency is required; Python standard library, existing systemd/kit tools and SSH administrator authentication suffice.
+
+## Interactive preparation-only wrapper
+
+`prepare-trust-transition.py` simplifies the separately approved staging/prepare phase. It pins the same unchanged three executable hashes, refuses an existing bundle, verifies every input before root staging, and installs an initially **unapproved** `source-review.json`. It does not change the core transition or its trust model.
+
+From an interactive SSH terminal, after reviewing this wrapper:
+
+```sh
+sudo python3 -I /home/daniel/Documents/Codex/2026-10-21/task/agentmemory-diagnostics/scripts/personal-release/prepare-trust-transition.py
+```
+
+The screen identifies the actual Codex AI independent reviewer, exact historical test results and limitations separately from the human source-review attestation. It displays the frozen hashes and code inspection paths. AI evidence does not establish that the operator reviewed the code. An actual reviewer may provide their own identity and the exact `SOURCE REVIEW COMPLETE; PREPARE ONLY` confirmation **only after inspecting the full installed source closure**. This creates the root-owned source review and invokes only `--prepare`. No automatic plan approval, `--check`, `--apply`, restore, service operation or retry is included.
+
+If source review is incomplete, press Enter: the wrapper returns `STAGED_REVIEW_REQUIRED`, leaves approval false and never starts preparation. This is a valid stopping point. Review cannot be replaced by a convenient confirmation phrase. To finish later, inspect the existing bundle and complete the manual source-review/prepare steps; do not rerun the new-bundle installer or remove an existing directory to bypass its refusal.
+
+Success shows the core tool's bounded `prepared:true` result followed by `PREPARE_COMPLETED` with `serviceControlled:false` and `retryStarted:false`. Hash mismatch, existing bundle or staged mutation refuses execution. Before launch, interruption reports `REVIEW_INTERRUPTED_NO_PREPARE`; after launch it reports `PREPARE_INTERRUPTED_INSPECT_RESULT_NO_RETRY` because original snapshots/plan may already exist. Preserve evidence and inspect state before another action. Private configuration, plan contents and records are never displayed by the wrapper.
+
+The original SSH dossier's “NOT yet authorized” title described its creation time. Staging and preparation were subsequently authorized in the conversation; operating trust transition/restart/retry remain separate and unperformed. Actual administrator authentication and honest source-review attestation are still required.
