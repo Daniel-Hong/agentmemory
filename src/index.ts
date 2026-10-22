@@ -50,6 +50,7 @@ import { StateKV } from "./state/kv.js";
 import { VectorIndex } from "./state/vector-index.js";
 import { HybridSearch } from "./state/hybrid-search.js";
 import { registerEmbeddingRecovery } from "./ops/embedding-recovery.mjs";
+import { createEmbeddingReceiptStatus } from "./ops/embedding-receipt-status.mjs";
 import { IndexPersistence, type VectorPublication } from "./state/index-persistence.js";
 import { SHUTDOWN_FLUSH_TIMEOUT_MS, settleWithin } from "./shutdown.js";
 import { registerPrivacyFunction, withWriteScrubbing } from "./functions/privacy.js";
@@ -641,6 +642,11 @@ async function main() {
     await operationalState.embeddingRecovery.initialize();
   }
   setEmbeddingRecovery(operationalState.embeddingRecovery ?? null);
+  const embeddingReceipts = createEmbeddingReceiptStatus({
+    kv, KV, index: vectorIndex,
+    observedPublication: id => operationalState.embeddingRecovery?.observedPublication(id) ?? null,
+  });
+  sdk.registerFunction("mem::embedding-receipts", embeddingReceipts);
 
   const auditMigration = trackBoot(startAuditMigration(kv).catch(() => {}));
 

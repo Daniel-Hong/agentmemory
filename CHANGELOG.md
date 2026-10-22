@@ -1,5 +1,11 @@
 # Changelog
 
+## Compression preparation and recovery evidence (development only)
+
+- Reuse the existing maintained observation budget and point-read the replaced source instead of materializing the entire namespace for each compression; preserve cold initialization, uncertain-state failure, all storage certification and serialized inference. Preserve endedAt on repeated completed session-end requests while allowing existing feature enqueue.
+- Add bounded authenticated body-free embedding evidence queries and process-observed publication proof, explicitly distinct from fresh disk verification. Preserve unknown historical outcomes, source/generation ownership and data. Count all completed fence outcomes independently of the recent-eight detailed history.
+- Separate timestamped recent attempt/failure observations, current pending/quarantine/unknown states and persisted historical totals in HEALTH and dashboard; retain counters and disabled-function history. No operating deployment, collector or permission change. See docs/customizations/CERTIFICATION-RECOVERY-EVIDENCE.md for validation limits and proposed combined rollout.
+
 ## Observation certification outside the session critical section (development only)
 
 - Preserve observation/session mutation and intent registration order, then await readback/fsync certification outside the session lock. Success still requires certification and fresh source/intent ownership; duplicate restoration follows the same rules. Keep LLM serialization, deadlines, retry policy, original source and warning counters unchanged.

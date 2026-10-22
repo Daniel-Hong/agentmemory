@@ -244,3 +244,22 @@ it('keeps previous history atomic and counts loss if bounded history preparation
   measurements.begin([scope], 1)!.finish('verified', null, 'verify');
   expect(measurements.snapshot()).toMatchObject({ unavailable: 1, evicted: 1 });
 });
+
+it('keeps exact completed outcomes when the recent-eight samples are evicted', async () => {
+  const fence = fixture();
+  for (let index = 0; index < 12; index++) await fence.waitForKeys(kv, selected);
+  hooks.permanentReadFailure = true;
+  await expect(fence.waitForKeys(kv, selected)).rejects.toMatchObject({ code: 'STATE_DURABILITY_TIMEOUT' });
+  const view = (fence.snapshot() as any).measurements;
+  expect(view.recent).toHaveLength(8);
+  expect(view.totals).toMatchObject({ completed: 13, verified: 12, failed: 1,
+    failedStages: { readback: 1 }, failureReasons: { namespace_changed: 1 } });
+  expect(JSON.stringify(view.totals)).not.toMatch(/PRIVATE|mem:obs|synthetic/);
+});
+
+it('counts actual fence outcomes even when detailed measurement cannot start', async () => {
+  hooks.measureError = true;
+  const fence = fixture();
+  await expect(fence.waitForKeys(kv, selected)).resolves.toMatchObject({ synced: true });
+  expect((fence.snapshot() as any).measurements.totals).toMatchObject({ completed: 1, verified: 1, failed: 0 });
+});

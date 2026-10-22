@@ -245,6 +245,15 @@ export interface EvalResult {
 }
 
 export interface FunctionMetrics {
+  /** In-memory observed attempts (including retries), never historical job or LLM-call counts. */
+  recent?: {
+    windowMs: number;
+    windowStartAt: string;
+    windowEndAt: string;
+    observedSince: string;
+    attemptCount: number;
+    failureCount: number;
+  };
   qualitySampleCount?: number;
   qualityEpochAt?: number;
   legacyAvgQualityScore?: number;

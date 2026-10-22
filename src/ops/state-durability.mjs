@@ -151,7 +151,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,budgetMs-(clock()-began)))));
     }
     throw failed();
-    }finally{measurement?.finish(outcome,lastCode,stage);}
+    }finally{measurement?.finish(outcome,lastCode,stage);measurements.complete(outcome,stage,lastCode);}
   }
   async function publishScopes(kv,selected){
     const began=clock(),groups=new Map();

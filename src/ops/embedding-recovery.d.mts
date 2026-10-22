@@ -16,8 +16,9 @@ export interface EmbeddingRecovery {
  start(): void;
  stop(): void;
  drain(): Promise<void>;
+ observedPublication(id:string): {verifiedAt:number;fingerprint:string}|null;
  defer(item: EmbeddingIntent, error: unknown, attempted?: boolean): Promise<unknown>;
- snapshot(): {pendingCount: number; completedCount: number; counterEpoch: string; initialized: boolean; lastError: string | null; lastSuccessAt: string | null};
+ snapshot(): {pendingCount: number; completedCount: number; counterEpoch: string; initialized: boolean; lastError: string | null; lastSuccessAt: string | null; publicationEvidence?: {scope: "this_process_observation"; limit: number; retained: number; observed: number; evicted: number; available: boolean; unavailable: number}};
 }
 export function registerEmbeddingRecovery(options: {
  kv: StateKV; KV: typeof import("../state/schema.js").KV;

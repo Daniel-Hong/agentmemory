@@ -997,6 +997,11 @@
     .metric-table th { padding: 6px 8px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-muted); border-bottom: 2px solid var(--border); text-align: left; font-family: var(--font-ui); font-weight: 600; }
     .metric-table td { padding: 5px 8px; border-bottom: 1px solid var(--border-light); }
     .metric-table tr:hover td { background: var(--bg-alt); }
+    .function-metrics { min-width:900px; }
+    .function-metrics th, .function-metrics .metric-num { white-space:nowrap; }
+    .function-metrics th, .function-metrics td { vertical-align:top; }
+    .function-metrics .metric-fn { min-width:140px; overflow-wrap:normal; }
+    .function-metrics td:nth-child(4) { min-width:280px; max-width:420px; }
     .metric-fn { font-family: var(--font-mono); font-size: 11px; color: var(--blue); }
     .metric-num { font-family: var(--font-mono); color: var(--ink); text-align: right; }
 
@@ -1685,7 +1690,7 @@
       graphNode: { term: 'Node', text: 'One entity in the knowledge graph, such as a file, a function, a library or a concept.' },
       graphEdge: { term: 'Edge', text: 'A relation between two entities, such as "uses", "fixes" or "depends on".' },
       circuitBreaker: { term: 'LLM circuit breaker', text: 'Protects against a failing LLM provider. Closed means calls go through normally. Open means too many recent failures, so calls are paused briefly. Half-open means it is testing whether the provider recovered.' },
-      functionCalls: { term: 'Function calls', text: 'How many times agentmemory functions (observe, search, remember, summarize and so on) ran since the worker started, with their failure counts.' },
+      functionCalls: { term: 'Function calls', text: 'Persisted cumulative execution attempts and failed attempts, including retries. The accumulation start is unknown. Recent observed windows and current pending, retrying or quarantined work are separate measures.' },
       contextSaved: { term: 'Context saved (estimate)', text: 'A rough estimate of prompt tokens saved by injecting a compact memory context instead of replaying every observation. It assumes about 80 tokens per observation and a 2,000 token budget per session.' },
       heap: { term: 'Heap', text: 'JavaScript memory the worker is using, compared with the limit it may grow to. Warnings only matter when the process is also large overall.' },
       rss: { term: 'RSS', text: 'Total memory the worker process holds from the operating system, including code and buffers.' },
@@ -1699,7 +1704,7 @@
       audit: { term: 'Audit log', text: 'A record of every change agentmemory made to stored data: saves, deletes, imports, consolidation runs. Use it to see who changed what and when.' },
       workers: { term: 'Workers', text: 'Processes connected to the iii engine. agentmemory runs as one worker.' },
       latency: { term: 'Average latency', text: 'Average time one call of the function took to finish.' },
-      failureRate: { term: 'Failure rate', text: 'Share of calls that failed. Functions that need an LLM show as off, not failing, when no LLM provider is set.' },
+      failureRate: { term: 'Failure rate', text: 'Failed execution attempts divided by cumulative attempts, including retries. This historical rate does not show current unresolved work or prove that earlier failures recovered.' },
       replay: { term: 'Replay', text: 'Plays back a past session step by step: prompts, responses and tool calls in the order they happened, with their real timing. Works for any session agentmemory recorded, from any connected agent.' },
       profile: { term: 'Project profile', text: 'What agentmemory has learned about one project: the concepts and files that come up most and the conventions it noticed.' },
       heatmap: { term: 'Activity heatmap', text: 'One square per day. The shade is how many observations the sessions that started that day recorded; darker means more. Only the sessions loaded in this viewer are counted, and the note under the grid says how many that is.' }
@@ -2527,12 +2532,25 @@
       var available = pressure && Number.isFinite(pressure.availableBytes) ? (pressure.availableBytes/1073741824).toFixed(1)+' GiB' : '미확인';
       return '<p class="hnote" role="status">호스트 메모리: '+esc(label || '미확인')+' · 가용 '+esc(available)+'</p>';
     }
-    function metricRecentFailures(metric, previous) {
-      if (!previous) return '다음 조회부터 새 실패 비교';
-      if (![metric.totalCalls,metric.failureCount,previous.totalCalls,previous.failureCount].every(function(v) { return Number.isSafeInteger(v) && v >= 0; })) return '집계 기준 확인 불가';
+    function metricRecentObservation(metric, previous, observedAt) {
+      function time(value) { return typeof value === 'string' || typeof value === 'number' ? new Date(value).getTime() : NaN; }
+      function count(value) { return Number.isSafeInteger(value) && value >= 0; }
+      var recent = metric.recent, invalid = '';
+      if (recent) {
+        var start = time(recent.windowStartAt), end = time(recent.windowEndAt), epoch = time(recent.observedSince);
+        if ([start,end,epoch].every(Number.isFinite) && epoch <= start && start <= end && count(recent.windowMs) && recent.windowMs === end-start && count(recent.attemptCount) && count(recent.failureCount) && recent.failureCount <= recent.attemptCount) {
+          return {failures:recent.failureCount,text:'서버 관측 '+new Date(start).toISOString()+' → '+new Date(end).toISOString()+' · 실패 '+recent.failureCount+'건 / 시도 '+recent.attemptCount+'건 · 관측 시작 '+new Date(epoch).toISOString()+(recent.windowMs === 0 ? ' · 관측 시작 직후' : '')};
+        }
+        invalid = '서버 관측 집계 확인 불가 · ';
+      }
+      if (!previous) return {failures:null,text:invalid+'다음 조회부터 새 실패 비교 · 최근 관측 미확인'};
+      if (![metric.totalCalls,metric.failureCount,previous.totalCalls,previous.failureCount].every(count) || metric.failureCount > metric.totalCalls || previous.failureCount > previous.totalCalls) return {failures:null,text:invalid+'집계 기준 확인 불가'};
       var calls = metric.totalCalls-previous.totalCalls, failures = metric.failureCount-previous.failureCount;
-      if (calls < 0 || failures < 0 || failures > calls) return '집계 기준 변경 · 다음 조회부터 비교';
-      return '직전 조회 이후 실패 +'+failures+'건 / 호출 +'+calls+'건';
+      if (calls < 0 || failures < 0 || failures > calls) return {failures:null,text:invalid+'집계 기준 변경 · 다음 조회부터 비교'};
+      var from = time(previous.observedAt), to = time(observedAt);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) return {failures:null,text:invalid+'관측 시각 미확인 · 최근 실패 비교 불가'};
+      if (from >= to) return {failures:null,text:invalid+'관측 구간 미확인 · 다음 조회부터 비교'};
+      return {failures:failures,text:invalid+'성공 조회 사이 '+new Date(from).toISOString()+' → '+new Date(to).toISOString()+' · 실패 +'+failures+'건 / 시도 +'+calls+'건'};
     }
     function metricQuality(metric) {
       var known = Number.isSafeInteger(metric.qualitySampleCount) && metric.qualitySampleCount > 0, score = metric.avgQualityScore;
@@ -2545,6 +2563,16 @@
       var label = ({current:'정상',running:'생성 중',queued:'생성 대기',retrying:'재시도 대기',paused:'일시정지 됨',disabled:'꺼짐',error:'오류 · 점검 필요',stopped:'종료됨'})[status] || '미확인';
       function date(value) { var d = new Date(value); return value && !isNaN(d.getTime()) ? d.toLocaleString() : '미확인'; }
       return '<p class="hnote" data-snapshot-status="'+esc(status || 'unknown')+'">스냅샷: '+esc(label)+' · 마지막 생성 '+esc(date(snapshot.lastSuccessAt))+' · 다음 점검 '+esc(date(snapshot.nextCheckAt))+(snapshot.nextAttemptAt ? ' · 다음 재시도 '+esc(date(snapshot.nextAttemptAt)) : '')+'<br>부분 내보내기(전체 데이터 백업 아님)</p>';
+    }
+    function storageDurabilityHtml(durability) {
+      var measurements = durability && durability.measurements, totals = measurements && measurements.totals;
+      function count(value) { return Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString()+'건' : '미확인'; }
+      var since = totals && typeof totals.sinceAt === 'number' && Number.isFinite(totals.sinceAt) ? new Date(totals.sinceAt) : null;
+      var html = '<section aria-label="저장 검증 측정"><h4>저장 검증 측정</h4><p class="hnote">'+(totals ? '프로세스 집계 · 시작 '+esc(since && !isNaN(since.getTime()) ? since.toISOString() : '미확인')+' · 완료 '+count(totals.completed)+' · 검증 확인 '+count(totals.verified)+' · 실패 '+count(totals.failed)+' · 결과 미상 '+count(totals.unknown) : '프로세스 집계 미확인 · 집계 시작 미확인')+'</p>';
+      if (totals && totals.saturated) html += '<p class="hnote" role="status">카운터 포화 · 표시 건수는 하한이며 정확한 총량은 미확인입니다.</p>';
+      var recent = measurements && Array.isArray(measurements.recent) ? measurements.recent.length.toLocaleString() : '미확인';
+      html += '<p class="hnote">최근 표본 '+recent+(measurements && Number.isSafeInteger(measurements.historyLimit) && measurements.historyLimit >= 0 ? ' / '+count(measurements.historyLimit) : '')+' · 축출 '+count(measurements && measurements.evicted)+' · 측정 불가 '+count(measurements && measurements.unavailable)+'</p>';
+      return html+'<p class="hnote">완료 집계는 검증 호출 단위이며 고유 작업 수나 최초 시도 횟수가 아닙니다. 최근 표본은 제한된 기록이며, 축출되어도 프로세스 집계는 유지됩니다. 실패·결과 미상은 저장이 검증됐음을 뜻하지 않습니다.</p></section>';
     }
     function inspectionErrorText(error) {
       return ({operating_guide_unavailable:'최신 운영 가이드를 확인할 수 없습니다.',codex_timeout:'점검 제한 시간(10분)을 초과했습니다.',codex_execution_failed:'Codex 실행 또는 인증에 실패했습니다.',codex_incomplete_response:'Codex 완료 응답을 확인하지 못했습니다.',service_restarted:'서버 종료로 중단됐습니다. 자동 재실행하지 않습니다.',inspection_cooldown:'연속 요청을 줄이기 위해 30초 후 다시 요청하세요.',job_record_write_failed:'점검 기록을 저장하지 못했습니다.',request_connection_failed:'접수 결과 미확정 · 상태를 다시 조회하세요.'})[error] || '점검 상태를 확인할 수 없습니다. 상태를 다시 조회하세요.';
@@ -2683,15 +2711,16 @@
       var active = Number.isSafeInteger(control.activeOperations) ? control.activeOperations.toLocaleString()+'개' : '미확인';
       var recentAt = [h.captureProgress && h.captureProgress.lastCompletedAt,h.embeddingRecovery && h.embeddingRecovery.lastSuccessAt].filter(function(v){return v && Number.isFinite(Date.parse(v));}).sort().pop();
       html += '<div class="operations-summary"><div><span>남은 처리 단계: </span><strong>'+esc(pendingLabel)+'</strong><small>요약·압축·그래프·임베딩·기억 정리</small></div><div><span>진행 중 작업</span><strong>'+esc(active)+'</strong><small>백그라운드에 승인된 작업</small></div><div><span>요약·후처리 격리: </span><strong>'+(operations.available ? work.quarantined+'건' : '미확인')+'</strong><small>사용자 점검이 필요한 기록</small></div></div>';
-      html += '<p class="hnote">마지막 조회 '+esc(operations.checkedAt ? new Date(operations.checkedAt).toLocaleString() : '미확인')+' · 최근 수집·임베딩 완료 '+esc(recentAt ? new Date(recentAt).toLocaleTimeString() : '미확인')+' · 과거 누적 실패와 현재 오류를 구분합니다.</p>';
+      html += '<p class="hnote">마지막 조회 '+esc(operations.checkedAt ? new Date(operations.checkedAt).toLocaleString() : '미확인')+' · 최근 수집·임베딩 완료 '+esc(recentAt ? new Date(recentAt).toLocaleTimeString() : '미확인')+' · 과거 누적 실패와 현재 오류를 구분합니다. 현재 대기·재시도·격리와 요청 결과 미확정은 별도 상태이며, 과거 실패의 회복 여부는 누적 수치만으로 확인할 수 없습니다.</p>';
       var unknownKinds = [['embedding','임베딩'],['features','기억 정리']].filter(function(pair) { return work.totals[pair[0]] === null; }).map(function(pair) { return pair[1]; });
       if (total === null) html += '<p class="hnote">'+(operations.available ? '미확인 세션 '+work.unknownSessionsCount+'개 / 단계 '+unknownStages+'개' : '미확인 세션 / 단계 수: 조회 실패로 확인 불가')+(unknownKinds.length ? ' · '+unknownKinds.join('·')+' 잔여량 미확인' : '')+'</p>';
       if (!operations.available) html += '<p role="status" class="hnote">세션 조회 실패 또는 조회 전 · 대기 작업 수 미확인</p>';
       html += operationsProgressHtml(work,h,control);
       var embeddingCode = (h.embeddingRecovery || {}).lastError;
-      if (embeddingCode && embeddingCode !== 'CAPTURE_PENDING_EMBEDDING' && /^[A-Z0-9_]{1,80}$/.test(embeddingCode)) html += '<p class="operations-notice" role="status">임베딩: 최근 실패 또는 재시도 기록 · <code>'+esc(embeddingCode)+'</code> · 최근 완료량과 함께 확인하세요.</p>';
+      if (embeddingCode && embeddingCode !== 'CAPTURE_PENDING_EMBEDDING' && /^[A-Z0-9_]{1,80}$/.test(embeddingCode)) html += '<p class="operations-notice" role="status">임베딩: 마지막 오류 기록 · <code>'+esc(embeddingCode)+'</code> · 현재 처리 상태와 별도로 확인하세요.</p>';
       html += '<details id="operations-details"'+(operations.detailsOpen ? ' open' : '')+'><summary>오류·공급자·세션 상세</summary><div class="hnote">같은 기록이 여러 처리 단계에 포함될 수 있습니다. 세션 종료와 요약 완료는 다릅니다. 격리 기록은 자동 재처리하지 않습니다.</div>';
       html += memoryPressureStatus(h.memoryPressure)+snapshotStatus(h.snapshotRecovery)+readinessStatusHtml(h.providerReadiness);
+      html += storageDurabilityHtml(h.storageDurability);
       if (work.rows.length) {
         html += '<div class="table-wrap"><table class="metric-table"><thead><tr><th>프로젝트 / 세션</th><th>상태 / 오류 필드</th><th>요약·압축·그래프</th></tr></thead><tbody>';
         work.rows.slice(0,100).forEach(function(row) {
@@ -2726,7 +2755,8 @@
           operations.error = h ? '' : 'Health 조회 실패 · 이전 상태는 최신 상태가 아닐 수 있습니다.';
           if (h) {
             operations.metricPrevious = operations.metrics; operations.metrics = {};
-            (h.functionMetrics || []).forEach(function(m) { operations.metrics[m.functionId] = {totalCalls:m.totalCalls,failureCount:m.failureCount}; });
+            var metricsObservedAt = new Date().toISOString();
+            (h.functionMetrics || []).forEach(function(m) { operations.metrics[m.functionId] = {totalCalls:m.totalCalls,failureCount:m.failureCount,observedAt:metricsObservedAt}; });
             operations.health = h;
           }
           operations.available = !!(sessions && Array.isArray(sessions.sessions));
@@ -3001,13 +3031,12 @@
         html += statCard({ label: 'Memory use', help: 'heap', tab: 'health', value: heapUsed + ' MB', sub: 'of ' + heapLimit + ' MB heap · RSS ' + mb(snap.memory.rss) + ' MB' });
       }
       html += statCard({ label: 'Uptime', help: 'uptime', tab: 'health', value: formatUptime(snap.uptimeSeconds), sub: snap.eventLoopLagMs !== undefined ? 'event loop ' + Number(snap.eventLoopLagMs).toFixed(1) + ' ms behind' : '&nbsp;' });
-      var liveMetrics = fMetrics.filter(function(m) { return !m.offWithoutLlm; });
-      var offCount = fMetrics.length - liveMetrics.length;
-      var totalCalls = liveMetrics.reduce(function(a, m) { return a + (m.totalCalls || 0); }, 0);
-      var totalFails = liveMetrics.reduce(function(a, m) { return a + (m.failureCount || 0); }, 0);
-      var callsSub = liveMetrics.length ? (totalFails ? fmtNum(totalFails) + ' failed' : 'no failures') + ' across ' + liveMetrics.length + ' function' + (liveMetrics.length === 1 ? '' : 's') : 'none recorded yet';
-      if (offCount) callsSub += ' · ' + offCount + ' off, no LLM';
-      html += statCard({ label: 'Function calls', help: 'functionCalls', tab: 'health', value: fmtNum(totalCalls), sub: callsSub });
+      var offCount = fMetrics.filter(function(m) { return m.offWithoutLlm; }).length;
+      var totalCalls = fMetrics.reduce(function(a, m) { return a + (m.totalCalls || 0); }, 0);
+      var totalFails = fMetrics.reduce(function(a, m) { return a + (m.failureCount || 0); }, 0);
+      var callsSub = fMetrics.length ? fmtNum(totalFails) + ' 누적 실패 · 집계 시작 미확인 · ' + fMetrics.length + ' function' + (fMetrics.length === 1 ? '' : 's') : 'none recorded yet';
+      if (offCount) callsSub += ' · ' + offCount + ' currently off, no LLM';
+      html += statCard({ label: '누적 실행 시도', help: 'functionCalls', tab: 'health', value: fmtNum(totalCalls), sub: callsSub });
       var cbState = cb && cb.state ? cb.state : 'not in use';
       html += statCard({ label: 'LLM breaker', help: 'circuitBreaker', tab: 'health', value: '<span class="cb-indicator ' + (cbState === 'closed' ? 'cb-closed' : cbState === 'open' ? 'cb-open' : cbState === 'half-open' ? 'cb-half-open' : '') + '">' + esc(cbState) + '</span>', sub: cb ? (cb.state === 'closed' ? 'LLM calls flowing normally' : (cb.failures || 0) + ' recent failures') : (store.provider === 'noop' ? 'no LLM provider configured' : '&nbsp;') });
       html += '</div>';
@@ -3049,17 +3078,20 @@
       html += '<details class="card" style="margin-top:16px;"><summary class="card-title" style="cursor:pointer;margin-bottom:0;border-bottom:none;">Function metrics and workers ' + help('functionCalls') + '</summary>';
       if (fMetrics.length > 0) {
         var sorted = fMetrics.slice().sort(function(a, b) { return (b.totalCalls || 0) - (a.totalCalls || 0); });
-        html += '<div class="table-wrap" style="margin-top:10px;"><table class="metric-table"><tr><th>Function</th><th style="text-align:right">Calls</th><th style="text-align:right">Failed</th><th style="text-align:right">Avg latency ' + help('latency') + '</th></tr>';
+        html += '<div class="table-wrap" style="margin-top:10px;"><table class="metric-table function-metrics"><caption>저장된 누적 이력 · 집계 시작 미확인 · 실행 시도에는 재시도가 포함됩니다.</caption><tr><th>Function</th><th style="text-align:right">누적 실행 시도</th><th style="text-align:right">누적 실패</th><th>최근 관측 실패 / 시도</th><th style="text-align:right">Avg latency ' + help('latency') + '</th></tr>';
         sorted.forEach(function(m) {
+          var observed = (operations.metrics || {})[m.functionId];
+          var recent = metricRecentObservation(m,(operations.metricPrevious || {})[m.functionId],observed && observed.totalCalls === m.totalCalls && observed.failureCount === m.failureCount ? observed.observedAt : null);
           var latencyColor = m.avgLatencyMs > 1000 ? 'var(--red)' : m.avgLatencyMs > 200 ? 'var(--yellow)' : 'var(--green)';
           html += '<tr><td class="metric-fn">' + esc(m.functionId) + '</td>' +
             '<td class="metric-num">' + fmtNum(m.totalCalls) + '</td>' +
-            '<td class="metric-num" style="color:' + (m.failureCount > 0 ? 'var(--red)' : 'var(--ink-faint)') + '">' + fmtNum(m.failureCount) + '</td>' +
+            '<td class="metric-num" style="color:var(--ink-muted)">' + fmtNum(m.failureCount) + '</td>' +
+            '<td style="color:' + (recent.failures > 0 ? 'var(--red)' : 'var(--ink-muted)') + '">'+esc(recent.text)+'</td>' +
             '<td class="metric-num" style="color:' + latencyColor + '">' + Math.round(m.avgLatencyMs || 0) + ' ms</td></tr>';
         });
         html += '</table></div>';
       } else {
-        html += '<p style="font-size:12px;color:var(--ink-muted);margin-top:10px;">No function has run since the worker started. Calls appear here as agents observe, search and save.</p>';
+        html += '<p style="font-size:12px;color:var(--ink-muted);margin-top:10px;">저장된 함수 통계가 없습니다. 누적 집계 시작과 최근 관측 구간은 미확인입니다.</p>';
       }
       var workers = snap.workers || [];
       if (workers.length > 0) {
@@ -7720,27 +7752,28 @@
       var fns = (operations.health.functionMetrics || (r && r.functions) || store.functionMetrics || []).slice().sort(function(a, b) { return (b.totalCalls || 0) - (a.totalCalls || 0); });
       var html = '<div class="card" style="margin-top:16px;"><div class="card-title">Functions ' + help('functionCalls') + '</div>';
       if (!fns.length) {
-        return html + emptyState({ compact: true, title: 'No function has run since the worker started',
+        return html + emptyState({ compact: true, title: '저장된 함수 통계 없음',
           what: 'Call counts, failures and latency for every agentmemory function (observe, search, remember, summarize).',
-          why: 'Nothing has called the worker yet in this process. Rows appear here live as agents observe, search and save.',
+          why: '함수 통계와 관측 구간이 아직 확인되지 않았습니다. 누적 이력은 재시작 이후에도 유지됩니다.',
           steps: [{ label: 'Make a first call from a terminal:', cmd: curlPost('smart-search', { query: 'test' }) }] }) + '</div>';
       }
-      html += '<p class="hnote">누적 실패는 과거 이력입니다. 새 실패는 직전 운영 현황 조회와 비교하며, 집계가 초기화되면 다음 조회부터 다시 비교합니다.</p>';
-      html += '<div class="table-wrap"><table class="metric-table"><tr><th>Function</th><th style="text-align:right">Calls</th><th style="text-align:right">누적 실패</th><th>직전 조회 이후</th><th>품질 / 표본 기간</th><th style="text-align:right">누적 실패율 ' + help('failureRate') + '</th><th style="text-align:right">Avg latency ' + help('latency') + '</th></tr>';
+      html += '<p class="hnote">저장된 누적 실행 시도·실패는 재시작 이후에도 유지되며 집계 시작 미확인입니다. 실행 시도에는 재시도가 포함됩니다. 최근 관측은 표시된 구간에 한하며 현재 대기·재시도·격리 또는 개별 실패의 회복 여부와 다릅니다. 서버 관측이 없으면 성공한 두 조회 사이의 차이만 비교합니다.</p>';
+      html += '<div class="table-wrap"><table class="metric-table function-metrics"><tr><th>Function</th><th style="text-align:right">누적 실행 시도</th><th style="text-align:right">누적 실패</th><th>최근 관측 실패 / 시도</th><th>품질 / 표본 기간</th><th style="text-align:right">누적 실패율 ' + help('failureRate') + '</th><th style="text-align:right">Avg latency ' + help('latency') + '</th></tr>';
       fns.forEach(function(f) {
         var total = f.totalCalls || 0;
         var rate = total > 0 ? (f.failureCount || 0) / total : 0;
         var reported = r && (r.functions || []).find(function(row) { return row.functionId === f.functionId; });
         var off = !!(f.offWithoutLlm || reported && reported.offWithoutLlm);
-        var previous = operations.metricPrevious[f.functionId], quality = metricQuality(f);
-        var recent = metricRecentFailures(f,previous);
-        var bad = !off && previous && f.totalCalls >= previous.totalCalls && f.failureCount > previous.failureCount;
+        var previous = (operations.metricPrevious || {})[f.functionId], quality = metricQuality(f);
+        var observed = (operations.metrics || {})[f.functionId];
+        var recent = metricRecentObservation(f,previous,observed && observed.totalCalls === f.totalCalls && observed.failureCount === f.failureCount ? observed.observedAt : null);
+        var bad = recent.failures > 0;
         html += '<tr><td class="metric-fn">' + esc(f.functionId) + (off ? ' <span class="badge badge-muted">off, no LLM</span>' : '') + '</td>' +
           '<td class="metric-num">' + fmtNum(total) + '</td>' +
-          '<td class="metric-num" style="color:var(--ink-muted)">' + (off ? '-' : fmtNum(f.failureCount || 0)) + '</td>' +
-          '<td style="color:'+(bad ? 'var(--red)' : 'var(--ink-muted)')+'">'+esc(recent)+'</td>' +
+          '<td class="metric-num" style="color:var(--ink-muted)">' + fmtNum(f.failureCount || 0) + '</td>' +
+          '<td style="color:'+(bad ? 'var(--red)' : 'var(--ink-muted)')+'">'+esc(recent.text)+'</td>' +
           '<td>'+esc(quality.value)+'<div class="hnote">'+esc(quality.detail)+'</div></td>' +
-          '<td class="metric-num" style="color:' + (bad ? 'var(--red)' : 'var(--ink-muted)') + '">' + (off ? 'off' : Math.round(rate * 100) + '%') + '</td>' +
+          '<td class="metric-num" style="color:var(--ink-muted)">' + (total > 0 ? Math.round(rate * 100) + '%' : '—') + '</td>' +
           '<td class="metric-num">' + Math.round(f.avgLatencyMs || 0) + ' ms</td></tr>';
       });
       return html + '</table></div></div>';

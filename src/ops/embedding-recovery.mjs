@@ -8,6 +8,20 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   const state={pendingCount:0,completedCount:0,counterEpoch:randomUUID(),initialized:false,lastError:null,lastSuccessAt:null};
   let pumping=false,reconciled=false,stopped=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
   const active=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
+  // Historical proof observed by this worker, never a fresh disk-verification cache.
+  const observedPublications=new Map();
+  let publicationObservations=0,publicationEvidenceEvicted=0,publicationEvidenceUnavailable=0,publicationEvidenceAvailable=true;
+  function evidenceFailure(){publicationEvidenceUnavailable++;publicationEvidenceAvailable=false;}
+  function forgetPublication(id){try{observedPublications.delete(id);}catch{evidenceFailure();}}
+  function observePublication(id,fingerprint){
+    try{
+      const verifiedAt=clock();
+      if(!Number.isFinite(verifiedAt)||verifiedAt<0)throw Error('evidence_clock_invalid');
+      observedPublications.delete(id);
+      observedPublications.set(id,{verifiedAt,fingerprint});publicationObservations++;
+      if(observedPublications.size>512){observedPublications.delete(observedPublications.keys().next().value);publicationEvidenceEvicted++;}
+    }catch{evidenceFailure();}
+  }
   const key=id=>'agentmemory:vector:'+id;
   const intentKey=id=>'agentmemory:vector-intent:'+id;
   function track(promise){active.add(promise);promise.then(()=>active.delete(promise),()=>active.delete(promise));return promise;}
@@ -21,6 +35,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   function pending(item){pendingIds.add(item.id);state.pendingCount=pendingIds.size;}
   function completed(item){pendingIds.delete(item.id);state.pendingCount=pendingIds.size;}
   async function retainUnlocked(item,error,attempted) {
+    forgetPublication(item.id);
     await initialize();
     const old=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
     const attempts=(old?.attempts??0)+(attempted?1:0);
@@ -116,6 +131,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     return (String(row.title??'')+' '+String(item.kind==='memory'?(row.content??''):(row.narrative??''))).slice(0,16000);
   }
   async function discardUnlocked(item){
+    forgetPublication(item.id);
     try{
       if(await current(item)!==null)return false;
       index.remove(item.id);accepted.delete(item.id);
@@ -148,6 +164,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
           if(latest===null){await discardUnlocked(item);return;}
           if(digest(latest)!==fingerprint){await retainUnlocked(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);await certifyIntent(item);return;}
           state.lastSuccessAt=new Date(clock()).toISOString();state.lastError=null;
+          observePublication(item.id,fingerprint);
           if(pendingIds.has(item.id))state.completedCount++;
           completed(item);
         });
@@ -172,6 +189,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     const generation=randomUUID();
     // Durable intent precedes inference and mutation; restart always reads canonical text.
     await withKeyedLock(intentKey(item.id),async()=>{
+      forgetPublication(item.id);
       const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
       await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...queued,id:item.id,sessionId:item.sessionId,kind:item.kind,attempts:queued?.attempts??0,retryAt:queued?.retryAt??0,generation,fingerprint,phase:inMemory?'embedded':'queued'});
       pending(item);
@@ -285,5 +303,8 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
   function start(){if(stopped||interval)return;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});interval=setInterval(()=>void pump().catch(error=>{state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});}),15000);interval.unref();}
   if(schedule)start();
-  return {add,enqueue,prepareEnqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
+  return {add,enqueue,prepareEnqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,
+    observedPublication:id=>{try{return publicationEvidenceAvailable?structuredClone(observedPublications.get(id)??null):null;}catch{evidenceFailure();return null;}},
+    defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),
+    snapshot:()=>structuredClone({...state,publicationEvidence:{scope:'this_process_observation',limit:512,retained:observedPublications.size,observed:publicationObservations,evicted:publicationEvidenceEvicted,available:publicationEvidenceAvailable,unavailable:publicationEvidenceUnavailable}})};
 }

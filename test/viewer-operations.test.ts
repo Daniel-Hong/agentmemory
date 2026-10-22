@@ -20,7 +20,7 @@ function context(names: string[], extra: Record<string, unknown> = {}) {
   return ctx;
 }
 function fixtures(extra: Record<string, unknown> = {}) {
-  return context(["esc", "fmtNum", "humanizeHealthFlag", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
+  return context(["esc", "fmtNum", "humanizeHealthFlag", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "storageDurabilityHtml", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
     operations: { health: {}, sessions: [], control: null, job: null, available: false, loading: false, error: '', controlError: '', jobError: '', checking: false, submitting: false, controlBusy: false, detailsOpen: false },
     store: {}, conn: { state: 'offline' }, autoRefresh: { enabled: true, seconds: 30 }, ...extra,
   });
@@ -116,10 +116,10 @@ describe("custom operations panel", () => {
 
 describe("operational metadata", () => {
   it("compares only matching monotonic counters, leaving old failures historical", () => {
-    const c = context(['metricRecentFailures']);
-    expect(c.metricRecentFailures({totalCalls:110,failureCount:90},{totalCalls:100,failureCount:90})).toContain('실패 +0');
-    expect(c.metricRecentFailures({totalCalls:1,failureCount:1},{totalCalls:100,failureCount:90})).toContain('집계 기준 변경');
-    expect(c.metricRecentFailures({totalCalls:2,failureCount:1},null)).toContain('다음 조회');
+    const c = context(['metricRecentObservation']);
+    expect(c.metricRecentObservation({totalCalls:110,failureCount:90},{totalCalls:100,failureCount:90,observedAt:1000},2000).text).toContain('실패 +0');
+    expect(c.metricRecentObservation({totalCalls:1,failureCount:1},{totalCalls:100,failureCount:90}).text).toContain('집계 기준 변경');
+    expect(c.metricRecentObservation({totalCalls:2,failureCount:1},null).text).toContain('다음 조회');
   });
   it("shows missing quality samples and CPU capacity as unknown", () => {
     const c = context(['metricQuality','cpuDisplay']);
@@ -129,7 +129,7 @@ describe("operational metadata", () => {
     expect(c.cpuDisplay({capacityPercent:25})).toMatchObject({percent:null,label:'CPU (1코어)'});
   });
   it("includes new failures and quality periods in the existing functions card", () => {
-    const c = context(['esc','metricRecentFailures','metricQuality','functionsCardHtml'], {store:{functionMetrics:[]},operations:{health:{functionMetrics:[{functionId:'mem::summary',totalCalls:100,failureCount:90,qualitySampleCount:2,avgQualityScore:0,qualityEpochAt:1000}]},metricPrevious:{'mem::summary':{totalCalls:90,failureCount:90}}},help:()=>'',fmtNum:String,emptyState:()=>'',curlPost:()=>''});
+    const c = context(['esc','metricRecentObservation','metricQuality','functionsCardHtml'], {store:{functionMetrics:[]},operations:{health:{functionMetrics:[{functionId:'mem::summary',totalCalls:100,failureCount:90,qualitySampleCount:2,avgQualityScore:0,qualityEpochAt:1000}]},metrics:{'mem::summary':{totalCalls:100,failureCount:90,observedAt:2000}},metricPrevious:{'mem::summary':{totalCalls:90,failureCount:90,observedAt:1000}}},help:()=>'',fmtNum:String,emptyState:()=>'',curlPost:()=>''});
     const html=c.functionsCardHtml(null);
     expect(html).toContain('실패 +0'); expect(html).toContain('품질 표본 2'); expect(html).toContain('0.00');
     expect(html).toContain('누적');
@@ -251,4 +251,50 @@ it('does not imply another hold exists when a cancelled memory recovery remains 
 it('shows recovery-disabled build explicitly without promising automatic recovery',()=>{
  const c=fixtures();c.operations.control={status:'paused',holds:['memory']};c.operations.health={memoryPressure:{level:'normal',recoveryStatus:'disabled',automaticMemoryRecovery:false}};
  const html=c.operationsPanelHtml();expect(html).toContain('호환 복구 빌드 · 자동 회복 비활성');expect(html).not.toContain('메모리 보호는 안정 확인 후 자동 회복합니다');
+});
+
+
+describe("honest observed function metrics", () => {
+  const recent = {windowMs:60000,windowStartAt:'2026-10-22T00:01:00.000Z',windowEndAt:'2026-10-22T00:02:00.000Z',observedSince:'2026-10-22T00:00:00.000Z',attemptCount:10,failureCount:2};
+  it("prefers the timestamped observed attempt window over browser-poll differences", () => {
+    const c=context(['metricRecentObservation']);
+    const text=c.metricRecentObservation({totalCalls:200,failureCount:190,recent},{totalCalls:199,failureCount:190,observedAt:'2026-10-22T00:01:30.000Z'},'2026-10-22T00:02:01.000Z').text;
+    expect(text).toContain('실패 2건 / 시도 10건');expect(text).toContain(recent.windowStartAt);expect(text).toContain(recent.windowEndAt);expect(text).toContain('관측 시작 '+recent.observedSince);
+  });
+  it("gives legacy counter differences their actual successful observation timestamps", () => {
+    const c=context(['metricRecentObservation']);
+    const text=c.metricRecentObservation({totalCalls:200,failureCount:190},{totalCalls:195,failureCount:190,observedAt:'2026-10-22T00:01:00.000Z'},'2026-10-22T00:05:00.000Z').text;
+    expect(text).toContain('실패 +0건 / 시도 +5건');expect(text).toContain('2026-10-22T00:01:00.000Z');expect(text).toContain('2026-10-22T00:05:00.000Z');expect(text).toContain('성공 조회 사이');
+  });
+  it("marks missing comparison timestamps unknown without inventing a recent zero", () => {
+    const c=context(['metricRecentObservation']);
+    expect(c.metricRecentObservation({totalCalls:200,failureCount:190},{totalCalls:195,failureCount:190}).text).toContain('관측 시각 미확인');
+  });
+  it("keeps a zero-length initial observation explicit rather than inventing a longer window", () => {
+    const c=context(['metricRecentObservation']);
+    const value=c.metricRecentObservation({recent:{...recent,windowMs:0,windowStartAt:recent.observedSince,windowEndAt:recent.observedSince,attemptCount:0,failureCount:0}},null);
+    expect(value.failures).toBe(0);expect(value.text).toContain('관측 시작 직후');expect(value.text).toContain('시도 0건');
+  });
+  it.each([{failureCount:11},{windowMs:1},{observedSince:'2026-10-22T00:03:00.000Z'},{attemptCount:-1},{windowEndAt:'invalid'}])("does not trust invalid recent coverage or counts: %j", change => {
+    const c=context(['metricRecentObservation']);
+    const value=c.metricRecentObservation({recent:{...recent,...change}},null);
+    expect(value.failures).toBeNull();expect(value.text).toContain('서버 관측 집계 확인 불가');
+  });
+  it("does not color persistent historical failures or failure rate as current errors", () => {
+    const c=context(['esc','metricRecentObservation','metricQuality','functionsCardHtml'],{store:{functionMetrics:[]},operations:{health:{functionMetrics:[{functionId:'mem::summary',totalCalls:200,failureCount:190,recent}]},metrics:{'mem::summary':{totalCalls:200,failureCount:190,observedAt:recent.windowEndAt}},metricPrevious:{'mem::summary':{totalCalls:195,failureCount:189,observedAt:recent.windowStartAt}}},help:()=>'',fmtNum:String,emptyState:()=>'',curlPost:()=>''});
+    const html=c.functionsCardHtml(null);expect(html).toContain('집계 시작 미확인');expect(html).toContain('실행 시도');expect(html).toContain('190');expect(html).toContain('95%');expect(html).not.toContain('color:var(--red)">95%');expect(html).not.toContain('since the worker started');
+  });
+});
+
+describe('storage verification process totals versus retained samples', () => {
+  it('keeps process totals larger than the eight retained samples and labels bounds separately', () => {
+    const c=fixtures();c.operations.health.storageDurability={measurements:{historyLimit:8,evicted:17,unavailable:2,recent:Array.from({length:8},()=>({outcome:'verified'})),totals:{sinceAt:Date.parse('2026-10-22T00:00:00Z'),counterEpoch:'synthetic-not-for-display',completed:25,verified:20,failed:4,unknown:1,saturated:false}}};
+    const html=c.operationsPanelHtml();expect(html).toContain('2026-10-22T00:00:00.000Z');expect(html).toContain('완료 25건');expect(html).toContain('검증 확인 20건');expect(html).toContain('실패 4건');expect(html).toContain('결과 미상 1건');expect(html).toContain('최근 표본 8 / 8건');expect(html).toContain('축출 17건');expect(html).toContain('측정 불가 2건');expect(html).toContain('고유 작업 수나 최초 시도 횟수가 아닙니다');expect(html).not.toContain('synthetic-not-for-display');
+    c.operations.health.storageDurability.measurements.totals.saturated=true;expect(c.operationsPanelHtml()).toContain('카운터 포화 · 표시 건수는 하한');
+  });
+  it('leaves absent legacy totals and unavailable sample metadata unknown instead of zero', () => {
+    const c=fixtures();c.operations.health.storageDurability={measurements:{historyLimit:8,recent:[]}};
+    const html=c.operationsPanelHtml();expect(html).toContain('프로세스 집계 미확인');expect(html).toContain('집계 시작 미확인');expect(html).toContain('측정 불가 미확인');expect(html).not.toContain('완료 0건');expect(html).not.toContain('실패 0건');
+    c.operations.health.storageDurability={};expect(c.operationsPanelHtml()).toContain('최근 표본 미확인');
+  });
 });

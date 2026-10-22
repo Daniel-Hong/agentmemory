@@ -39,6 +39,7 @@ export async function finishLongSession(kv, KV, withLock, sessionId, realEnd, on
     note('session_read');
     const old = await kv.get(KV.sessions, sessionId);
     if (!old) return false;
+    if (realEnd && old.status === 'completed') return true;
     const now = new Date().toISOString();
     note('session_write');
     await kv.update(KV.sessions, sessionId, [

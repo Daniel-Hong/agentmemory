@@ -725,6 +725,19 @@ export function registerApiTriggers(
   });
   sdk.registerTrigger({type:'http',function_id:'api::capture-receipts',config:{api_path:'/agentmemory/capture/receipts',http_method:'GET'}});
 
+  sdk.registerFunction("api::embedding-receipts", async (req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'};
+    const denied=checkAuth(req,secret);if(denied)return {...denied,headers:{...denied.headers,...headers}};
+    const query=req.query_params??{},raw=query['ids'];
+    const ids=typeof raw==='string'&&raw.length<=8223?raw.split(','):[];
+    if(Object.keys(query).some(key=>key!=='ids')||ids.length<1||ids.length>32||
+      ids.some(id=>!/^[A-Za-z0-9_.:-]{1,256}$/.test(id))||new Set(ids).size!==ids.length)
+      return {status_code:400,headers,body:{error:'INVALID_EMBEDDING_RECEIPT_QUERY'}};
+    try{return {status_code:200,headers,body:await sdk.trigger({function_id:'mem::embedding-receipts',payload:{ids}})};}
+    catch{return {status_code:503,headers,body:{error:'EMBEDDING_RECEIPT_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::embedding-receipts',config:{api_path:'/agentmemory/embedding/receipts',http_method:'GET'}});
+
   sdk.registerFunction("api::capture",
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);

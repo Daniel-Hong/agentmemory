@@ -9,6 +9,8 @@ import {observationBudgetEntry} from '../functions/observation-source-budget.js'
 
 // Timestamp/id cursor contract backported from upstream PR #1433 (0c4c56f).
 export const PAGE_BYTES=4*1024*1024;
+const MUTATION_SCOPES=new Set(['mem:memories','mem:embedding-retry:v1','mem:embedding-committed:v1','mem:index:vec-pending']);
+const tracksMutations=scope=>scope.startsWith('mem:obs:')||MUTATION_SCOPES.has(scope);
 const bytes=value=>Buffer.byteLength(JSON.stringify(value),'utf8');
 const fail=(code,status=503)=>Object.assign(Error(code),{code,status});
 const compare=(a,b)=>a.timestamp===b.timestamp?(a.id===b.id?0:a.id<b.id?1:-1):a.timestamp<b.timestamp?1:-1;
@@ -162,5 +164,5 @@ export function createObservationReader({storePath,kv}){
   if(bytes(body)>PAGE_BYTES)throw fail('observation_changed_exceeds_page_budget',413);
   return body;
  }
- return {record,snapshot,list,response,revision,beginMutation(scope){if(!scope.startsWith('mem:obs:'))return()=>{};mutations.set(scope,(mutations.get(scope)??0)+1);activeMutations.set(scope,(activeMutations.get(scope)??0)+1);let ended=false;return()=>{if(ended)return;ended=true;mutations.set(scope,(mutations.get(scope)??0)+1);const left=activeMutations.get(scope)-1;if(left)activeMutations.set(scope,left);else activeMutations.delete(scope);};},pendingMutations:scope=>activeMutations.get(scope)??0,mutationRevision:scope=>mutations.get(scope)??0,captureSummary,invalidateCaptureSummary};
+ return {record,snapshot,list,response,revision,tracksMutations,beginMutation(scope){if(!tracksMutations(scope))return()=>{};mutations.set(scope,(mutations.get(scope)??0)+1);activeMutations.set(scope,(activeMutations.get(scope)??0)+1);let ended=false;return()=>{if(ended)return;ended=true;mutations.set(scope,(mutations.get(scope)??0)+1);const left=activeMutations.get(scope)-1;if(left)activeMutations.set(scope,left);else activeMutations.delete(scope);};},pendingMutations:scope=>activeMutations.get(scope)??0,mutationRevision:scope=>mutations.get(scope)??0,captureSummary,invalidateCaptureSummary};
 }

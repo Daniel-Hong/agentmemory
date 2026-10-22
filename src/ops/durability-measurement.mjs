@@ -28,6 +28,22 @@ function kind(scope){
 export function createDurabilityMeasurements(){
   const salt=safe(()=>randomBytes(32),null);
   let recent=[],sequence=0,evicted=0,unavailable=0;
+  const totals={sinceAt:safe(()=>Date.now(),null),counterEpoch:safe(()=>randomBytes(16).toString('hex'),null),
+    completed:0,verified:0,failed:0,unknown:0,failedStages:{},failureReasons:{},saturated:false};
+  function increment(object,key){
+    const old=object[key]??0;
+    if(old>=Number.MAX_SAFE_INTEGER){totals.saturated=true;return;}
+    object[key]=old+1;
+  }
+  function complete(outcome,stage,code){safe(()=>{
+    increment(totals,'completed');
+    increment(totals,outcome==='verified'?'verified':outcome==='failed'?'failed':'unknown');
+    if(outcome==='failed'){
+      const safeStage=['capture','readback','fsync','verify','cleanup','retryWait'].includes(stage)?stage:'other';
+      increment(totals.failedStages,safeStage);
+      increment(totals.failureReasons,stage==='capture'?captureReason(code):reason(code));
+    }
+  });}
   function begin(scopes,keyCount){const measurement=safe(()=>{
     if(!salt)return null;
     const began=performance.now();
@@ -88,5 +104,5 @@ export function createDurabilityMeasurements(){
       },
     };
   },null);if(!measurement)unavailable++;return measurement;}
-  return {begin,snapshot:()=>safe(()=>structuredClone({version:1,historyLimit:HISTORY_LIMIT,namespaceLimit:NAMESPACE_LIMIT,evicted,unavailable,recent}),null)};
+  return {begin,complete,snapshot:()=>safe(()=>structuredClone({version:1,historyLimit:HISTORY_LIMIT,namespaceLimit:NAMESPACE_LIMIT,evicted,unavailable,totals,recent}),null)};
 }

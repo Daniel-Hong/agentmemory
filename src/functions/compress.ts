@@ -184,8 +184,14 @@ export function registerCompressFunction(
         };
 
         const compressed = await withKeyedLock(`obs:${data.sessionId}`, async () => {
-          const existing = await kv.list<CompressedObservation>(KV.observations(data.sessionId));
-          const previous = existing.find(row => row.id === data.observationId) as (CompressedObservation & Partial<RawObservation>) | undefined;
+          const scope = KV.observations(data.sessionId);
+          const metadataBudget = typeof kv.observationReader?.captureSummary === "function";
+          const existing = metadataBudget
+            ? await kv.observationReader!.captureSummary(scope, data.observationId)
+            : await kv.list<CompressedObservation>(scope);
+          const previous = (Array.isArray(existing)
+            ? existing.find(row => row.id === data.observationId)
+            : await kv.get<CompressedObservation>(scope, data.observationId)) as (CompressedObservation & Partial<RawObservation>) | undefined;
           const bounded = budgetLiveObservationSource({
             ...candidate,
             sourceRaw: previous?.sourceRaw ?? scrubRecord(typeof previous?.hookType === "string" ? previous as RawObservation : data.raw),

@@ -102,5 +102,38 @@
     "decision": "unverified",
     "upstreamEvidence": [],
     "memoryPolicy": "manual_review_only"
+  },
+  {
+    "id": "certification-recovery-evidence",
+    "reason": "Reduce redundant compression preparation work and distinguish verified publication evidence, current retries and historical attempt totals",
+    "files": [
+      "src/functions/compress.ts",
+      "src/ops/embedding-receipt-status.mjs",
+      "src/ops/embedding-recovery.mjs",
+      "src/ops/durability-measurement.mjs",
+      "src/eval/metrics-store.ts",
+      "src/viewer/index.html"
+    ],
+    "tests": [
+      "test/compression-budget-path.test.ts",
+      "test/compression-first-certification.test.ts",
+      "test/embedding-receipt-status.test.ts",
+      "test/embedding-receipts-api.test.ts",
+      "test/metrics-recent-window.test.ts",
+      "test/legacy-backlog-completion.test.ts",
+      "test/viewer-metrics-browser.test.ts"
+    ],
+    "replacementConditions": [
+      "Equivalent fresh storage certification and generation/ACK safety",
+      "Bounded body-free current versus historical recovery evidence",
+      "No counter reset, fabricated history, lost originals or session-end timestamp rewrites"
+    ],
+    "baseUpstreamVersion": "0.9.30",
+    "relatedReports": [
+      "docs/customizations/CERTIFICATION-RECOVERY-EVIDENCE.md"
+    ],
+    "decision": "unverified",
+    "upstreamEvidence": [],
+    "memoryPolicy": "manual_review_only"
   }
 ]
