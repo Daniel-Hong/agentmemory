@@ -33,11 +33,14 @@ export async function resumeLongSession(kv, KV, withLock, data) {
     return session;
   });
 }
-export async function finishLongSession(kv, KV, withLock, sessionId, realEnd) {
+export async function finishLongSession(kv, KV, withLock, sessionId, realEnd, onStage) {
+  const note=stage=>{try{onStage?.(stage);}catch{}};note('session_lock_wait');
   return withLock(`obs:${sessionId}`, async () => {
+    note('session_read');
     const old = await kv.get(KV.sessions, sessionId);
     if (!old) return false;
     const now = new Date().toISOString();
+    note('session_write');
     await kv.update(KV.sessions, sessionId, [
       { type: 'set', path: realEnd ? 'endedAt' : 'lastTurnEndedAt', value: now },
       { type: 'set', path: 'status', value: realEnd ? 'completed' : 'active' },

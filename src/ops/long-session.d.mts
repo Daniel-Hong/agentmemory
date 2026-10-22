@@ -31,5 +31,5 @@ export function closeLongSessionInferenceAdmission(): void;
 export const INCREMENTAL_SUMMARY_SYSTEM: string;
 export const INCREMENTAL_SUMMARY_FORMAT: Record<string, unknown>;
 
-export function finishLongSession(kv:StateKV,KV:typeof import("../state/schema.js").KV,withLock:typeof import("../state/keyed-mutex.js").withKeyedLock,sessionId:string,realEnd:boolean):Promise<boolean>;
+export function finishLongSession(kv:StateKV,KV:typeof import("../state/schema.js").KV,withLock:typeof import("../state/keyed-mutex.js").withKeyedLock,sessionId:string,realEnd:boolean,onStage?:(stage:string)=>void):Promise<boolean>;
 export function serializeLongSessionProvider<T>(provider:T,withLock:typeof import("../state/keyed-mutex.js").withKeyedLock):T;

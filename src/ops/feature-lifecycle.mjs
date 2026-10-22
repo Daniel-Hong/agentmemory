@@ -82,18 +82,19 @@ export function createFeatureLifecycle({kv,KV,withKeyedLock,provider,readiness=n
   return activation;
  });
  function defer(retryAt,reason='provider_unavailable'){return{success:false,deferred:true,retryAt:Math.max(clock()+1000,retryAt||clock()+30000),reason};}
- async function enqueue(sessionId){
+ async function enqueue(sessionId,onStage){
+  const note=stage=>{try{onStage?.(stage);}catch{}};
   if(stopped||!isSlotsEnabled()||typeof sessionId!=='string'||!sessionId)return{success:true,skipped:true};
-  await ready;
+  note('feature_lock_wait');await ready;
   return withKeyedLock(`feature-queue:${sessionId}`,async()=>{
-   const session=await kv.get(KV.sessions,sessionId);if(!session?.project)return{success:false,error:'session_project_required'};
-   const rows=await kv.list(KV.observations(sessionId));
+   note('feature_session_read');const session=await kv.get(KV.sessions,sessionId);if(!session?.project)return{success:false,error:'session_project_required'};
+   note('feature_observations_read');const rows=await kv.list(KV.observations(sessionId));
    const turnAt=Math.max(Date.parse(session.lastTurnEndedAt||'')||0,Date.parse(session.endedAt||'')||0);
    const fingerprint=hash(rows.map(r=>r.id).sort());
-   const old=await kv.get(FEATURE_NAMESPACE,sessionId);
-   if(old?.fingerprint===fingerprint){if(turnAt>old.turnAt||!old.turnAt)await kv.set(FEATURE_NAMESPACE,sessionId,{...old,turnAt});return{success:true,queued:old.status!=='completed',unchanged:true};}
+   note('feature_state_read');const old=await kv.get(FEATURE_NAMESPACE,sessionId);
+   if(old?.fingerprint===fingerprint){note('feature_state_write');if(turnAt>old.turnAt||!old.turnAt)await kv.set(FEATURE_NAMESPACE,sessionId,{...old,turnAt});return{success:true,queued:old.status!=='completed',unchanged:true};}
    const now=clock();
-   await kv.set(FEATURE_NAMESPACE,sessionId,{sessionId,project:session.project,fingerprint,turnAt,status:'queued',queuedAt:old&&old.status!=='completed'?old.queuedAt:now,updatedAt:now,retryAt:0});
+   note('feature_state_write');await kv.set(FEATURE_NAMESPACE,sessionId,{sessionId,project:session.project,fingerprint,turnAt,status:'queued',queuedAt:old&&old.status!=='completed'?old.queuedAt:now,updatedAt:now,retryAt:0});
    return{success:true,queued:true};
   });
  }

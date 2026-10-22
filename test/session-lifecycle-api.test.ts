@@ -11,6 +11,9 @@ vi.mock("iii-sdk", async (importOriginal) => {
   };
 });
 
+import { operationalState } from "../src/ops/context.js";
+import { logger } from "../src/logger.js";
+import { createFeatureLifecycle } from "../src/ops/feature-lifecycle.mjs";
 import { registerApiTriggers } from "../src/triggers/api.js";
 import { registerEventTriggers } from "../src/triggers/events.js";
 import { KV } from "../src/state/schema.js";
@@ -243,4 +246,37 @@ describe("event::session::ended", () => {
       endedAt: expect.any(String),
     });
   });
+});
+
+
+it("reports the actual blocked feature observation read without changing the session-end response", async () => {
+  vi.useFakeTimers();
+  const previous = operationalState.featureLifecycle;
+  const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+  const id = "synthetic-private-session";
+  const harness = makeHarness([[id, session(id)]]);
+  let release!: (rows: unknown[]) => void;
+  const delayed = new Promise<unknown[]>(resolve => { release = resolve; });
+  harness.kv.list.mockImplementation(async scope => scope === KV.observations(id) ? delayed : []);
+  const lifecycle = createFeatureLifecycle({
+    kv: harness.kv, KV, withKeyedLock: async (_key: string, fn: () => unknown) => fn(),
+    provider: {}, schedule: false, isSlotsEnabled: () => true,
+  } as never);
+  operationalState.featureLifecycle = lifecycle;
+  try {
+    const pending = harness.functions.get("api::session::end")!({ body: { sessionId: id, hookEventName: "SessionEnd" } });
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(warn).toHaveBeenCalledWith("Session end request diagnostic", expect.objectContaining({
+      stage: "feature_observations_read", outcome: "pending",
+    }));
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(id);
+    release([]);
+    expect(await pending).toEqual({ status_code: 200, body: { success: true, ended: true, queued: true } });
+    expect(harness.update).toHaveBeenCalledTimes(1);
+  } finally {
+    release([]);
+    operationalState.featureLifecycle = previous;
+    warn.mockRestore();
+    vi.useRealTimers();
+  }
 });

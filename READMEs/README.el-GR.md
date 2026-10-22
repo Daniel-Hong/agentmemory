@@ -1438,7 +1438,7 @@ fi
 | Prometheus / Grafana | iii OTEL + monitor υγείας |
 | Προσαρμοσμένα συστήματα plugin | `iii worker add <name>` |
 
-**228 αρχεία πηγαίου κώδικα · ~53,000 LOC · 3,300+ δοκιμές · 320 functions · 64 KV scopes**, όλα πάνω σε τρία primitives. Δεν υπάρχει `agentmemory plugin install`. Το σύστημα plugin είναι το ίδιο το iii.
+**229 αρχεία πηγαίου κώδικα · ~53,000 LOC · 3,300+ δοκιμές · 320 functions · 64 KV scopes**, όλα πάνω σε τρία primitives. Δεν υπάρχει `agentmemory plugin install`. Το σύστημα plugin είναι το ίδιο το iii.
 
 ---
 

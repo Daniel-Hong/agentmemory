@@ -10,7 +10,7 @@ export function listProjectPinnedSlots(kv:StateKV,KV:typeof import("../state/sch
 export function registerScopedSlotFunctions(options:{sdk:IIIClient;kv:StateKV;KV:typeof import("../state/schema.js").KV;withKeyedLock:typeof import("../state/keyed-mutex.js").withKeyedLock;defaults:readonly unknown[];clock?:()=>number;recordAudit:typeof import("../functions/audit.js").recordAudit}):Promise<void>;
 export interface FeatureLifecycle {
  snapshot():Promise<{enabled:boolean;pendingCount:number|null;running:number;status:string}>;
- enqueue(sessionId:string):Promise<unknown>;
+ enqueue(sessionId:string,onStage?:(stage:string)=>void):Promise<unknown>;
  slotReflect(data:{sessionId:string}):Promise<unknown>;
  reflect(data:{project?:string;maxClusters?:number}):Promise<unknown>;
  pump():Promise<void>;drain():Promise<void>;stop():Promise<void>;

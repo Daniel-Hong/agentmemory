@@ -1,3 +1,4 @@
+import {createSessionEndDiagnostics} from "../ops/session-end-diagnostics.js";
 import {finishLongSession} from "../ops/long-session.mjs";
 import {operationalHealth,operationalState} from "../ops/context.js";
 import { InvocationError, TriggerAction, type IIIClient } from "iii-sdk";
@@ -50,6 +51,7 @@ import { COMPACT_SCOPES, type GraphCompactScope } from "../functions/graph.js";
 import { getGraphCompactBootStatus } from "../functions/graph-compact-boot.js";
 import { LESSON_SOURCE_IDS_MAX, normalizeLessonSourceIds } from "../functions/lessons.js";
 import { logger } from "../logger.js";
+const sessionEndDiagnostics=createSessionEndDiagnostics({emit:fields=>logger.warn("Session end request diagnostic",fields)});
 import { isValidEventId } from "../capture/event-id.js";
 import { getCaptureController, type CaptureResult } from "../functions/capture.js";
 import { withoutObservationSource } from "../functions/observation-source.js";
@@ -1181,17 +1183,23 @@ export function registerApiTriggers(
           body: { error: "sessionId is required and must be a non-empty string" },
         };
       }
+      const diagnostic=sessionEndDiagnostics.begin();
+      try{
       if(operationalState.featureLifecycle){
+        diagnostic.enter("finish_session");
         const realEnd=(req.body as Record<string,unknown>).hookEventName==="SessionEnd";
-        const found=await finishLongSession(kv,KV,withKeyedLock,sessionId,realEnd);
-        if(found)await operationalState.featureLifecycle.enqueue(sessionId);
+        const found=await finishLongSession(kv,KV,withKeyedLock,sessionId,realEnd,diagnostic.enter);
+        if(found){diagnostic.enter("feature_enqueue");await operationalState.featureLifecycle.enqueue(sessionId,diagnostic.enter);}
         return {status_code:200,body:{success:true,ended:realEnd&&found,queued:found}};
       }
+      diagnostic.enter("session_lock_wait");
       const endResult = await withKeyedLock(`obs:${sessionId}`, async () => {
+        diagnostic.enter("session_read");
         const session = await kv.get<Session>(KV.sessions, sessionId);
         if (!session || session.id !== sessionId) return "not_found" as const;
         if (session.status === "completed") return "already_completed" as const;
 
+        diagnostic.enter("session_write");
         await kv.update(KV.sessions, sessionId, [
           { type: "set", path: "endedAt", value: new Date().toISOString() },
           { type: "set", path: "status", value: "completed" },
@@ -1218,6 +1226,7 @@ export function registerApiTriggers(
         });
       }
       return { status_code: 200, body: { success: true, ended: true } };
+      }catch(error){diagnostic.finish("failed");throw error;}finally{diagnostic.finish("acknowledged");}
     },
   );
   sdk.registerTrigger({

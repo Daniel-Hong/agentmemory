@@ -1,5 +1,11 @@
 # Changelog
 
+## Bounded session-end retry diagnostics (development only)
+
+- Add privacy-filtered legacy collector retry snapshots and slow session-end stage diagnostics. Preserve retry order, backoff, request deadlines, ACK and storage behavior; diagnostic failures cannot change delivery outcomes.
+- Bound client snapshots to eight entries/16 KiB and one write per minute; bound server pending timers to eight and emitted lines to two per minute. Never include bodies, session identifiers, raw errors or credentials.
+- Operational activation is not performed. Server logs require a server update; collector snapshots require a separately authorized exact client-script/manifest transition and worker restart. See docs/customizations/SESSION-END-RETRY-DIAGNOSTICS.md.
+
 ## Same-pump independent intent certification (development only)
 
 - Request bounded key unions for at most five same-namespace embedding pump items so ready requests can share an active namespace scan without waiting for slow captures while retaining per-item verification, failures and absolute deadlines. Bound grouped SDK concurrency and retain unresolved calls in their slots. Keep inference serialized and recheck generation/canonical ownership before and after inference.

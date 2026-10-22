@@ -3,7 +3,7 @@
   "canonicalArtifact": "outputs/audit-page-fix/hook-client.mjs",
   "canonicalSha256": "c73b82fe13910bb8106516c6af402235285a0d3dc6411f4c326d6e619ec91d42",
   "files": {
-    "long-session-hook-client.mjs": "2724e70d67b5455b4bcc7ffd4d3a640fddfa44b24e0aa2448151ad7431947694",
+    "long-session-hook-client.mjs": "ea90286c76179ff32c41dd563a543e827aa7574eaa19d2aa082903a4e863b550",
     "session-start.mjs": "c86384b950fe5cdaa804733685e1b1b4a2fe13c010d0ae0d7c6ccf98efbd9697",
     "prompt-submit.mjs": "55d4cd5d07ee4eae7a67db49cb8de1c6a6837ac62ab66a7887dd1337755f3e67",
     "post-tool-use.mjs": "cc3a00848a4008eec9195c1d82b23cae8d77c965c41e3440354dc8786997f1fa",
