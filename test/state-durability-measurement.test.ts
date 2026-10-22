@@ -54,16 +54,16 @@ function samples(fence: ReturnType<typeof fixture>): any[] {
   return (fence.snapshot() as any).measurements.recent;
 }
 
-it('measures disjoint phases with the original IO counts and unchanged certification result', async () => {
+it('measures disjoint phases including the small-lane classification stat without changing certification', async () => {
   const fence = fixture();
-  expect(await fence.waitForKeys(kv, selected)).toEqual({ keys: 1, scopes: 1, synced: true, waitMs: 19, mutationFailures: 0 });
+  expect(await fence.waitForKeys(kv, selected)).toEqual({ keys: 1, scopes: 1, synced: true, waitMs: 21, mutationFailures: 0 });
   expect(samples(fence)).toHaveLength(1);
   const sample = samples(fence)[0];
-  expect(sample).toMatchObject({ outcome: 'verified', checkAttempts: 1, rechecks: 0, retryCount: 0, elapsedMs: 21,
-    phases: { captureMs: 4, readbackMs: 7, fsyncMs: 6, verifyMs: 2, cleanupMs: 2, retryWaitMs: 0 } });
+  expect(sample).toMatchObject({ outcome: 'verified', checkAttempts: 1, rechecks: 0, retryCount: 0, elapsedMs: 23,
+    phases: { captureMs: 4, readbackMs: 9, fsyncMs: 6, verifyMs: 2, cleanupMs: 2, retryWaitMs: 0 } });
   expect(sample.namespaces[0]).toMatchObject({ kind: 'observations', fileBytes: 100, scanBytes: 80, scans: 1, completeScans: 1 });
   expect({ reads: hooks.reads, opens: hooks.opens, syncs: hooks.syncs, stats: hooks.stats, closes: hooks.closes })
-    .toEqual({ reads: 1, opens: 2, syncs: 2, stats: 1, closes: 2 });
+    .toEqual({ reads: 1, opens: 2, syncs: 2, stats: 2, closes: 2 });
 });
 
 it('distinguishes transient namespace replacement from a final storage failure', async () => {

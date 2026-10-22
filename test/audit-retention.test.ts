@@ -213,6 +213,28 @@ describe("queryAudit across months", () => {
     expect(listedScopes).not.toContain(KV.audit);
   });
 
+  it.each(["too-large", "unreadable"] as const)("reports %s legacy coverage even when monthly results fill the page", async (status) => {
+    await seedMonthIndex(kv, ["2026-08"]);
+    seedEntry(kv, KV.auditMonth("2026-08"), "2026-08-01T00:00:00.000Z", { id: "aug_1" });
+    await seedMigrationState(kv, {
+      status,
+      safeToListLegacy: false,
+      legacySizeBytes: 368217224,
+      migrated: 0,
+      purged: 0,
+      summaryWritten: false,
+      checkedAt: "2026-08-02T00:00:00.000Z",
+    });
+    const listSpy = vi.spyOn(kv, "list");
+
+    const result = await queryAudit(kv as never, { limit: 1 });
+
+    expect(result.entries.map(entry => entry.id)).toEqual(["aug_1"]);
+    expect(result.legacyFrozen).toBe(true);
+    expect(result.legacyFrozenBytes).toBe(368217224);
+    expect(listSpy.mock.calls.map(call => call[0])).not.toContain(KV.audit);
+  });
+
   it("does not report the legacy scope frozen once its rows are copied and only the delete pass remains", async () => {
     await seedMonthIndex(kv, ["2026-05"]);
     seedEntry(kv, KV.auditMonth("2026-05"), "2026-05-01T00:00:00.000Z", {

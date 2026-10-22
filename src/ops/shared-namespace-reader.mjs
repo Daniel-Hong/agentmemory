@@ -1,26 +1,30 @@
 import {readNamespaceEntries} from './namespace-reader.mjs';
 import {performance} from 'node:perf_hooks';
+import {stat} from 'node:fs/promises';
 
-export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64}={}){
-  if(!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1)throw Error('state_namespace_admission_options');
-  const jobs=new Set(),reads=new Set(),pendingRequests=new Set(),admissions=new Set(),waiting=[];
-  let admitted=0,peakQueued=0,admissionRejected=0;
+export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64,maxSmallParallelReads=0,smallReadMaxBytes=1024*1024}={}){
+  if(!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1||!Number.isSafeInteger(maxSmallParallelReads)||maxSmallParallelReads<0||maxSmallParallelReads>1||!Number.isSafeInteger(smallReadMaxBytes)||smallReadMaxBytes<1)throw Error('state_namespace_admission_options');
+  const jobs=new Set(),reads=new Set(),pendingRequests=new Set(),admissions=new Set(),jobWork=new Set(),waiting=[];
+  let admitted=0,admittedSmall=0,peakQueued=0,admissionRejected=0;
   function pump(){
-    while(admitted<maxParallelReads&&waiting.length){
-      const item=waiting.shift();item.signal?.removeEventListener('abort',item.abort);admitted++;
-      Promise.resolve().then(()=>{item.signal?.throwIfAborted();return item.work();}).then(item.resolve,item.reject).finally(()=>{admitted--;pump();});
+    while(true){
+      const index=waiting.findIndex(item=>item.small?admittedSmall<maxSmallParallelReads:admitted<maxParallelReads);
+      if(index<0)return;
+      const [item]=waiting.splice(index,1);item.signal?.removeEventListener('abort',item.abort);
+      if(item.small)admittedSmall++;else admitted++;
+      Promise.resolve().then(()=>{item.signal?.throwIfAborted();return item.work();}).then(item.resolve,item.reject).finally(()=>{if(item.small)admittedSmall--;else admitted--;pump();});
     }
   }
-  function schedule(work,signal){
+  function schedule(work,signal,small=false){
     const pending=new Promise((resolve,reject)=>{
       if(signal?.aborted){reject(signal.reason??new DOMException('Aborted','AbortError'));return;}
       if(waiting.length>=maxQueuedReads){admissionRejected++;reject(Object.assign(Error('state_namespace_admission_limit'),{code:'state_namespace_admission_limit'}));return;}
-      const item={work,signal,resolve,reject,abort(){const index=waiting.indexOf(item);if(index>=0){waiting.splice(index,1);reject(signal.reason??new DOMException('Aborted','AbortError'));}}};
+      const item={work,signal,small,resolve,reject,abort(){const index=waiting.indexOf(item);if(index>=0){waiting.splice(index,1);reject(signal.reason??new DOMException('Aborted','AbortError'));}}};
       signal?.addEventListener('abort',item.abort,{once:true});waiting.push(item);peakQueued=Math.max(peakQueued,waiting.length);pump();
     });
     admissions.add(pending);return pending.finally(()=>admissions.delete(pending));
   }
-  const baseline=(path,options)=>schedule(()=>actual(path,options),options.signal);
+  const baseline=(path,options)=>actual(path,options);
   let readSequence=0;
   const counts={requests:0,sharedRequests:0,startedReads:0,completeReads:0,scanBytes:0,directFallbacks:0,projectionFallbacks:0,activeReads:0,activeWaiters:0,peakSharedJobs:0};
   const notify=fn=>{try{const result=fn?.();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});}catch{}};
@@ -30,9 +34,26 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   const diagnose=(options,event)=>notify(()=>options.onDiagnostic?.({...event}));
   function status(job){const value={started:job.started===true,...job.openedInfo};const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);return value;}
   async function actual(path,options,job={readId:nextId()}){
+    options.signal?.throwIfAborted();
+    let small=false;
+    if(maxSmallParallelReads){
+      const size=(await stat(path)).size;
+      options.signal?.throwIfAborted();small=size<=smallReadMaxBytes;
+    }
+    if(!small)return schedule(()=>physical(path,options,job),options.signal);
+    const maximum=Math.min(options.maxFileBytes??Infinity,smallReadMaxBytes);
+    try{return await schedule(()=>physical(path,{...options,maxFileBytes:maximum},job),options.signal,true);}
+    catch(error){
+      if(error?.code!=='state_namespace_file_limit'||maximum===options.maxFileBytes)throw error;
+      options.signal?.throwIfAborted();job.readId=nextId();
+      return schedule(()=>physical(path,options,job),options.signal);
+    }
+  }
+  async function physical(path,options,job){
     counts.startedReads++;counts.activeReads++;
     let promise;
     let lastInfo;
+    if(job.waiters?.size===1&&!job.hinted){job.keys=new Set([...job.waiters][0].keys);options={...options,keys:job.keys};}
     job.started=true;job.startedAt=now();
     const emit=(phase,info)=>diagnose(options,{phase,readId:job.readId,...metadata(info)});
     emit('started');
@@ -49,11 +70,8 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     }finally{reads.delete(promise);counts.activeReads--;}
   }
   async function start(job){
-    job.started=true;
     try{
       if(!job.waiters.size)return;
-      const singleton=job.waiters.size===1;
-      if(singleton&&!job.hinted)job.keys=[...job.waiters][0].keys;
       const result=await actual(job.path,{...job.options,keys:job.keys,signal:job.controller.signal,maxSelectedBytes,
         allowProjectionOverflow:()=>{
           if(job.waiters.size!==1)return false;
@@ -80,6 +98,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     let job=[...jobs].find(j=>j.joinable&&j.path===path&&j.waiters.size<maxWaiters&&
       (j.options.checkIntervalBytes??0)===(options.checkIntervalBytes??0)&&
       (j.options.chunkSize??64*1024)===(options.chunkSize??64*1024)&&
+      (j.options.maxFileBytes??Infinity)===(options.maxFileBytes??Infinity)&&
       (j.started?[...keys].every(key=>j.keys.has(key)):new Set([...j.keys,...requestedKeys]).size<=maxKeys));
     if(!job&&(jobs.size>=maxActiveReads||requestedKeys.size>maxKeys)){
       counts.directFallbacks++;return baseline(path,options);
@@ -88,7 +107,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     if(!job){
       job={path,options,keys:new Set(requestedKeys),hinted,started:false,startedAt:null,openedInfo:null,readId:nextId(),joinable:true,controller:new AbortController(),waiters:new Set()};
       jobs.add(job);counts.peakSharedJobs=Math.max(counts.peakSharedJobs,jobs.size);
-      queueMicrotask(()=>{void schedule(()=>start(job),job.controller.signal).catch(error=>{job.joinable=false;jobs.delete(job);for(const waiter of [...job.waiters])waiter.finish(error);});});
+      queueMicrotask(()=>{const work=start(job);jobWork.add(work);void work.finally(()=>jobWork.delete(work));});
     }else if(!job.started){for(const key of requestedKeys)job.keys.add(key);job.hinted||=hinted;}
     if(joined){counts.sharedRequests++;notify(options.onShared);}
     const result=await new Promise((resolve,reject)=>{
@@ -114,8 +133,8 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     },
     async drain(){
       await Promise.resolve();
-      while(pendingRequests.size||reads.size||jobs.size||admissions.size)await Promise.allSettled([...pendingRequests,...reads,...admissions]);
+      while(pendingRequests.size||reads.size||jobs.size||admissions.size||jobWork.size)await Promise.allSettled([...pendingRequests,...reads,...admissions,...jobWork]);
     },
-    snapshot:()=>({...counts,sharedJobs:jobs.size,admission:{active:admitted,queued:waiting.length,peakQueued,rejected:admissionRejected,maxParallelReads,maxQueuedReads},limits:{maxActiveReads,maxWaiters,maxKeys,maxSelectedBytes}}),
+    snapshot:()=>({...counts,sharedJobs:jobs.size,admission:{active:admitted+admittedSmall,regularActive:admitted,smallActive:admittedSmall,queued:waiting.length,smallQueued:waiting.filter(item=>item.small).length,peakQueued,rejected:admissionRejected,maxParallelReads,maxSmallParallelReads,smallReadMaxBytes,maxQueuedReads},limits:{maxActiveReads,maxWaiters,maxKeys,maxSelectedBytes}}),
   };
 }

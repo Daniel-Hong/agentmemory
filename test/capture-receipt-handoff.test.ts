@@ -53,6 +53,11 @@ describe('actual compatibility collector and body-free durable receipt with file
  it('retains rejected unknown observations rather than deleting or truncating them',async()=>{
   const f=await setup();await f.kv.delete(captureEventScope(f.key),f.key);f.reject();expect(await f.client().flush()).toBe(false);expect(f.posts).toBe(1);expect((await f.pending())[0].body).toEqual(f.body);
  });
+ it('can exhaust a legacy caller budget checking mismatched disk state before any POST, without losing the original',async()=>{
+  const f=await setup();await writeFile(f.obsFile,JSON.stringify({[f.obs.id]:{...f.obs,sourceRaw:{...f.obs.sourceRaw,raw:{tool_output:'not yet published'}}}}));
+  expect(await f.client().flush()).toBe(false);expect(f.posts).toBe(0);
+  const records=await f.pending();expect(records).toHaveLength(1);expect(records[0].body).toEqual(f.body);expect(records[0].attempts).toBe(1);await f.fence.drain();
+ });
  it('preserves the exact pending original across a new worker process while retry backoff is active',async()=>{
   const f=await setup();await f.kv.delete(captureEventScope(f.key),f.key);expect(await f.client().flush()).toBe(false);
   const file=join(f.outbox,(await readdir(f.outbox)).find(x=>x.endsWith('.json'))!);const record=JSON.parse(await readFile(file,'utf8'));record.nextAttemptAt=Date.now()+60000;await writeFile(file,JSON.stringify(record));

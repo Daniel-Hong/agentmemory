@@ -239,13 +239,15 @@ export function registerCaptureFunctions(
   let pendingSince: number | null = null;
   const stallAfterMs = Math.max(300000, policy.retryIntervalMs * 30);
   function progress(): CaptureProgress {
-    return {completedCount:counters.completed,counterEpoch,pending:inboxSize,lastCompletedAt,lastSweepAt,sweepRunning:!!sweeping,stallAfterMs,
-      stalled:inboxSize!==null && inboxSize>0 && pendingSince!==null && Date.now()-Math.max(pendingSince,lastCompletedAt?Date.parse(lastCompletedAt):0)>stallAfterMs};
+    const pending = activeInboxKeys?.size ?? null;
+    return {completedCount:counters.completed,counterEpoch,pending,lastCompletedAt,lastSweepAt,sweepRunning:!!sweeping,stallAfterMs,
+      stalled:pending!==null && pending>0 && pendingSince!==null && Date.now()-Math.max(pendingSince,lastCompletedAt?Date.parse(lastCompletedAt):0)>stallAfterMs};
   }
   let lastPruneAt: string | null = null;
   let lastBootDrain: CaptureStatus["lastBootDrain"] = null;
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
   let inboxSize: number | null = null;
+  let activeInboxKeys: Set<string> | null = null;
   let stopped = false;
   const timers: Array<ReturnType<typeof setInterval>> = [];
   const maintenance=new Set<Promise<unknown>>();
@@ -257,9 +259,26 @@ export function registerCaptureFunctions(
   const trackMaintenance=(work:()=>Promise<unknown>)=>{void trackWork(work).catch(()=>{});};
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
+  function updatePendingSince(): void {
+    if (activeInboxKeys?.size === 0) pendingSince = null;
+    else if (activeInboxKeys && pendingSince === null) pendingSince = Date.now();
+  }
+
+  function refreshInbox(records: InboxRecord[]): void {
+    inboxSize = records.length;
+    activeInboxKeys = new Set(records.filter((rec) => rec && rec.status !== "dead").map((rec) => rec.key));
+    updatePendingSince();
+  }
+
+  function updateActiveInbox(key: string, active: boolean): void {
+    if (active) activeInboxKeys?.add(key);
+    else activeInboxKeys?.delete(key);
+    updatePendingSince();
+  }
+
   async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) { inboxSize = (await kv.list<InboxRecord>(KV.captureInbox)).length; if(inboxSize>0)pendingSince=Date.now(); }
-    return inboxSize;
+    if (inboxSize === null) refreshInbox(await kv.list<InboxRecord>(KV.captureInbox));
+    return inboxSize!;
   }
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
@@ -277,9 +296,9 @@ export function registerCaptureFunctions(
     if (rec.eventSource === "client") await kv.set(eventScope(rec.key), rec.key, done);
     await kv.delete(KV.captureInbox, rec.key);
     if (inboxSize !== null) inboxSize = Math.max(0, inboxSize - 1);
+    updateActiveInbox(rec.key, false);
     counters.completed++;
     lastCompletedAt = done.completedAt;
-    if(inboxSize===0)pendingSince=null;
   }
 
   async function storedObservation(done: CompletedEvent): Promise<CompressedObservation | null | undefined> {
@@ -335,6 +354,7 @@ export function registerCaptureFunctions(
       delete dead.nextAttemptAt;
       await recordCaptureFailure(kv,dead);
       await kv.set(KV.captureInbox, rec.key, dead);
+      updateActiveInbox(rec.key, false);
       counters.deadLettered++;
       logger.warn("capture moved to dead letters", { eventId: rec.eventId, attempts: rec.attempts, error: message });
       return { status: "rejected", eventId: rec.eventId, error: message, retryable: false, observationId: rec.observationId };
@@ -402,7 +422,8 @@ export function registerCaptureFunctions(
         payload: { ...cleanPayload, data: scrubRecord(cleanPayload.data) },
       };
       await kv.set(KV.captureInbox, key, rec);
-      if (inboxSize !== null) { if(inboxSize===0)pendingSince=Date.now(); inboxSize++; }
+      if (inboxSize !== null) inboxSize++;
+      updateActiveInbox(key, true);
       counters.accepted++;
       return attempt(rec);
     });
@@ -411,12 +432,14 @@ export function registerCaptureFunctions(
   async function retryOne(key: string, force: boolean, requestId?: string): Promise<"recovered" | "dead" | "waiting" | "gone" | "stopped"> {
     return withKeyedLock(`capture:${key}`, async () => {
       if (stopped) return "stopped";
+      await currentInboxSize();
       const stored=await kv.get<InboxRecord>(KV.captureInbox,key);
       if (!stored) return "gone";
       const rec={...stored};
       if(rec.eventSource==='client'&&(await kv.get<CompletedEvent>(eventScope(key),key))?.state==='deleted'){
         await kv.delete(KV.captureInbox,key);
         if(inboxSize!==null)inboxSize=Math.max(0,inboxSize-1);
+        updateActiveInbox(key, false);
         counters.duplicates++;return 'gone';
       }
       let history=await kv.get<CaptureReviewHistory>(KV.captureReview,key);
@@ -431,6 +454,7 @@ export function registerCaptureFunctions(
         if(history.status!=='completed')rec.status=history.status;
         rec.updatedAt=history.updatedAt;
         await kv.set(KV.captureInbox,key,rec);
+        updateActiveInbox(key, rec.status !== "dead");
       }
       if(rec.status==='dead'&&!force)return 'waiting';
       if(!force&&rec.status==='retrying'&&rec.nextAttemptAt&&Date.parse(rec.nextAttemptAt)>Date.now())return 'waiting';
@@ -448,6 +472,7 @@ export function registerCaptureFunctions(
         await kv.set(KV.captureReview,key,history);
         rec.cycleAttempts=0;rec.manualRequestId=id;rec.status='retrying';rec.nextAttemptAt=new Date().toISOString();
         await kv.set(KV.captureInbox,key,rec);
+        updateActiveInbox(key, true);
       }
       const outcome=await attempt({...rec});
       const outcomeName=outcome.status==='accepted'&&outcome.state==='completed'||outcome.status==='duplicate'&&outcome.state==='completed'?'recovered':outcome.status==='rejected'?'dead':'waiting';
@@ -463,7 +488,7 @@ export function registerCaptureFunctions(
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
     if (stopped) return { processed: 0, recovered: 0, deadLettered: 0 };
     const records = await kv.list<InboxRecord>(KV.captureInbox);
-    inboxSize = records.length;
+    refreshInbox(records);
     let processed = 0;
     let recovered = 0;
     let deadLettered = 0;
@@ -516,6 +541,7 @@ export function registerCaptureFunctions(
     // Unprocessed originals and their review history have no age/count expiry.
     if (!stopped) removed += await prunePromptLedgers(kv, cutoff, policy.eventsMax);
     inboxSize = null;
+    activeInboxKeys = null;
     counters.pruned += removed;
     lastPruneAt = new Date().toISOString();
     return removed;
@@ -580,9 +606,7 @@ export function registerCaptureFunctions(
     let inbox: CaptureStatus["inbox"] = null;
     try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
-      if(records.length>0 && (inboxSize===0||pendingSince===null))pendingSince=Date.now();
-      inboxSize = records.length;
-      if(!inboxSize)pendingSince=null;
+      refreshInbox(records);
       const live = records.filter((r) => r.status !== "dead");
       const next = live
         .map((r) => r.nextAttemptAt)
@@ -617,6 +641,7 @@ export function registerCaptureFunctions(
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean; requestId?: string } = {}) => {
     if(input.requestId && (!input.eventId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.requestId))) throw new Error("INVALID_RETRY_REQUEST");
     const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+    refreshInbox(records);
     if(input.eventId && input.requestId && !records.some(r=>input.key?r.key===input.key:r.eventId===input.eventId)){
       const h=(await kv.list<CaptureReviewHistory>(KV.captureReview)).find(h=>(input.key?h.key===input.key:h.eventId===input.eventId)&&h.eventId===input.eventId&&h.requests[input.requestId!]);
       if(h){const outcome=h.requests[input.requestId].outcome;return {matched:1,recovered:outcome==="recovered"?1:0,dead:outcome==="dead"?1:0,waiting:!outcome||outcome==="waiting"?1:0};}

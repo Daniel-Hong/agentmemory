@@ -116,7 +116,11 @@ export function registerObserveFunction(
           dedupInput,
           dedupOutput,
         );
-        if (dedupMap.isDuplicate(dedupHash)) {
+        const duplicate = dedupMap.isDuplicate(dedupHash);
+        const storedReplay = duplicate && durable
+          ? await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId)
+          : undefined;
+        if (duplicate && !storedReplay) {
           recordDedupSkip();
           return { deduplicated: true, sessionId: payload.sessionId };
         }

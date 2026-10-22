@@ -109,10 +109,15 @@ describe("evaluateStatus", () => {
     expect(problem?.fix).toMatch(/Restart agentmemory/);
   });
 
-  it("notes when the index check timed out instead of claiming the index is fine", () => {
+  it("reports an incomplete index check without inventing its cause", () => {
     const report = evaluateStatus(inputs({ index: { ...inputs().index, missingObservations: null, sessions: null } }));
     expect(codes(report)).toEqual(["index-check-unavailable"]);
     expect(report.status).toBe("info");
+    const problem = report.problems.find(p => p.code === "index-check-unavailable")!;
+    expect(problem.message).toContain("did not complete");
+    expect(problem.message).toContain("unknown");
+    expect(problem.message).not.toContain("session store did not answer in time");
+    expect(problem.fix).not.toContain("store is overloaded");
   });
 
   it("reports an incomplete BM25 rebuild as an error", () => {
@@ -560,16 +565,29 @@ it('keeps unresolved legacy ownership visible independently of old spool attempt
  expect(report.problems.find(p=>p.code==='capture-legacy-outbox')?.message).toContain('14');
  expect(report.status).toBe('warn');
 });
-it('preserves historical attempts separately from unresolved legacy delivery and display expiry',()=>{
+it('preserves historical unknown outcomes after recent attempt warnings age out',()=>{
  const capture={policy:{retryIntervalMs:10000,maxAttempts:5},inbox:null,sinceStart:{},legacyOutbox:{records:1863,available:true,complete:true},spool:[{records:0,maxBytes:1048576,maxAgeHours:24,stats:{dropped:190,lastDropAt:'2026-09-24T11:00:00Z',lastDropReason:'too-large'}}]};
  const report=evaluateStatus(inputs({capture: capture as never}));
  expect(codes(report)).toEqual(expect.arrayContaining(['capture-legacy-outbox','capture-spool-dropped']));
  const history=report.problems.find(p=>p.code==='capture-spool-dropped')!;
+ expect(history.level).toBe('warn');
  expect(history.message).toContain('190 failed append attempts');expect(history.message).toContain('same event');expect(history.message).toContain('permanent loss is not established');
  const delivered={...capture,legacyOutbox:{records:0,available:true,complete:true}};
  expect(codes(evaluateStatus(inputs({capture:delivered as never})))).toContain('capture-spool-dropped');
  expect(codes(evaluateStatus(inputs({capture:delivered as never})))).not.toContain('capture-legacy-outbox');
  const expired=evaluateStatus(inputs({now:new Date('2026-09-25T12:00:00Z'),capture:capture as never}));
- expect(codes(expired)).toContain('capture-legacy-outbox');expect(codes(expired)).not.toContain('capture-spool-dropped');
+ expect(codes(expired)).toContain('capture-legacy-outbox');expect(codes(expired)).toContain('capture-spool-dropped');
+ const oldHistory=expired.problems.find(p=>p.code==='capture-spool-dropped')!;
+ expect(oldHistory.level).toBe('info');
+ expect(oldHistory.message).toContain('190 failed append attempts');
+ expect(oldHistory.message).toContain('outcomes remain unknown');
+ expect(oldHistory.message).toContain('recovery is not proven');
  expect(capture.spool[0]!.stats.dropped).toBe(190);expect(JSON.stringify(expired)).not.toMatch(/190.*(?:recovered|delivered|resolved)/i);
+});
+it('retains failed attempt history when its timestamp is unavailable',()=>{
+ const report=evaluateStatus(inputs({capture:{policy:{retryIntervalMs:10000,maxAttempts:5},inbox:null,sinceStart:{},spool:[{records:0,maxBytes:1048576,maxAgeHours:24,stats:{dropped:190}}]} as never}));
+ const history=report.problems.find(p=>p.code==='capture-spool-dropped');
+ expect(history?.level).toBe('info');
+ expect(history?.message).toContain('190 failed append attempts');
+ expect(history?.message).toContain('outcomes remain unknown');
 });

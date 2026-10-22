@@ -26,7 +26,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),touched=new Map(),pruneAttempts=new Map();
   const measurements=createDurabilityMeasurements();
-  const readSharing=createSharedNamespaceReader({maxParallelReads:1});
+  const readSharing=createSharedNamespaceReader({maxParallelReads:1,maxSmallParallelReads:1});
   function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}

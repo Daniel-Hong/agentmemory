@@ -5,7 +5,10 @@ import {tmpdir} from 'node:os';
 const hooks=vi.hoisted(()=>({elapsed:0,cost:0,reads:[] as number[],captured:0,onDirectorySync:null as null|(()=>Promise<void>)}));
 vi.mock('node:fs/promises',async original=>{
  const fs=await original<typeof import('node:fs/promises')>();
- return {...fs,open:async(...args:Parameters<typeof fs.open>)=>{
+ return {...fs,stat:async(...args:Parameters<typeof fs.stat>)=>{
+  if(String(args[0]).endsWith('.bin'))hooks.elapsed+=hooks.cost;
+  return fs.stat(...args);
+ },open:async(...args:Parameters<typeof fs.open>)=>{
   if(String(args[0]).endsWith('.bin'))hooks.elapsed+=hooks.cost;
   const handle=await fs.open(...args),read=handle.createReadStream.bind(handle),sync=handle.sync.bind(handle);
   handle.createReadStream=(...options:Parameters<typeof read>)=>{hooks.reads.push(hooks.captured);return read(...options);};

@@ -78,7 +78,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     try{const observed=onOpen?.({fileBytes});if(observed&&typeof observed.then==='function')Promise.resolve(observed).catch(()=>{});}catch{}
     if(fileBytes>maxFileBytes)throw fail('state_namespace_file_limit');
     signal?.throwIfAborted();
-    stream=handle.createReadStream({autoClose:false,autoDestroy:false,highWaterMark:chunkSize,signal});
+    stream=handle.createReadStream({autoClose:false,autoDestroy:false,highWaterMark:chunkSize,signal,...(maxFileBytes===Infinity?{}:{end:maxFileBytes-1})});
     for await(const chunk of stream.iterator({destroyOnReturn:false})){
       if(bytesRead+chunk.length>maxFileBytes)throw fail('state_namespace_file_limit');
       if(checkIntervalBytes&&bytesRead-lastSignatureCheck>=checkIntervalBytes){

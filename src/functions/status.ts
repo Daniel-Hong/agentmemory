@@ -325,8 +325,8 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     problems.push({
       level: "info",
       code: "index-check-unavailable",
-      message: "The session store did not answer in time, so the search index was not checked for missing observations.",
-      fix: "The check runs again on the next health update. If it keeps timing out, the store is overloaded: check the server log.",
+      message: "The search index check did not complete, so whether stored observations are missing from search remains unknown.",
+      fix: "The check runs again on the next health update. If it stays incomplete, check diagnostics for scan, storage or timeout errors.",
     });
   }
 
@@ -564,12 +564,12 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
       latest = { at: lastDrop, reason: spool.stats.lastDropReason ?? "unknown", maxBytes: spool.maxBytes, maxAgeHours: spool.maxAgeHours };
     }
   }
-  if (latest && now.getTime() - latest.at < RECENT_DROP_MS) {
+  if (dropped > 0) {
     problems.push({
-      level: "warn",
+      level: latest && now.getTime() - latest.at < RECENT_DROP_MS ? "warn" : "info",
       code: "capture-spool-dropped",
-      message: `Historical spool attempts: ${plural(dropped, "failed append attempt")} in total (latest reason: ${latest.reason}). Repeated failures may refer to the same event; permanent loss is not established by this counter.`,
-      fix: `The spool holds at most ${Math.round(latest.maxBytes / 1024)} KiB for ${latest.maxAgeHours} hours. Check the host durable outbox and event receipts before deciding whether a record is missing. Preserve pending records; increasing total spool capacity alone does not fix oversized individual records.`,
+      message: `Historical spool attempts: ${plural(dropped, "failed append attempt")} in total (latest reason: ${latest?.reason ?? "unknown"}). Repeated failures may refer to the same event; permanent loss is not established by this counter. Individual outcomes remain unknown; recovery is not proven.`,
+      fix: `${latest ? `The spool holds at most ${Math.round(latest.maxBytes / 1024)} KiB for ${latest.maxAgeHours} hours. ` : ""}Check the host durable outbox and event receipts before deciding whether a record is missing. Preserve pending records; increasing total spool capacity alone does not fix oversized individual records.`,
     });
   }
   return problems;

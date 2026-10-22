@@ -1,5 +1,11 @@
 # Changelog
 
+## Small certification admission and recovery diagnostics (development only)
+
+- Reserve a strictly bounded small-file lane beside the single regular scan; preserve full verification, fsync/signatures, independent deadlines and bounded cancellation. Validate physical limits under growth and finalize key ownership at admission. Synthetic overload comparisons retain explicit incompatible-key and publication-change failures.
+- Re-certify existing durable observations instead of semantic dedup after failed intent persistence. Separate active capture progress from retained dead letters without changing inbox capacity, retry policy or quarantine.
+- Report frozen audit coverage on full pages, keep incomplete index state unknown without false timeout attribution, and preserve old/undated spool history as informational unknown outcomes. No reset, acknowledgement, audit migration, deletion or deployment. Scope and limits: docs/customizations/CERTIFICATION-SMALL-READ-ADMISSION.md.
+
 ## Release compatibility validation
 
 - Retain the explicitly supported deployed daniel.23 export version while preparing daniel.24; import validation and data shape are otherwise unchanged. Add a synthetic regression. Preserve unsupported-version rejection.

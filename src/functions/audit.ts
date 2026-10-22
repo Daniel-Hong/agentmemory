@@ -290,17 +290,14 @@ export async function queryAudit(
     for (const row of rows) addIfNew(row);
   }
 
-  let legacyFrozen = false;
-  let legacyFrozenBytes: number | undefined;
+  const migrationState = await readAuditMigrationState(kv);
+  const legacyFrozen = migrationState?.status === "too-large" || migrationState?.status === "unreadable";
+  const legacyFrozenBytes = legacyFrozen ? migrationState?.legacySizeBytes : undefined;
 
   if (collected.length < limit) {
-    const migrationState = await readAuditMigrationState(kv);
     if (migrationState?.safeToListLegacy) {
       const legacyRows = await kv.list<AuditEntry>(KV.audit);
       for (const row of legacyRows) addIfNew(row);
-    } else if (migrationState?.status === "too-large" || migrationState?.status === "unreadable") {
-      legacyFrozen = true;
-      legacyFrozenBytes = migrationState.legacySizeBytes;
     }
   }
 

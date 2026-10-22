@@ -47,7 +47,7 @@ it.each([{maxKeys:1},{maxWaiters:1},{maxActiveReads:1}])('bounds sharing and fal
 it('retries each consumer through the baseline on shared projection overflow',async()=>{
  const {reader,calls,request}=harness({maxSelectedBytes:4});const a=request(['a']),b=request(['b']);await turn();
  expect(calls[0].opts.maxSelectedBytes).toBe(4);calls[0].fail(Object.assign(Error('overflow'),{code:'state_namespace_projection_limit'}));await turn();await turn();
- expect(calls).toHaveLength(3);expect(calls[1].opts.maxSelectedBytes).toBeUndefined();expect(calls[2].opts.maxSelectedBytes).toBeUndefined();calls[1].finish();calls[2].finish();await Promise.all([a,b]);
+ await vi.waitFor(()=>expect(calls).toHaveLength(3));expect(calls[1].opts.maxSelectedBytes).toBeUndefined();expect(calls[2].opts.maxSelectedBytes).toBeUndefined();calls[1].finish();calls[2].finish();await Promise.all([a,b]);
  expect(reader.snapshot()).toMatchObject({projectionFallbacks:2,activeReads:0,activeWaiters:0,sharedJobs:0});
 });
 it('propagates actual read failures without retaining a reusable result',async()=>{
@@ -134,7 +134,7 @@ it('refuses private overflow when a cancelled started participant left additiona
  await turn();controller.abort();await rejected;
  expect(calls[0].opts.allowProjectionOverflow()).toBe(false);
  calls[0].fail(Object.assign(Error('overflow'),{code:'state_namespace_projection_limit'}));await turn();await turn();
- expect(calls).toHaveLength(2);expect([...calls[1].opts.keys]).toEqual(['small']);calls[1].finish();await surviving;
+ await vi.waitFor(()=>expect(calls).toHaveLength(2));expect([...calls[1].opts.keys]).toEqual(['small']);calls[1].finish();await surviving;
  expect(reader.snapshot()).toMatchObject({projectionFallbacks:1,activeReads:0,activeWaiters:0,sharedJobs:0});
 });
 it('keeps a cohort hint separate from waiter ownership and private overflow fallback',async()=>{
@@ -142,7 +142,7 @@ it('keeps a cohort hint separate from waiter ownership and private overflow fall
  const pending=reader.read('/synthetic',{keys:new Set(['own']),joinKeys:new Set(['own','other-large'])});await turn();
  expect([...calls[0].opts.keys]).toEqual(['own','other-large']);expect(calls[0].opts.allowProjectionOverflow()).toBe(false);
  calls[0].fail(Object.assign(Error('synthetic >4MiB union'),{code:'state_namespace_projection_limit'}));await turn();await turn();
- expect(calls).toHaveLength(2);expect([...calls[1].opts.keys]).toEqual(['own']);expect(calls[1].opts.joinKeys).toBeUndefined();
+ await vi.waitFor(()=>expect(calls).toHaveLength(2));expect([...calls[1].opts.keys]).toEqual(['own']);expect(calls[1].opts.joinKeys).toBeUndefined();
  calls[1].finish();expect([...(await pending).values.keys()]).toEqual(['own']);expect(reader.snapshot().projectionFallbacks).toBe(1);
 });
 it('permits a delayed cohort peer to join a started hinted scan and preserves cancellation isolation',async()=>{
@@ -151,4 +151,12 @@ it('permits a delayed cohort peer to join a started hinted scan and preserves ca
  const second=reader.read('/synthetic',{keys:new Set(['b']),joinKeys:new Set(['a','b'])});await turn();expect(calls).toHaveLength(1);
  c.abort();await rejected;expect(calls[0].opts.signal.aborted).toBe(false);expect(calls[0].opts.allowProjectionOverflow()).toBe(false);
  calls[0].finish();expect((await second).values.get('b')).toBe(1);
+});
+it('does not give a queued singleton ownership of a later cancelled peer key',async()=>{
+ const {reader,calls}=harness({maxParallelReads:1});
+ const busy=reader.read('/busy',{keys:new Set(['busy'])});await turn();
+ const own=reader.read('/target',{keys:new Set(['small'])});await turn();
+ const c=new AbortController(),peer=reader.read('/target',{keys:new Set(['huge']),signal:c.signal});const rejected=expect(peer).rejects.toMatchObject({name:'AbortError'});c.abort();await rejected;
+ calls[0].finish();await busy;await vi.waitFor(()=>expect(calls).toHaveLength(2));
+ expect([...calls[1].opts.keys]).toEqual(['small']);calls[1].finish();await own;await reader.drain();
 });
