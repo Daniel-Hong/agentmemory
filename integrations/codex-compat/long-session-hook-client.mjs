@@ -69,41 +69,9 @@ async function acquireLock(path) {
   } catch (e) { await unlink(file).catch(() => {}); activeTickets.delete(token); throw e; }
 }
 async function releaseLock(lock) { await unlink(lock.file).catch(() => {}); activeTickets.delete(lock.token); }
-const diagnosticKinds=new Set(['observe','session_start','session_end','other']);
-const diagnosticOutcomes=new Set(['acknowledged','timeout_or_abort','http_error','acknowledgement_rejected','handoff_pending','handoff_dropped','handoff_rejected','handoff_retry','network_error','other_error']);
-const count=value=>Number.isSafeInteger(value)&&value>=0?Math.min(value,1_000_000_000):0;
-const requestKind=path=>({'/agentmemory/observe':'observe','/agentmemory/session/start':'session_start','/agentmemory/session/end':'session_end'}[path]??'other');
-function diagnosticError(error){
-  try{
-    if(['TimeoutError','AbortError'].includes(error?.name))return{outcome:'timeout_or_abort'};
-    const status=/^HTTP ([1-5][0-9]{2})$/.exec(error?.message??'');if(status)return{outcome:'http_error',httpStatus:Number(status[1])};
-    if(error?.message==='session request not acknowledged')return{outcome:'acknowledgement_rejected'};
-    const handoff=/^capture handoff not confirmed: (pending|dropped|rejected|retry)$/.exec(error?.message??'');if(handoff)return{outcome:'handoff_'+handoff[1]};
-    if(error?.name==='TypeError'&&error?.message==='fetch failed')return{outcome:'network_error'};
-  }catch{}return{outcome:'other_error'};
-}
-function safeRetrySummary(input){
- const result={};for(const key of ['listed','attempted','acknowledged','failed','blockedOrdered','blockedBackoff','invalid','elapsedMs'])result[key]=count(input?.[key]);
- result.stopReason=['complete','budget','limit'].includes(input?.stopReason)?input.stopReason:'other';
- result.operations=(Array.isArray(input?.operations)?input.operations:[]).slice(0,4).map(row=>({requestKind:diagnosticKinds.has(row?.requestKind)?row.requestKind:'other',outcome:diagnosticOutcomes.has(row?.outcome)?row.outcome:'other_error',httpStatus:Number.isInteger(row?.httpStatus)&&row.httpStatus>=100&&row.httpStatus<=599?row.httpStatus:null,elapsedMs:count(row?.elapsedMs),attempts:count(row?.attempts),retained:row?.retained===true}));return result;
-}
-function emitRetryDiagnostic(emit,summary){try{void Promise.resolve(emit?.(safeRetrySummary(summary))).catch(()=>{});}catch{}}
-export function createLegacyRetryDiagnosticSink(dir,{clock=Date.now,intervalMs=60000}={}){
- let pending=false,last=-Infinity,recent=[],suppressed=0;
- return async summary=>{
-  let temporary,ownsSlot=false;
-  try{
-   const now=clock();if(pending||now-last<intervalMs){suppressed++;return false;}
-   pending=true;ownsSlot=true;last=now;const next=[...recent,{at:new Date(now).toISOString(),...safeRetrySummary(summary),suppressed}].slice(-8);suppressed=0;
-   const text=JSON.stringify({version:1,processScoped:true,recent:next})+'\n';if(Buffer.byteLength(text)>16384)return false;
-   temporary=join(dir,'.legacy-retry-diagnostics.'+randomUUID()+'.tmp');const handle=await open(temporary,'wx',0o600);try{await handle.writeFile(text);}finally{await handle.close();}
-   await rename(temporary,join(dir,'.legacy-retry-diagnostics'));recent=next;return true;
-  }catch{return false;}finally{if(temporary)await unlink(temporary).catch(()=>{});if(ownsSlot)pending=false;}
- };
-}
 export class HookClient {
-  constructor({ url = process.env.AGENTMEMORY_URL || 'http://127.0.0.1:3111', dir = join(baseDir(), 'hook-outbox'), timeoutMs = 1200, secret = process.env.AGENTMEMORY_SECRET || '', onRetryDiagnostics } = {}) {
-    this.url = url.replace(/\/$/, ''); this.dir = dir; this.timeoutMs = timeoutMs; this.secret = secret; this.onRetryDiagnostics=onRetryDiagnostics;
+  constructor({ url = process.env.AGENTMEMORY_URL || 'http://127.0.0.1:3111', dir = join(baseDir(), 'hook-outbox'), timeoutMs = 1200, secret = process.env.AGENTMEMORY_SECRET || '' } = {}) {
+    this.url = url.replace(/\/$/, ''); this.dir = dir; this.timeoutMs = timeoutMs; this.secret = secret;
   }
   headers() { return { 'content-type': 'application/json', ...this.secret ? { authorization: 'Bearer ' + this.secret } : {} }; }
   async enqueue(path, body) {
@@ -120,15 +88,14 @@ export class HookClient {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     const lock = await acquireLock(join(this.dir, '.flush.lock'));
     if (!lock) return false;
-    const started = Date.now(),diagnostic={listed:0,attempted:0,acknowledged:0,failed:0,blockedOrdered:0,blockedBackoff:0,invalid:0,operations:[],stopReason:'complete'};
+    const started = Date.now();
     try {
       const files = (await readdir(this.dir)).filter(x => x.endsWith('.json')).sort();
-      diagnostic.listed=files.length;
       const blockedSessions = new Set();
       let complete = true;
       let attempted = 0;
       for (const name of files) {
-        if (Date.now() - started >= budgetMs) {diagnostic.stopReason='budget';return false;}
+        if (Date.now() - started >= budgetMs) return false;
         const path = join(this.dir, name);
         let record;
         try {
@@ -136,11 +103,11 @@ export class HookClient {
           if (!record.body || typeof record.path !== 'string') throw Error('invalid outbox record');
         } catch (e) {
           if (e.code === 'ENOENT') continue;
-          await rename(path, path + '.corrupt'); diagnostic.invalid++;complete = false; continue;
+          await rename(path, path + '.corrupt'); complete = false; continue;
         }
-        if (blockedSessions.has(record.body.sessionId) || record.nextAttemptAt > Date.now()) { if(blockedSessions.has(record.body.sessionId))diagnostic.blockedOrdered++;else diagnostic.blockedBackoff++;blockedSessions.add(record.body.sessionId); complete = false; continue; }
-        if (attempted >= limit) {diagnostic.stopReason='limit';return false;}
-        attempted++;diagnostic.attempted++;const operationBegan=Date.now();
+        if (blockedSessions.has(record.body.sessionId) || record.nextAttemptAt > Date.now()) { blockedSessions.add(record.body.sessionId); complete = false; continue; }
+        if (attempted >= limit) return false;
+        attempted++;
         try {
           if (record.path === '/agentmemory/observe') {
             const { handoffObservation } = await import('./_capture.mjs');
@@ -152,16 +119,16 @@ export class HookClient {
             const result = await response.json();
             if (result.success === false || result.error) throw Error('session request not acknowledged');
           }
-          await unlink(path);diagnostic.acknowledged++;if(diagnostic.operations.length<4)diagnostic.operations.push({requestKind:requestKind(record.path),outcome:'acknowledged',elapsedMs:Date.now()-operationBegan,attempts:record.attempts??0,retained:false});
+          await unlink(path);
         } catch (e) {
           record.attempts = (record.attempts ?? 0) + 1;
           record.lastError = String(e); record.nextAttemptAt = Date.now() + Math.min(300000, 1000 * 2 ** Math.min(record.attempts - 1, 8));
-          await atomicJson(path, record);diagnostic.failed++;if(diagnostic.operations.length<4)diagnostic.operations.push({requestKind:requestKind(record.path),...diagnosticError(e),elapsedMs:Date.now()-operationBegan,attempts:record.attempts,retained:true});
+          await atomicJson(path, record);
           blockedSessions.add(record.body.sessionId); complete = false;
         }
       }
       return complete;
-    } finally { await releaseLock(lock);emitRetryDiagnostic(this.onRetryDiagnostics,{...diagnostic,elapsedMs:Date.now()-started}); }
+    } finally { await releaseLock(lock); }
   }
   async context(sessionId, project) {
     this.onPhase?.('context');
@@ -260,7 +227,7 @@ export async function hookMain(event) {
 async function drain(dir, url) {
   // This worker owns retries; do not spawn a competing one-shot drainer.
   process.env.AGENTMEMORY_CAPTURE_DRAIN_CHILD = '1';
-  const client = new HookClient({ dir, url, timeoutMs: 5000,onRetryDiagnostics:createLegacyRetryDiagnosticSink(dir) });
+  const client = new HookClient({ dir, url, timeoutMs: 5000 });
   const lock = await acquireLock(join(dir, '.worker.lock'));
   if (!lock) return;
   try {

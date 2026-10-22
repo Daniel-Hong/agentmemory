@@ -17,3 +17,7 @@ The four-second timer can itself be delayed by a busy event loop. Stage time inc
 No operating files or service were changed. Server activation needs a reviewed server candidate and restart through the existing release path. Collector activation additionally changes `long-session-hook-client.mjs` plus its generated manifest and requires the appropriate worker restart. The current exact client-transition allowlist covers `_capture.mjs` and the manifest, so it does **not** authorize this client-script replacement. Do not expand that policy implicitly or replace the script through another route. A separately approved exact transition or a server-only diagnostic rollout must be chosen before activation. Preserve outbox originals and historical counters. Code rollback removes the diagnostic behavior; do not rewind or delete stored records.
 
 Synthetic tests cover retry/ACK preservation, thrown/rejected diagnostic callbacks, same-session ordering, backoff, bounded rings/concurrent writes/privacy, timer limits, and actual API through feature observation-read stage wiring. They do not establish the production server bottleneck.
+
+## Server-only .20 artifact
+
+This release retains the exact .19 compatibility scripts and manifest. The collector sink implementation and its dedicated tests remain in development commit 8b78ed5, and are intentionally absent from this server-only source artifact. The release suite includes all applicable server/legacy collector tests; no operational client transition is requested.
