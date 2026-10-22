@@ -1,5 +1,11 @@
 # Changelog
 
+## Isolated real-engine certification experiment (development only)
+
+- Extend the synthetic comparison harness with an explicit temporary-store SDK connection to installed iii 0.22.1. Seed and measured state mutations use the actual SDK; the engine owns file publication. Keep production code, storage layout, deadlines, inference serialization and acknowledgement behavior unchanged.
+- Bound setup readiness retries for missing/changing files. Validate every synthetic checkpoint value, key and checksum; comparison reuse requires a complete fixture. Preparation alone may fill missing synthetic rows through the SDK after all existing rows match. Record preparation separately from business outcomes.
+- The existing synthetic comparison is not operating performance evidence. Actual-engine findings, setup failures and remaining limits are recorded in docs/customizations/STORAGE-UNIT-EXPERIMENT.md. No deployment, production migration, private data copy or upstream PR.
+
 ## Smaller certification-unit experiment (development only)
 
 - Add an isolated synthetic routing adapter to compare the current namespace with sixteen actual durable units through compression, source/intent certification and index/marker publication. No production routing, storage migration, timeout, inference serialization or acknowledgement behavior is changed.

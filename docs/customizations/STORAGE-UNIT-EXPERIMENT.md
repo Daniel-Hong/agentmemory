@@ -90,21 +90,116 @@ bounded runs are opt-in; full reports are retained in the workspace's
 
 ## Engineering decision
 
-Do not create another production micro-release from this fixture. Smaller units
-are a promising structural direction for byte/CPU cost, but first-failure
-improvement is not established and actual engine publication behavior is still
-unverified. The next gate is an isolated real-engine experiment of the same
-units, including export/import and logical snapshot/ordering compatibility,
-before designing any original-preserving migration or mixed-version rollback.
+Do not create another production micro-release or implement a storage migration
+from this fixture. The real-engine follow-up below did not confirm the synthetic
+throughput gain. Smaller units reduce byte/CPU cost, but the actual first-failure
+mechanism remains unreproduced. Export/import and logical snapshot/ordering
+compatibility are also unimplemented.
 An engine-provided durable generation/commit receipt would be a direct alternative
 if its actual contract can be established; this application's current SDK return
 values are not consumed as such proof. First-cert batching alone cannot reliably
 coalesce the current serial arrivals without additional lifecycle changes.
 
-Final validation: build, skills generation/check, docs synchronization/check,
+Prior synthetic-commit validation: build, skills generation/check, docs synchronization/check,
 3,495 application tests passed with9 skipped, and four Python observer-helper
 tests passed. Independent code/result review found no important issue. No
 production code was changed. Any future upstream implementation must pass the
 same source/intent/marker, deadline, ownership and recovery tests before it can
 replace a custom storage path; a faster write acknowledgement alone is not
 durability proof.
+
+## Actual installed engine follow-up
+
+Installed iii and SDK0.22.1 were used with a new temporary HOME, cwd, state
+directory and owned loopback listener for each trial. Only worker-manager and
+state modules were configured; no application daemon, operating configuration,
+private records, external models or downloads were used. The isolated file
+publication interval was2,000ms and synthetic serialized compression/embedding
+each took2,000ms. This is not verification of the production interval or model
+arrival distribution. Application functions run locally around actual state SDK
+calls; HTTP and engine function-dispatch overhead are not modeled.
+
+Each layout was seeded through the real SDK once. Setup initially encountered a
+changing file, which exposed a readiness retry bug in the test harness. That run
+failed before business measurement and is excluded. Its stopped synthetic seed
+had14,332 of14,388 expected rows; preparation verified every existing value and
+filled only56 missing synthetic rows through the SDK. The16-unit layout was
+independently seeded through the SDK. Both were fully checked and fsynced, then
+stopped normally; post-stop file checksums matched the preparation proofs.
+
+For repetitions, only those known synthetic source files were copied into fresh
+temporary stores before starting each engine. Full key/value/count/checksum
+validation, fresh per-unit SDK probes and a real fence precede measurement.
+Setup is excluded and separately recorded. This preserves actual publication
+during measured source/intent/index/marker writes while avoiding repeated large
+seed costs. It is checkpoint reuse, not independent datasets or a production
+migration test. Case-specific durable JSON reports retain synthetic target
+correlation after process exit; no private identifier or ephemeral alias key is
+involved.
+
+Three trials per condition/layout, two targets per trial:
+
+| Condition | Existing mean seconds |16 units mean seconds | Existing completed/min |16 units completed/min |
+| --- | ---: | ---: | ---: | ---: |
+| Quiet |16.563 |17.880 |7.245 |6.711 |
+| Unrelated writes |16.855 |17.346 |7.119 |6.918 |
+
+Both layouts had zero first compression failures out of12 total targets and
+committed all12 targets. Node CPU means quiet3.982/1.097 seconds and writes
+4.366/1.140 seconds favor smaller units; fence scan means1,024.02/63.89MB and
+1,092.17/63.89MB do too. Those byte counts exclude direct summary/list reads and
+engine IO. Engine CPU is separately captured including setup, not added to Node
+measurement CPU. All12 trial engines exited0, no forced cleanup occurred, and
+their PIDs were absent at the end.
+
+The one-MiB/5ms-inference smoke already took about9.9 seconds in either layout.
+Actual source/intent and publication fences often waited about1.9–2.0 seconds.
+The code certifies source/intent before embedding, then vector data/metadata and
+a newly written committed marker. These ordered publication waits remain even
+when scans are smaller. Not every fence necessarily consumes a separate tick.
+The fixed model delay aligns with the publication period and each cohort is
+small, so do not generalize these results into a universal sharding regression.
+They do establish that the current evidence does not justify implementation or
+migration for speed or first-failure improvement.
+
+Every final SDK retry list was empty, while the immediate disk snapshot retained
+one retry row per trial: final deletion had not crossed its next publication
+barrier. This is not a missing committed target or proof of permanent deletion.
+No crash/power-loss/restart-replay claim is made from these runs.
+
+A separate empty isolated engine advertised state::get/set/update/delete/list/
+list_groups. state::set returned new_value and old_value, not a revision or
+durability receipt. No flush/commit function was advertised in that listing;
+undocumented/internal capabilities remain unverified. An acknowledgement cannot
+replace readback/fsync based on these observations.
+In particular, no journal/WAL implementation or its fsync contract was inspected.
+It is unverified whether a durable journal already exists before the namespace
+snapshot becomes visible. Waiting for snapshot publication does not prove that
+such an earlier durable commit exists. The operating environment file has no
+AGENTMEMORY_STATE_SAVE_INTERVAL_MS override, and the renderer default is2,000ms;
+the effective live engine cadence was not queried or changed.
+
+Result: **NO-GO for production sharding/migration and no further routing
+implementation from this experiment.** Before another proposed fix, correlate an
+actual first-certification failure with SDK capture, file publication, namespace
+changes and ownership transitions. The fixed isolated load did not reproduce
+that failure. It uses only two serial targets and five scheduled writers, no
+capture/outbox/feature scheduler traffic, variable model latency or operating
+memory/CPU pressure. Which missing condition causes the production timeout is
+unknown. The next bounded diagnostic should capture a failed source/intent
+fence's SDK completion, expected-generation category, file signature/publication
+and recheck/deadline timestamps without bodies or raw identifiers. Retain the
+existing durability checks and historical unknowns; do not start a storage
+redesign or relax deadlines from this result.
+Full trial metrics, manifests, setup failure and code hashes are retained in the
+workspace `real-engine-unit-evidence` directory.
+
+Follow-up required validation passed: build, skills generation/check, docs
+synchronization/check,3,501 application tests passed and10 skipped. Independent
+review recalculated all12 trial summaries and matched the three harness hashes.
+An additional exploratory `tsc --noEmit --pretty false` failed with24 diagnostics
+in untouched src files, including TS6133/TS6196, leases.ts TS2345, slots.ts
+TS18048/TS2322, hybrid-search.ts/api.ts TS2339 and api.ts TS2783. No clean-baseline
+typecheck comparison was run, so these are not asserted to be proven pre-existing
+failures. They were not changed as part of this isolated experiment. The required
+build and tests passed; this experiment is not a release candidate.
