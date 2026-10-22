@@ -1,5 +1,11 @@
 # Changelog
 
+## Observation certification outside the session critical section (development only)
+
+- Preserve observation/session mutation and intent registration order, then await readback/fsync certification outside the session lock. Success still requires certification and fresh source/intent ownership; duplicate restoration follows the same rules. Keep LLM serialization, deadlines, retry policy, original source and warning counters unchanged.
+- Detect in-flight, failed and concurrent source mutations with begin/end epochs independent of durability pruning. Reject source changes/deletion and foreign generations without overwriting them. Retain the previous locked path when file readers lack the required guard.
+- Alternating synthetic comparison with a fixed 250 ms certificate gate: session-end waits 250.57–251.46 ms before, 0.19–0.38 ms after; capture ACK still follows certification. This is a lock-contention reproduction, not production latency or warning-recovery evidence. See docs/customizations/OBSERVATION-CERTIFICATION-LOCK.md. No operating deployment, restart, collector or permission change.
+
 ## Bounded session-end retry diagnostics (development only)
 
 - Add privacy-filtered legacy collector retry snapshots and slow session-end stage diagnostics. Preserve retry order, backoff, request deadlines, ACK and storage behavior; diagnostic failures cannot change delivery outcomes.

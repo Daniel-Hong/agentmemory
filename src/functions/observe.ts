@@ -14,7 +14,7 @@ import { withKeyedLock } from "../state/keyed-mutex.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { isCaptureKey } from "../capture/event-record.js";
 import { claimBackfillPrompt, isBackfillPrompt, recordLivePrompt } from "../capture/prompt-ledger.js";
-import { getSearchIndex, getVectorIndex, scheduleIndexSave, enqueueObservationEmbedding } from "./search.js";
+import { getSearchIndex, getVectorIndex, scheduleIndexSave, prepareObservationEmbedding } from "./search.js";
 import { getAgentId } from "../config.js";
 import { logger } from "../logger.js";
 import { saveImageToDisk } from "../utils/image-store.js";
@@ -44,17 +44,22 @@ export function extractImage(d: unknown): string | undefined {
   return undefined;
 }
 
-export async function restoreIndexEntries(obs: CompressedObservation): Promise<void> {
-  if (typeof obs.title !== "string" || !obs.sessionId) return;
+async function prepareIndexEntries(obs: CompressedObservation, deferCertification = false): Promise<() => Promise<void>> {
+  if (typeof obs.title !== "string" || !obs.sessionId) return async () => {};
   const search = getSearchIndex();
   if (!search.has(obs.id)) {
     search.add(obs);
     scheduleIndexSave();
   }
   const vectors = getVectorIndex();
-  if (vectors && !vectors.has(obs.id)) {
-    await enqueueObservationEmbedding(obs.id, obs.sessionId);
-  }
+  return vectors && !vectors.has(obs.id)
+    ? prepareObservationEmbedding(obs.id, obs.sessionId, deferCertification)
+    : async () => {};
+}
+
+export async function restoreIndexEntries(obs: CompressedObservation): Promise<void> {
+  const certify = await prepareIndexEntries(obs);
+  await certify();
 }
 
 export function registerObserveFunction(
@@ -179,12 +184,14 @@ export function registerObserveFunction(
       const livePrompt = submittedPrompt && !backfillPrompt ? submittedPrompt : undefined;
       const promptRef = durable || typeof payload.eventId !== "string" ? obsId : payload.eventId;
 
-      return withKeyedLock(`obs:${payload.sessionId}`, async () => {
+      const deferCertification = kv.backend !== "file" || (typeof kv.observationReader?.mutationRevision === "function" && typeof kv.observationReader?.pendingMutations === "function");
+      let certify: () => Promise<void> = async () => {};
+      const result = await withKeyedLock(`obs:${payload.sessionId}`, async () => {
         // A timed-out capture can already be stored; replay must not scan the session again.
         const stored = durable ? await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId) : undefined;
         if (stored) {
           if (livePrompt) await recordLivePrompt(kv, payload.sessionId, livePrompt, promptRef);
-          await restoreIndexEntries(stored);
+          certify = await prepareIndexEntries(stored, deferCertification);
           return { observationId: obsId, deduplicated: true, existing: true };
         }
         const existing = kv.observationReader
@@ -371,7 +378,7 @@ export function registerObserveFunction(
         const synthetic = (await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId))!;
         getSearchIndex().add(synthetic);
         scheduleIndexSave();
-        await enqueueObservationEmbedding(synthetic.id, synthetic.sessionId);
+        certify = await prepareObservationEmbedding(synthetic.id, synthetic.sessionId, deferCertification);
 
         await sdk.trigger({
           function_id: "stream::set",
@@ -392,6 +399,8 @@ export function registerObserveFunction(
         });
         return { observationId: obsId };
       });
+      await certify();
+      return result;
     },
   );
 }

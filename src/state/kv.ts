@@ -132,11 +132,17 @@ export class StateKV {
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-    return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
-      this.observationReader?.invalidateCaptureSummary(scope)
-      this.graphFileList?.invalidate(scope)
+    const finish = this.observationReader?.beginMutation?.(scope)
+    try {
+      return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
+        this.observationReader?.invalidateCaptureSummary(scope)
+        this.graphFileList?.invalidate(scope)
+        throw error
+      }).finally(() => finish?.())
+    } catch (error) {
+      finish?.()
       throw error
-    })
+    }
   }
 
   private record(scope: string, key: string, value: unknown, deletedExisting = false): void {

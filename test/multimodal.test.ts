@@ -17,6 +17,7 @@ vi.mock("../src/functions/search.js", () => ({
   }),
   vectorIndexAddGuarded: vi.fn().mockResolvedValue(false),
   enqueueObservationEmbedding: vi.fn().mockResolvedValue(undefined),
+  prepareObservationEmbedding: vi.fn(async () => async () => {}),
   scheduleIndexSave: vi.fn(),
 }));
 

@@ -30,6 +30,7 @@ export function sessionStats(rows){
 }
 export function createObservationReader({storePath,kv}){
  if(!isAbsolute(storePath))throw fail('absolute_state_store_path_required');
+ const activeMutations=new Map();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function revision(scope){
@@ -161,5 +162,5 @@ export function createObservationReader({storePath,kv}){
   if(bytes(body)>PAGE_BYTES)throw fail('observation_changed_exceeds_page_budget',413);
   return body;
  }
- return {record,snapshot,list,response,revision,captureSummary,invalidateCaptureSummary};
+ return {record,snapshot,list,response,revision,beginMutation(scope){if(!scope.startsWith('mem:obs:'))return()=>{};mutations.set(scope,(mutations.get(scope)??0)+1);activeMutations.set(scope,(activeMutations.get(scope)??0)+1);let ended=false;return()=>{if(ended)return;ended=true;mutations.set(scope,(mutations.get(scope)??0)+1);const left=activeMutations.get(scope)-1;if(left)activeMutations.set(scope,left);else activeMutations.delete(scope);};},pendingMutations:scope=>activeMutations.get(scope)??0,mutationRevision:scope=>mutations.get(scope)??0,captureSummary,invalidateCaptureSummary};
 }

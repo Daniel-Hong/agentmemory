@@ -8,6 +8,7 @@ export const EMBEDDING_COMMITTED_NAMESPACE: "mem:embedding-committed:v1";
 export interface EmbeddingRecovery {
  add(item: EmbeddingIntent): Promise<boolean>;
  enqueue(item: EmbeddingIntent): Promise<boolean>;
+ prepareEnqueue(item: EmbeddingIntent): Promise<() => Promise<boolean>>;
  enqueueBatch(items: EmbeddingIntent[]): Promise<void>;
  initialize(): Promise<void>;
  pump(): Promise<void>;

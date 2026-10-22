@@ -49,6 +49,43 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       await certifyIntent(item);return !old;
     }));
   }
+  function prepareEnqueue(item){
+    if(kv.backend==='file'&&(typeof kv.observationReader?.mutationRevision!=='function'||typeof kv.observationReader?.pendingMutations!=='function'))return Promise.reject(Object.assign(Error('embedding_source_guard_unavailable'),{code:'EMBEDDING_SOURCE_GUARD_UNAVAILABLE'}));
+    if(stopped)return Promise.reject(Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'}));
+    return track(withKeyedLock(intentKey(item.id),async()=>{
+      await initialize();
+      const scope=sourceScope(item),revision=()=>kv.observationReader?.mutationRevision?.(scope);
+      const sourceRevision=revision();
+      const sourceChanged=()=>Object.assign(Error('embedding_source_changed'),{code:'EMBEDDING_SOURCE_CHANGED'});
+      async function checkSource(){
+        const row=await kv.get(scope,item.id);
+        if(kv.observationReader?.pendingMutations?.(scope)||!row||row.id!==item.id||item.kind!=='memory'&&row.sessionId!==item.sessionId||revision()!==sourceRevision)throw sourceChanged();
+      }
+      await checkSource();
+      const old=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+      if(!old)await retainUnlocked(item,{code:'CAPTURE_PENDING_EMBEDDING'},false);
+      let owned=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+      if(owned&&typeof owned.generation!=='string'){
+        owned={...owned,generation:randomUUID()};await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,owned);
+      }
+      const generation=owned?.generation;
+      const changed=()=>Object.assign(Error('embedding_intent_changed'),{code:'EMBEDDING_INTENT_CHANGED'});
+      const matches=row=>row&&row.id===item.id&&row.sessionId===item.sessionId&&row.kind===item.kind&&row.generation===generation;
+      if(!matches(owned))throw changed();
+      async function check(){
+        if(stopped)throw Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'});
+        if(!matches(await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id)))throw changed();
+        await checkSource();
+      }
+      let certification;
+      return()=>certification??=track((async()=>{
+        await withKeyedLock(intentKey(item.id),check);
+        await certifyIntent(item);
+        await withKeyedLock(intentKey(item.id),check);
+        return !old;
+      })());
+    }));
+  }
   function enqueueBatch(items){
     if(stopped)return Promise.reject(Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'}));
     return track((async()=>{
@@ -248,5 +285,5 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
   function start(){if(stopped||interval)return;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});interval=setInterval(()=>void pump().catch(error=>{state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});}),15000);interval.unref();}
   if(schedule)start();
-  return {add,enqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
+  return {add,enqueue,prepareEnqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),snapshot:()=>structuredClone(state)};
 }

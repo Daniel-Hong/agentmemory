@@ -24,9 +24,20 @@ let currentEmbeddingProvider: EmbeddingProvider | null = null
 let embeddingRecovery: {
   add(item: EmbeddingIntent): Promise<boolean>;
   enqueue(item: EmbeddingIntent): Promise<unknown>;
+  prepareEnqueue?(item: EmbeddingIntent): Promise<() => Promise<unknown>>;
   enqueueBatch(items: EmbeddingIntent[]): Promise<void>;
 } | null = null
 export function setEmbeddingRecovery(recovery: typeof embeddingRecovery): void { embeddingRecovery = recovery }
+export async function prepareObservationEmbedding(id: string, sessionId: string, deferCertification = true): Promise<() => Promise<void>> {
+  if (!vectorIndex || !currentEmbeddingProvider) return async () => {};
+  if (!embeddingRecovery) throw new Error('embedding_recovery_not_ready');
+  if (!deferCertification || !embeddingRecovery.prepareEnqueue) {
+    await embeddingRecovery.enqueue({ id, sessionId, kind: 'synthetic' });
+    return async () => {};
+  }
+  const certify = await embeddingRecovery.prepareEnqueue({ id, sessionId, kind: 'synthetic' });
+  return async () => { await certify(); };
+}
 export async function enqueueObservationEmbedding(id: string, sessionId: string): Promise<void> {
   if (!vectorIndex || !currentEmbeddingProvider) return
   if (!embeddingRecovery) throw new Error('embedding_recovery_not_ready')
