@@ -1,5 +1,11 @@
 # Changelog
 
+## Smaller certification-unit experiment (development only)
+
+- Add an isolated synthetic routing adapter to compare the current namespace with sixteen actual durable units through compression, source/intent certification and index/marker publication. No production routing, storage migration, timeout, inference serialization or acknowledgement behavior is changed.
+- Preserve future metadata-only observation correlation across process exit using a private atomic run-key file; distinguish absent and unsupported retry fields without exposing raw errors. The two earlier unmatched removals remain unknown.
+- Scope, acceptance criteria and engine/migration limitations are recorded in docs/customizations/STORAGE-UNIT-EXPERIMENT.md. This is an experiment, not an operating fix or deployment candidate.
+
 ## Compression preparation and recovery evidence (development only)
 
 - Reuse the existing maintained observation budget and point-read the replaced source instead of materializing the entire namespace for each compression; preserve cold initialization, uncertain-state failure, all storage certification and serialized inference. Preserve endedAt on repeated completed session-end requests while allowing existing feature enqueue.
