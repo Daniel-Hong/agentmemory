@@ -11,7 +11,7 @@ it('routes the complete compression certification and publication through sixtee
  const certificates=result.certificateEvents.filter(row=>row.kind==='source_intent');
  expect(certificates).toHaveLength(2);
  expect(certificates.map(row=>row.physicalSelection)).toEqual(['target-0','target-1'].map(key=>[{family:'source',unit:storageUnitFor(key)},{family:'retry',unit:storageUnitFor(key)}]));
- expect(result.certificateEvents.filter(row=>row.kind==='committed_marker').map(row=>row.physicalSelection)).toEqual(['target-0','target-1'].map(key=>[{family:'marker',unit:storageUnitFor(key)}]));
+ expect(result.certificateEvents.filter(row=>row.kind==='committed_marker').map(row=>row.physicalSelection).sort((a,b)=>a[0].unit-b[0].unit)).toEqual(['target-0','target-1'].map(key=>[{family:'marker',unit:storageUnitFor(key)}]).sort((a,b)=>a[0].unit-b[0].unit));
 });
 it('keeps originals and a real durable retry instead of certifying a delayed shard',async()=>{
  const result=await runCompressionCertificationScenario({namespaceBytes:512*1024,itemCount:1,publicationDelayMs:80,timeoutMs:30,storageUnitCount:16});

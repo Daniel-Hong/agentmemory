@@ -1,5 +1,10 @@
 # Changelog
 
+## Release compatibility validation
+
+- Retain the explicitly supported deployed daniel.23 export version while preparing daniel.24; import validation and data shape are otherwise unchanged. Add a synthetic regression. Preserve unsupported-version rejection.
+- Compare independent experimental committed-marker results without imposing a false completion order; retain exact family, unit and count assertions. No operating data import, migration or replay.
+
 ## Bound concurrent certification scans (development only)
 
 - Admit one physical namespace read at a time per durability fence so compatible requests waiting behind it can union their keys for the next scan. Keep the first scan immediate; add no fixed batching delay, result cache, timeout increase or weaker verification. Preserve per-caller cancellation, full scan/signature/fsync and final ownership checks.
@@ -157,6 +162,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.30-daniel.24] — 2026-10-22
 ## [0.9.30-daniel.22] — 2026-10-22
 ## [0.9.30-daniel.21] — 2026-10-22
 ## [0.9.30-daniel.20] — 2026-10-22
@@ -622,6 +628,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.30-daniel.24]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.22...v0.9.30-daniel.24
 [0.9.30-daniel.22]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.21...v0.9.30-daniel.22
 [0.9.30-daniel.21]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.20...v0.9.30-daniel.21
 [0.9.30-daniel.20]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.19...v0.9.30-daniel.20
