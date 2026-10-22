@@ -68,3 +68,10 @@ it('still validates corrupt unselected data after continuing a private oversized
 it('rejects an invalid projection policy before opening a file',async()=>{
  await expect(readNamespaceEntries('/synthetic/not-present',{allowProjectionOverflow:true} as any)).rejects.toMatchObject({code:'state_namespace_projection_policy_invalid'});
 });
+it('bounds a real hinted union over 4 MiB and falls back to each pair own selection',async()=>{
+ const value='x'.repeat(3*1024*1024),path=await fixture(JSON.stringify({a:value,b:value})),selections:string[][]=[];
+ const reader=createSharedNamespaceReader({read:async(path,options)=>{selections.push([...options.keys]);return readNamespaceEntries(path,options);}});
+ const results=await Promise.all(['a','b'].map(key=>reader.read(path,{keys:new Set([key]),joinKeys:new Set(['a','b'])})));
+ expect(results.map(x=>[...x.values.keys()])).toEqual([['a'],['b']]);expect(selections).toEqual([['a','b'],['a'],['b']]);
+ expect(reader.snapshot()).toMatchObject({projectionFallbacks:2,startedReads:3,activeReads:0,activeWaiters:0});
+});

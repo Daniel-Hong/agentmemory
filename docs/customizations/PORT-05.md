@@ -49,3 +49,7 @@ Important3을 수용했다. file backend는 canonical+intent의 disk fence를 �
 file backend의 capture intent·canonical·completion marker에는 실제 파일 fence를 사용한다. 다른 backend는 기존 SDK/readback 계약을 유지하며 POSIX disk durability로 인증했다고 주장하지 않는다. legacy 교체 검증은 합성 파일/KV에서만 수행했다. live III/Ollama/전원 장애/원격 Codex/Windows 시험은 후속 통합 검증 범위다.
 
 변경은 personal 포크에만 반영한다. 운영 서버·클라이언트 설정 미적용이며 별도 승인 시스템을 새로 만든 것이 아니다. 수동 pause/pressure·bounded API/Viewer 전체는 다음 소비자 이식 단위에 남는다. 기존 PORT-04 고정 후보 ZIP을 바꾸거나 새 운영 배포 묶음으로 재명명하지 않는다. 코드 롤백에서도 최신 intent/committed namespace 및 원문·이력을 보존한다. 장기기억은 조회 불가 및 별도 수동 검토 대기, 저장하지 않았다. 최종 commit/tree·증거 해시는 프로젝트 outputs/port-05-embedding-publication/receipt.json에서 확인한다.
+
+## Same-pump certification follow-up (2026-10-22)
+
+Bounded independent intent verification requests bounded key unions within the existing pump selection to reuse active physical reads. LLM calls, foreground ACK, committed-marker fences and pending-state recovery remain serialized/verified as before. See [design, measured comparison and rollout boundary](EMBEDDING-PUMP-CERTIFICATION.md). Development only; no operating acceptance claim or historical-counter reset.

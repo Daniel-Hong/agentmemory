@@ -137,3 +137,18 @@ it('refuses private overflow when a cancelled started participant left additiona
  expect(calls).toHaveLength(2);expect([...calls[1].opts.keys]).toEqual(['small']);calls[1].finish();await surviving;
  expect(reader.snapshot()).toMatchObject({projectionFallbacks:1,activeReads:0,activeWaiters:0,sharedJobs:0});
 });
+it('keeps a cohort hint separate from waiter ownership and private overflow fallback',async()=>{
+ const {reader,calls}=harness();
+ const pending=reader.read('/synthetic',{keys:new Set(['own']),joinKeys:new Set(['own','other-large'])});await turn();
+ expect([...calls[0].opts.keys]).toEqual(['own','other-large']);expect(calls[0].opts.allowProjectionOverflow()).toBe(false);
+ calls[0].fail(Object.assign(Error('synthetic >4MiB union'),{code:'state_namespace_projection_limit'}));await turn();await turn();
+ expect(calls).toHaveLength(2);expect([...calls[1].opts.keys]).toEqual(['own']);expect(calls[1].opts.joinKeys).toBeUndefined();
+ calls[1].finish();expect([...(await pending).values.keys()]).toEqual(['own']);expect(reader.snapshot().projectionFallbacks).toBe(1);
+});
+it('permits a delayed cohort peer to join a started hinted scan and preserves cancellation isolation',async()=>{
+ const {reader,calls}=harness(),c=new AbortController();
+ const first=reader.read('/synthetic',{keys:new Set(['a']),joinKeys:new Set(['a','b']),signal:c.signal});const rejected=expect(first).rejects.toMatchObject({name:'AbortError'});await turn();
+ const second=reader.read('/synthetic',{keys:new Set(['b']),joinKeys:new Set(['a','b'])});await turn();expect(calls).toHaveLength(1);
+ c.abort();await rejected;expect(calls[0].opts.signal.aborted).toBe(false);expect(calls[0].opts.allowProjectionOverflow()).toBe(false);
+ calls[0].finish();expect((await second).values.get('b')).toBe(1);
+});

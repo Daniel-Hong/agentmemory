@@ -560,3 +560,16 @@ it('keeps unresolved legacy ownership visible independently of old spool attempt
  expect(report.problems.find(p=>p.code==='capture-legacy-outbox')?.message).toContain('14');
  expect(report.status).toBe('warn');
 });
+it('preserves historical attempts separately from unresolved legacy delivery and display expiry',()=>{
+ const capture={policy:{retryIntervalMs:10000,maxAttempts:5},inbox:null,sinceStart:{},legacyOutbox:{records:1863,available:true,complete:true},spool:[{records:0,maxBytes:1048576,maxAgeHours:24,stats:{dropped:190,lastDropAt:'2026-09-24T11:00:00Z',lastDropReason:'too-large'}}]};
+ const report=evaluateStatus(inputs({capture: capture as never}));
+ expect(codes(report)).toEqual(expect.arrayContaining(['capture-legacy-outbox','capture-spool-dropped']));
+ const history=report.problems.find(p=>p.code==='capture-spool-dropped')!;
+ expect(history.message).toContain('190 failed append attempts');expect(history.message).toContain('same event');expect(history.message).toContain('permanent loss is not established');
+ const delivered={...capture,legacyOutbox:{records:0,available:true,complete:true}};
+ expect(codes(evaluateStatus(inputs({capture:delivered as never})))).toContain('capture-spool-dropped');
+ expect(codes(evaluateStatus(inputs({capture:delivered as never})))).not.toContain('capture-legacy-outbox');
+ const expired=evaluateStatus(inputs({now:new Date('2026-09-25T12:00:00Z'),capture:capture as never}));
+ expect(codes(expired)).toContain('capture-legacy-outbox');expect(codes(expired)).not.toContain('capture-spool-dropped');
+ expect(capture.spool[0]!.stats.dropped).toBe(190);expect(JSON.stringify(expired)).not.toMatch(/190.*(?:recovered|delivered|resolved)/i);
+});

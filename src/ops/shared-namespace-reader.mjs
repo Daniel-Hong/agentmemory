@@ -20,7 +20,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     try{
       if(!job.waiters.size)return;
       const singleton=job.waiters.size===1;
-      if(singleton)job.keys=[...job.waiters][0].keys;
+      if(singleton&&!job.hinted)job.keys=[...job.waiters][0].keys;
       const result=await actual(job.path,{...job.options,keys:job.keys,signal:job.controller.signal,maxSelectedBytes,
         allowProjectionOverflow:()=>{
           if(job.waiters.size!==1)return false;
@@ -38,21 +38,23 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     }finally{job.joinable=false;jobs.delete(job);}
   }
   async function shared(path,options){
-    const keys=new Set(options.keys??[]);
+    const {joinKeys,...readOptions}=options;options=readOptions;
+    const keys=new Set(options.keys??[]),requestedKeys=new Set([...keys,...(joinKeys??[])]);
+    const hinted=requestedKeys.size>keys.size;
     if(options.onEntry||options.maxSelectedBytes!==undefined||options.allowProjectionOverflow!==undefined){counts.directFallbacks++;return actual(path,options);}
     let job=[...jobs].find(j=>j.joinable&&j.path===path&&j.waiters.size<maxWaiters&&
       (j.options.checkIntervalBytes??0)===(options.checkIntervalBytes??0)&&
       (j.options.chunkSize??64*1024)===(options.chunkSize??64*1024)&&
-      (j.started?[...keys].every(key=>j.keys.has(key)):new Set([...j.keys,...keys]).size<=maxKeys));
-    if(!job&&(jobs.size>=maxActiveReads||keys.size>maxKeys)){
+      (j.started?[...keys].every(key=>j.keys.has(key)):new Set([...j.keys,...requestedKeys]).size<=maxKeys));
+    if(!job&&(jobs.size>=maxActiveReads||requestedKeys.size>maxKeys)){
       counts.directFallbacks++;return actual(path,options);
     }
     const joined=Boolean(job);
     if(!job){
-      job={path,options,keys:new Set(keys),started:false,joinable:true,controller:new AbortController(),waiters:new Set()};
+      job={path,options,keys:new Set(requestedKeys),hinted,started:false,joinable:true,controller:new AbortController(),waiters:new Set()};
       jobs.add(job);counts.peakSharedJobs=Math.max(counts.peakSharedJobs,jobs.size);
       queueMicrotask(()=>void start(job));
-    }else if(!job.started){for(const key of keys)job.keys.add(key);}
+    }else if(!job.started){for(const key of requestedKeys)job.keys.add(key);job.hinted||=hinted;}
     if(joined){counts.sharedRequests++;notify(options.onShared);}
     const result=await new Promise((resolve,reject)=>{
       const waiter={keys,finish(error,value){

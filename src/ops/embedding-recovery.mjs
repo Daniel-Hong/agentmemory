@@ -125,7 +125,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     publications.set(item.id,promise);track(promise);
     promise.then(()=>{if(publications.get(item.id)===promise)publications.delete(item.id)},()=>{if(publications.get(item.id)===promise)publications.delete(item.id)});
   }
-  async function perform(item,text) {
+  async function prepare(item,text,certify=true) {
     await initialize();
     if(text===null){await withKeyedLock(intentKey(item.id),()=>discardUnlocked(item));return false;}
     const fingerprint=digest(text);
@@ -138,26 +138,42 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
       await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...queued,id:item.id,sessionId:item.sessionId,kind:item.kind,attempts:queued?.attempts??0,retryAt:queued?.retryAt??0,generation,fingerprint,phase:inMemory?'embedded':'queued'});
       pending(item);
-      await certifyIntent(item);
+      if(certify)await certifyIntent(item);
     });
+    return {item,text,generation,fingerprint,inMemory};
+  }
+  async function executePrepared({item,text,generation,fingerprint,inMemory}) {
+    if(stopped||backgroundPaused())return false;
+    const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+    if(queued?.generation!==generation||queued.fingerprint!==fingerprint)return false;
+    const latest=await current(item);
+    if(latest===null||digest(latest)!==fingerprint)return false;
+    if(inMemory&&!(accepted.get(item.id)===fingerprint&&index.vectors?.has(item.id)))return false;
+    if(stopped||backgroundPaused())return false;
     try {
-      if(!inMemory){
-        const vector=await provider.embed(text);
-        if(vector.length!==provider.dimensions)throw Object.assign(Error('embedding_dimension_mismatch'),{code:'EMBEDDING_DIMENSION_MISMATCH'});
+      const vector=inMemory?null:await provider.embed(text);
+      if(!inMemory&&(!vector||vector.length!==provider.dimensions))throw Object.assign(Error('embedding_dimension_mismatch'),{code:'EMBEDDING_DIMENSION_MISMATCH'});
+      const ready=await withKeyedLock(intentKey(item.id),async()=>{
+        const owned=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+        if(owned?.generation!==generation||owned.fingerprint!==fingerprint)return false;
         const canonical=await current(item);
-        if(canonical===null){await withKeyedLock(intentKey(item.id),()=>discardUnlocked(item));return false;}
-        if(digest(canonical)!==fingerprint){await retain(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);return false;}
-        index.add(item.id,item.sessionId,vector);accepted.set(item.id,fingerprint);onIndexChanged?.();
-      }
-      await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id),phase:'embedded'});
+        if(canonical===null){await discardUnlocked(item);return false;}
+        if(digest(canonical)!==fingerprint){await retainUnlocked(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);return false;}
+        if(vector){index.add(item.id,item.sessionId,vector);accepted.set(item.id,fingerprint);onIndexChanged?.();}
+        await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...owned,phase:'embedded'});
+        return true;
+      });
+      if(!ready)return false;
       publish(item,generation,fingerprint);
       return true;
     }catch(error){
       const code=networkErrorCode(error);
       if(!error?.providerUnavailable&&code!=='EMBEDDING_DIMENSION_MISMATCH'&&(error?.message==='fetch failed'||code==='OLLAMA_TIMEOUT'||/^(ECONN|ENET|EHOST|UND_ERR)/.test(code)))readiness?.markUnavailable(error);
-      await retain(item,error,!error?.providerUnavailable);logger?.warn('Embedding retained for recovery',{id:item.id,errorCode:code});return false;
+      await withKeyedLock(intentKey(item.id),async()=>{if((await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id))?.generation===generation)await retainUnlocked(item,error,!error?.providerUnavailable);});
+      logger?.warn('Embedding retained for recovery',{id:item.id,errorCode:code});return false;
     }
   }
+  async function perform(item,text){const prepared=await prepare(item,text);return prepared?executePrepared(prepared):false;}
   function add(item){if(stopped)return Promise.resolve(false);return track(withKeyedLock(key(item.id),async()=>{if(stopped)return false;if(backgroundPaused()){await retain(item,{code:'BACKGROUND_PAUSED'},false);return false;}return backgroundTask(async()=>perform(item,await current(item)))();}));}
   async function reconcile(limit=Infinity){
     await initialize();
@@ -183,15 +199,44 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     try{
       if(!reconciled)await reconcile(50);
       const rows=await kv.list(EMBEDDING_RETRY_NAMESPACE);
-      let attempted=0;
-      for(const item of rows){
+      const groups=new Map();
+      for(const item of rows.filter(item=>!(item.retryAt>clock())&&!publications.has(item.id)).slice(0,5)){
+        const scope=sourceScope(item);if(!groups.has(scope))groups.set(scope,[]);groups.get(scope).push(item);
+      }
+      for(const items of groups.values()){
         if(stopped||backgroundPaused())break;
-        if(item.retryAt>clock()||publications.has(item.id))continue;
-        if(attempted++>=5)break;
-        await withKeyedLock(key(item.id),async()=>{
-          if(stopped||publications.has(item.id))return;
-          const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);if(!queued)return;
-          await perform(queued,await current(queued));
+        const locked=[...items].sort((a,b)=>key(a.id).localeCompare(key(b.id)));
+        const withModels=(offset,fn)=>offset===locked.length?fn():withKeyedLock(key(locked[offset].id),()=>withModels(offset+1,fn));
+        await withModels(0,async()=>{
+          const prepared=[];
+          for(const item of items){
+            if(stopped||backgroundPaused())break;
+            if(publications.has(item.id))continue;
+            try{
+              const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);if(!queued||queued.retryAt>clock())continue;
+              const result=await prepare(queued,await current(queued),false);if(result)prepared.push(result);
+            }catch(error){state.lastError=networkErrorCode(error);}
+          }
+          if(!prepared.length)return;
+          const selections=prepared.map(({item})=>[{scope:sourceScope(item),key:item.id},{scope:EMBEDDING_RETRY_NAMESPACE,key:item.id}]);
+          let results;
+          if(kv.backend==='file'&&typeof kv.durability?.waitForKeyGroups==='function'){
+            try{results=await kv.durability.waitForKeyGroups(kv,selections);}
+            catch(reason){results=prepared.map(()=>({status:'rejected',reason}));}
+          }else{
+            results=[];for(const selection of selections){try{await fence(selection);results.push({status:'fulfilled'});}catch(reason){results.push({status:'rejected',reason});}}
+          }
+          for(const [offset,entry] of prepared.entries()){
+            if(stopped||backgroundPaused())break;
+            const result=results?.[offset];
+            if(result?.status!=='fulfilled'){
+              await withKeyedLock(intentKey(entry.item.id),async()=>{
+                if((await kv.get(EMBEDDING_RETRY_NAMESPACE,entry.item.id))?.generation===entry.generation)await retainUnlocked(entry.item,result?.reason,true);
+              });continue;
+            }
+            try{await executePrepared(entry);}catch(error){state.lastError=networkErrorCode(error);}
+            if(readiness?.snapshot?.().status==='waiting')break;
+          }
         });
         if(readiness?.snapshot?.().status==='waiting')break;
       }

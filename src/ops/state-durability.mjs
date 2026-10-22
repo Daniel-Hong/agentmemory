@@ -41,7 +41,34 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
   }
   async function drain(){while(active.size)await Promise.allSettled([...active]);await readSharing.drain();}
-  async function waitForKeys(kv,selected,{deadline,expectedValues}={}){
+  // Slots belong to this fence, so timed-out SDK calls still occupy capacity.
+  let groupedGets=0;const groupedQueue=[];
+  const captureTimeout=()=>Object.assign(Error('state_capture_timeout'),{code:'STATE_DURABILITY_TIMEOUT'});
+  function pumpGets(){
+    while(groupedGets<4&&groupedQueue.length){
+      const request=groupedQueue.shift();
+      if(request.batch.closed||clock()>=request.batch.deadline){request.reject(captureTimeout());continue;}
+      groupedGets++;
+      Promise.resolve().then(()=>{
+        if(request.batch.closed||clock()>=request.batch.deadline)throw captureTimeout();
+        return request.kv.get(request.scope,request.key);
+      }).then(request.resolve,request.reject).finally(()=>{groupedGets--;pumpGets();});
+    }
+  }
+  async function waitForKeyGroups(kv,groups,{deadline}={}){
+    if(!Array.isArray(groups)||groups.length<1||groups.length>5||groups.some(group=>!Array.isArray(group)||!group.length||group.some(item=>typeof item.scope!=='string'||typeof item.key!=='string'))||groups.reduce((n,group)=>n+group.length,0)>200)throw Error('state_durability_groups_invalid');
+    if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
+    const selections=groups.map(group=>group.map(({scope,key})=>({scope,key})));
+    const batch={deadline:Math.min(deadline??Infinity,clock()+timeoutMs),closed:false};
+    function close(){batch.closed=true;for(let i=groupedQueue.length-1;i>=0;i--)if(groupedQueue[i].batch===batch)groupedQueue.splice(i,1)[0].reject(captureTimeout());}
+    const limited={get:(scope,key)=>new Promise((resolve,reject)=>{groupedQueue.push({kv,scope,key,resolve,reject,batch});pumpGets();})};
+    const sharedSelection=new Map();
+    for(const selection of selections)for(const {scope,key} of selection){if(!sharedSelection.has(scope))sharedSelection.set(scope,new Set());sharedSelection.get(scope).add(key);}
+    const timer=setTimeout(close,Math.max(0,batch.deadline-clock()));
+    try{return await Promise.allSettled(selections.map(selected=>waitForKeys(limited,selected,{deadline:batch.deadline},sharedSelection)));}
+    finally{clearTimeout(timer);close();}
+  }
+  async function waitForKeys(kv,selected,{deadline,expectedValues}={},sharedSelection){
     if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
     if(expectedValues!==undefined&&(!Array.isArray(expectedValues)||expectedValues.length!==selected.length))throw Error('state_durability_expectations_invalid');
     const pinned=expectedValues===undefined?undefined:structuredClone(expectedValues);
@@ -60,10 +87,12 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const measurement=measurements.begin(expected.keys(),selected.length);
     let outcome='failed';
     try{
+    let captureFailed=false,captureError;
     try{
       // Bound SDK concurrency; serial capture alone can exhaust the publication deadline.
       for(let offset=0;offset<selected.length;offset+=4)await Promise.all(selected.slice(offset,offset+4).map(async({scope,key},index)=>{expected.get(scope).set(key,(await capture(scope,key,offset+index))??null);capturedKeyCount++;}));
-    }catch(error){lastCode=error?.code==='STATE_DURABILITY_TIMEOUT'?'STATE_CAPTURE_TIMEOUT':typeof error?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(error.code)?error.code:'STATE_CAPTURE_FAILED';throw failed();}
+    }catch(error){captureFailed=true;captureError=error;}
+    if(captureFailed){lastCode=captureError?.code==='STATE_DURABILITY_TIMEOUT'?'STATE_CAPTURE_TIMEOUT':typeof captureError?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(captureError.code)?captureError.code:'STATE_CAPTURE_FAILED';throw failed();}
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));
     async function check(){
       const absent=[],signatures=new Map();
@@ -76,7 +105,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
         const controller=new AbortController(),remaining=budgetMs-(clock()-began);
         if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         const timer=setTimeout(()=>controller.abort(),remaining);
-        try{const read=await readSharing.read(file.path,{keys:new Set(expected.get(file.scope).keys()),checkIntervalBytes:1024*1024,signal:controller.signal,onShared:()=>measurement?.sharedRead(),onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
+        try{const read=await readSharing.read(file.path,{keys:new Set(expected.get(file.scope).keys()),joinKeys:sharedSelection?.get(file.scope),checkIntervalBytes:1024*1024,signal:controller.signal,onShared:()=>measurement?.sharedRead(),onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
         for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want)){
           if(signatures.has(file.path))unchangedMismatches.set(file.scope,signatures.get(file.path));
           throw Error('state_namespace_not_committed');
@@ -150,5 +179,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot(),readSharing:readSharing.snapshot()})};
+  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot(),readSharing:readSharing.snapshot()})};
 }

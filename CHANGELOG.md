@@ -1,5 +1,11 @@
 # Changelog
 
+## Same-pump independent intent certification (development only)
+
+- Request bounded key unions for at most five same-namespace embedding pump items so ready requests can share an active namespace scan without waiting for slow captures while retaining per-item verification, failures and absolute deadlines. Bound grouped SDK concurrency and retain unresolved calls in their slots. Keep inference serialized and recheck generation/canonical ownership before and after inference.
+- Add real file-fence, failure/deadline, stop/pause/restart, foreign-generation and warning-semantics regressions. Foreground capture/outbox acknowledgement and historical failure counters retain their existing meaning.
+- Alternating 253 MB synthetic four-pair certification: 8.69 s to 2.21–2.22 s; scanned bytes 1,012,018,008 to 253,004,502. No production performance or warning-recovery claim. See docs/customizations/EMBEDDING-PUMP-CERTIFICATION.md for limits and proposed server-only rollout. No deployment/restart or permission change.
+
 ## Faster fully validated namespace scanning (development only)
 
 - Use native structural-token searches to skip non-structural runs in the raw JSON-prefix and compound-value scans. Retain full fatal UTF-8 decoding and JSON.parse validation for every entry, including unselected values; signature checks, cancellation, fsync, deadlines and receipt ownership rules are unchanged.
