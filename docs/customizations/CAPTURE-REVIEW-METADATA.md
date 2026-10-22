@@ -79,3 +79,32 @@ individual recovery evidence and are not resolved by metadata visibility.
 
 Upstream replacement: remove this custom route only after an authenticated,
 body-free upstream review path passes the same privacy/unknown/read-only tests.
+
+## Internal invocation contract correction
+
+The deployed .26 GET returned a fast 503; its internal stage was not logged. An isolated
+installed iii-engine/SDK 0.22.1 reproduction established that the engine adds
+`_caller_worker_id` to internal object payloads. The strict query validator rejected
+that transport field before history inspection; local mocks did not add it. The API's catch then returned
+its generic safe 503. Empty and one-row synthetic histories reproduced the same
+failure while direct local queries succeeded.
+
+The registration boundary now removes only this known string-valued transport
+field, without using or returning its value. Other fields and malformed transport
+metadata still fail before state reads. HTTP query validation remains strict and
+rejects that field. This grants no authorization and changes no retry, receipt,
+storage or timeout behavior.
+
+The corrected real-engine registration → SDK → StateKV → API path returned 200
+for empty, one-row and 22-row synthetic metadata histories. The opt-in
+`test/capture-review-metadata-real-engine.test.ts` retains that regression check;
+its external harness must provide `AM_METADATA_CONTRACT_EXPERIMENT=1`, an isolated
+`AM_ISOLATED_ENGINE_URL`, `AM_ISOLATED_ENGINE_STORE`, and explicit isolated `AGENTMEMORY_HOME`, `AGENTMEMORY_DATA_DIR`,
+`AGENTMEMORY_STATE_STORE_PATH` and temporary HOME paths under `/tmp`. The test rejects known production ports and never starts a production
+worker. Default tests do not connect to an engine.
+
+This corrects the demonstrated dispatch-contract defect, not operating quarantine.
+Operating .26 remains unchanged during development. A subsequent server-only
+update/restart and one bounded GET require separate operating approval. Large
+history/capacity, per-item unknown metadata, and unpaged-list memory limits above
+remain applicable; no operating originals were read to validate the correction.

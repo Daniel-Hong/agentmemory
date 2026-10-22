@@ -17,6 +17,14 @@ export function validCaptureMetadataQuery(input:CaptureMetadataQuery):boolean {
     (input.offset===undefined||Number.isSafeInteger(input.offset)&&input.offset>=0&&input.offset<=5000)&&
     (input.reviewRef===undefined||typeof input.reviewRef==='string'&&/^rmeta_[0-9a-f-]{36}$/.test(input.reviewRef));
 }
+// iii-engine adds this transport field to internal object payloads. It is not
+// query input or authorization evidence; HTTP validation remains unchanged.
+export function captureMetadataInvocationQuery(input:unknown):CaptureMetadataQuery {
+  if(!input||typeof input!=='object'||Array.isArray(input))throw fail('INVALID_CAPTURE_METADATA_QUERY');
+  const {_caller_worker_id,...query}=input as Record<string,unknown>;
+  if(_caller_worker_id!==undefined&&typeof _caller_worker_id!=='string'||!validCaptureMetadataQuery(query))throw fail('INVALID_CAPTURE_METADATA_QUERY');
+  return query;
+}
 export function createCaptureReviewMetadata(kv:StateKV,{budgetMs=2000}:{budgetMs?:number}={}) {
   if(!Number.isSafeInteger(budgetMs)||budgetMs<1||budgetMs>5000)throw fail('INVALID_CAPTURE_METADATA_BUDGET');
   const epoch=randomUUID(),references=new Map<string,string>();let active=false;

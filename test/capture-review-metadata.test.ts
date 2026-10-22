@@ -55,3 +55,12 @@ it('does not accept an unknown receipt state as completion',async()=>{
 it('does not call intent or marker identities present when both session fields are missing',async()=>{
  const f=await fixture(),h:any=history();delete h.sessionId;await f.kv.set(KV.captureReview,key,h);await f.kv.set(KV.embeddingRetry,id,{id});await f.kv.set(KV.embeddingCommitted,id,{id});const r=await f.query();expect(r.items[0]).toMatchObject({retryIntent:'unavailable',publicationMarker:'unavailable',nextStep:'metadata_unavailable',retryAuthorized:false});
 });
+
+it('accepts the engine caller field only at the registered invocation boundary without returning it',async()=>{
+ const f=await fixture();const {registerCaptureFunctions}=await import('../src/functions/capture.js');const {mockSdk}=await import('./helpers/mocks.js');const sdk=mockSdk({looseTrigger:true});const controller=registerCaptureFunctions(sdk as never,f.kv as never);
+ try{const fn=sdk.fns.get('mem::capture-review-metadata')!;const result:any=await fn({_caller_worker_id:'synthetic-private-caller',status:'dead',limit:25});expect(result.items).toHaveLength(1);expect(JSON.stringify(result)).not.toContain('synthetic-private');for(const spy of f.writes)expect(spy).not.toHaveBeenCalled();}finally{controller.stop();}
+});
+it('keeps other internal invocation fields and malformed caller metadata fail-closed before reads',async()=>{
+ const f=await fixture();const {registerCaptureFunctions}=await import('../src/functions/capture.js');const {mockSdk}=await import('./helpers/mocks.js');const sdk=mockSdk({looseTrigger:true});const controller=registerCaptureFunctions(sdk as never,f.kv as never);
+ try{const fn=sdk.fns.get('mem::capture-review-metadata')!;for(const input of [{_caller_worker_id:'synthetic-private',preview:true},{_caller_worker_id:'synthetic-private',sessionId:'synthetic-private'},{_caller_worker_id:{secret:'synthetic-private'}}])await expect(fn(input)).rejects.toMatchObject({code:'INVALID_CAPTURE_METADATA_QUERY'});expect(f.list).not.toHaveBeenCalled();expect(f.get).not.toHaveBeenCalled();}finally{controller.stop();}
+});

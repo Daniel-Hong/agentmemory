@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix the capture review metadata internal SDK boundary for iii-engine's caller envelope, retaining strict HTTP filters and privacy/read-only guarantees. Add real-engine registered-path and malformed-envelope regression coverage; operating quarantine recovery remains unverified.
+
 ## Capture review metadata (development only)
 
 - Add an authenticated, read-only metadata path that never queries capture inbox or canonical observation content and never returns preview, identifiers, generations, digests or raw errors. Process-local random references, explicit historical/non-atomic evidence, unavailable states and permanent retry/disk-verification false prevent false recovery claims.
