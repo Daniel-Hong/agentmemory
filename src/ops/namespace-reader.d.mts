@@ -9,6 +9,7 @@ export interface NamespaceReadOptions {
   onEntry?:(key:string,value:unknown)=>unknown;
   chunkSize?:number;
   signal?:AbortSignal;
+  onOpen?:(info:{fileBytes:number})=>unknown;
   onRead?:(info:NamespaceReadInfo)=>unknown;
   checkIntervalBytes?:number;
   maxSelectedBytes?:number;

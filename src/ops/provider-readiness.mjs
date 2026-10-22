@@ -14,6 +14,10 @@ export function safeFailureDetails(error) {
   for (const key of ['httpStatus','evalCount','responseChars','itemCount','itemLength']) {
     if (Number.isFinite(details[key])) result[key] = details[key];
   }
+  try {
+    const reference=details.certificateRef;
+    if(typeof reference==='string'&&/^[a-f0-9]{32}:[1-9][0-9]{0,15}$/.test(reference))result.certificateRef=reference;
+  } catch {}
   return result;
 }
 export function providerDeferredError(readiness, error) {

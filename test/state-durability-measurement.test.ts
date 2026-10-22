@@ -263,3 +263,32 @@ it('counts actual fence outcomes even when detailed measurement cannot start', a
   await expect(fence.waitForKeys(kv, selected)).resolves.toMatchObject({ synced: true });
   expect((fence.snapshot() as any).measurements.totals).toMatchObject({ completed: 1, verified: 1, failed: 0 });
 });
+
+it('correlates a failed fence with its retained trace while preserving original storage IO',async()=>{
+ const fence=fixture();hooks.permanentReadFailure=true;
+ const error=await fence.waitForKeys(kv,selected).catch(error=>error);
+ expect(error.diagnostics.certificateRef).toMatch(/^[0-9a-f]{32}:1$/);
+ const view=(fence.snapshot()as any).measurements,trace=view.failureTraces.recent[0];
+ expect(trace.certificateRef).toBe(error.diagnostics.certificateRef);expect(trace.budgetMs).toBe(60);expect(trace.startedAt).toBe(0);
+ expect(trace.timeline.some((row:any)=>row.phase==='capture_finished')).toBe(true);
+ expect(trace.timeline.some((row:any)=>row.phase==='read_requested')).toBe(true);
+ expect(trace.timeline.at(-1)).toMatchObject({phase:'deadline'});
+ expect(trace.timeline.some((row:any)=>row.phase==='signature_changed'&&row.stage==='readback')).toBe(true);
+ expect(JSON.stringify(trace)).not.toContain('PRIVATE');
+});
+it.each(['retry_generation','value'])('records only the fixed %s mismatch category',async mismatch=>{
+ const fence=fixture();const retry='mem:embedding-retry:v1';
+ const reader={get:async()=>{hooks.elapsed+=4;return mismatch==='retry_generation'?{generation:'PRIVATE_NEW'}:{value:'PRIVATE_EXPECTED'};}};
+ await fence.waitForKeys(reader,[{scope:retry,key:'PRIVATE_KEY'}]).catch(()=>{});
+ const trace=(fence.snapshot()as any).measurements.failureTraces.recent[0];
+ expect(trace.timeline.some((event:any)=>event.phase==='mismatch'&&event.mismatch===mismatch)).toBe(true);
+ expect(trace.timeline.some((event:any)=>event.phase==='unchanged_mismatch_skip')).toBe(true);
+ expect(JSON.stringify(trace)).not.toContain('PRIVATE');
+});
+it('does not mislabel an immediate capture rejection as deadline exhaustion',async()=>{
+ const fence=fixture();
+ await expect(fence.waitForKeys({get:async()=>{throw Object.assign(Error('PRIVATE_IO'),{code:'EIO'});}},selected)).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT',diagnostics:{stage:'capture'}});
+ const trace=(fence.snapshot()as any).measurements.failureTraces.recent[0];
+ expect(trace.failureReason).toBe('capture_error');expect(trace.elapsedMs).toBe(0);
+ expect(trace.timeline.some((event:any)=>event.phase==='deadline')).toBe(false);
+});

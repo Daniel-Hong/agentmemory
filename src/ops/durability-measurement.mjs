@@ -1,7 +1,8 @@
 import {createHmac,randomBytes} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 
-const HISTORY_LIMIT=8,NAMESPACE_LIMIT=8;
+const HISTORY_LIMIT=8,NAMESPACE_LIMIT=8,FAILURE_LIMIT=32,FAILURE_TTL_MS=15*60*1000,EVENT_LIMIT=32;
+const EVENTS=new Set(['capture_finished','revision_recapture','read_requested','read_queued','read_joined','read_started','read_opened','read_completed','read_failed','read_aborted','unchanged_mismatch_skip','mismatch','signature_changed','deadline']);
 const safe=(work,fallback)=>{try{return work();}catch{return fallback;}};
 const number=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?Math.min(value,Number.MAX_SAFE_INTEGER):null;
 const REASONS=new Map(Object.entries({
@@ -25,10 +26,10 @@ function kind(scope){
   return KINDS.get(scope)??'other';
 }
 
-export function createDurabilityMeasurements(){
+export function createDurabilityMeasurements({clock=()=>performance.now(),wallClock=()=>Date.now()}={}){
   const salt=safe(()=>randomBytes(32),null);
-  let recent=[],sequence=0,evicted=0,unavailable=0;
-  const totals={sinceAt:safe(()=>Date.now(),null),counterEpoch:safe(()=>randomBytes(16).toString('hex'),null),
+  let recent=[],sequence=0,evicted=0,unavailable=0,failures=[],failureEvicted=0,failureExpired=0,failureClockUnavailable=false;
+  const totals={sinceAt:safe(()=>wallClock(),null),counterEpoch:safe(()=>randomBytes(16).toString('hex'),null),
     completed:0,verified:0,failed:0,unknown:0,failedStages:{},failureReasons:{},saturated:false};
   function increment(object,key){
     const old=object[key]??0;
@@ -44,9 +45,14 @@ export function createDurabilityMeasurements(){
       increment(totals.failureReasons,stage==='capture'?captureReason(code):reason(code));
     }
   });}
-  function begin(scopes,keyCount){const measurement=safe(()=>{
+  function pruneFailures(){safe(()=>{
+    const now=safe(()=>number(wallClock()),null);if(now===null){failureClockUnavailable=true;return;}
+    const kept=failures.filter(sample=>now-sample.completedAt<FAILURE_TTL_MS);
+    failureExpired+=failures.length-kept.length;failures=kept;
+  },null);}
+  function begin(scopes,keyCount,{budgetMs,startedAt}={}){const measurement=safe(()=>{
     if(!salt)return null;
-    const began=performance.now();
+    const began=clock();
     if(number(began)===null)return null;
     let mark=began,phase='capture',closed=false,valid=true,checkAttempts=0,retryCount=0,failedStage=null,lastFailureReason=null;
     const phases={captureMs:0,readbackMs:0,fsyncMs:0,verifyMs:0,cleanupMs:0,retryWaitMs:0};
@@ -60,13 +66,27 @@ export function createDurabilityMeasurements(){
       });
     }
     const id=++sequence;
+    const certificateRef=/^[0-9a-f]{32}$/.test(totals.counterEpoch??'')?totals.counterEpoch+':'+id:null;
+    const timeline=[];let omittedEvents=0;
     function observe(work){if(!closed&&valid)try{work();}catch{valid=false;}}
     function advance(next){
-      const now=performance.now();
+      const now=clock();
       if(number(now)===null)throw Error('measurement_clock_unavailable');
       phases[phase+'Ms']+=Math.max(0,now-mark);mark=now;phase=next;
     }
     return {
+      certificateRef,
+      event(eventPhase,scope,info={}){observe(()=>{
+        if(!EVENTS.has(eventPhase))return;
+        const now=number(clock());if(now===null)throw Error('measurement_clock_unavailable');
+        const entry={phase:eventPhase,atMs:Math.max(0,now-began)};
+        const namespace=namespaces.get(scope);if(namespace)entry.namespaceToken=namespace.token;
+        for(const key of ['readId','bytesRead','fileBytes','ageMs','capturedKeyCount']){const value=number(info[key]);if(value!==null&&(key!=='readId'||Number.isSafeInteger(value)))entry[key]=value;}
+        for(const key of ['shared','started','complete','valueChanged','generationChanged'])if(typeof info[key]==='boolean')entry[key]=info[key];
+        if(['missing','retry_generation','value'].includes(info.mismatch))entry.mismatch=info.mismatch;
+        if(['capture','readback','fsync','verify'].includes(info.stage))entry.stage=info.stage;
+        if(timeline.length<EVENT_LIMIT)timeline.push(entry);else{timeline[EVENT_LIMIT-1]=entry;omittedEvents++;}
+      });},
       enter(next){observe(()=>advance(next));},
       skipUnchangedMismatch(){observe(()=>{unchangedMismatchSkips++;});},
       sharedRead(){observe(()=>{sharedReads++;});},
@@ -91,18 +111,25 @@ export function createDurabilityMeasurements(){
         observe(()=>advance(phase));closed=true;
         if(!valid){unavailable++;return;}
         const stored=safe(()=>{
-        const sample={id,completedAt:Date.now(),outcome,keyCount,namespaceCount,omittedNamespaces:namespaceCount-namespaces.size,
+        const completedAt=number(wallClock());if(completedAt===null)throw Error('measurement_clock_unavailable');
+        const sample={id,certificateRef,budgetMs:number(budgetMs),startedAt:number(startedAt),completedAt,outcome,keyCount,namespaceCount,omittedNamespaces:namespaceCount-namespaces.size,
           elapsedMs:Math.max(0,mark-began),phases,checkAttempts,rechecks:Math.max(0,checkAttempts-1),
           retryCount,retryReasons,unchangedMismatchSkips,sharedReads,failedStage:outcome==='failed'?failedStage??stage:null,
           failureReason:outcome==='failed'?lastFailureReason??(phase==='capture'?captureReason(code):reason(code)):null,scans,scanBytes,namespaces:[...namespaces.values()]};
         const next=[...recent,sample],evict=next.length>HISTORY_LIMIT;
-        recent=evict?next.slice(-HISTORY_LIMIT):next;
-        if(evict)evicted++;
+        const nextRecent=evict?next.slice(-HISTORY_LIMIT):next;
+        pruneFailures();
+        const nextFailures=outcome==='failed'?[...failures,{...sample,timeline,omittedEvents}]:failures;
+        const failureOverflow=nextFailures.length>FAILURE_LIMIT;
+        const boundedFailures=failureOverflow?nextFailures.slice(-FAILURE_LIMIT):nextFailures;
+        recent=nextRecent;failures=boundedFailures;
+        if(evict)evicted++;if(failureOverflow)failureEvicted++;
         return true;
       },false);
         if(!stored)unavailable++;
       },
     };
   },null);if(!measurement)unavailable++;return measurement;}
-  return {begin,complete,snapshot:()=>safe(()=>structuredClone({version:1,historyLimit:HISTORY_LIMIT,namespaceLimit:NAMESPACE_LIMIT,evicted,unavailable,totals,recent}),null)};
+  return {begin,complete,snapshot:()=>safe(()=>{pruneFailures();return structuredClone({version:1,historyLimit:HISTORY_LIMIT,namespaceLimit:NAMESPACE_LIMIT,evicted,unavailable,totals,recent,
+    failureTraces:{limit:FAILURE_LIMIT,retentionMs:FAILURE_TTL_MS,eventLimit:EVENT_LIMIT,evicted:failureEvicted,expired:failureExpired,clockUnavailable:failureClockUnavailable,lookupCoverage:'bounded_missing_is_unknown',physicalReadCompletionAfterAbort:'unknown',recent:failures}});},null)};
 }

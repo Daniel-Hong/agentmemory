@@ -1,5 +1,11 @@
 # Changelog
 
+## Bounded certification failure correlation (development only)
+
+- Connect sanitized compression errors to an epoch-bound certificate reference and retain bounded failed-certificate timelines through existing health diagnostics. Record SDK capture completion, local revision recapture, shared physical read lifecycle, typed mismatch, signature-change stage and deadline without values, raw generations, keys, paths or session identifiers.
+- Report completed shared scans to all active consumers; distinguish per-certificate participation from physical read counters. Preserve independent cancellation, full validation, fsync and deadlines. Diagnostic callbacks cannot mutate another consumer or change storage outcomes.
+- Retain at most 32 failures for 15 minutes, with 32 events/eight namespaces per failure and explicit coverage gaps. No operational activation or performance-fix claim. Scope, costs and limitations: docs/customizations/CERTIFICATION-FAILURE-CORRELATION.md.
+
 ## Isolated real-engine certification experiment (development only)
 
 - Extend the synthetic comparison harness with an explicit temporary-store SDK connection to installed iii 0.22.1. Seed and measured state mutations use the actual SDK; the engine owns file publication. Keep production code, storage layout, deadlines, inference serialization and acknowledgement behavior unchanged.

@@ -28,7 +28,7 @@ it('shares one validated scan across simultaneous requests while certifying each
  expect(hooks.syncs).toBe(4);
  const snapshot=fence.snapshot() as any;
  expect(snapshot.measurements.recent).toHaveLength(2);
- expect(snapshot.measurements.recent.reduce((n:number,s:any)=>n+s.scans,0)).toBe(1);
+ expect(snapshot.measurements.recent.reduce((n:number,s:any)=>n+s.scans,0)).toBe(2); // Each waiter receives scan attribution; physical reads remain counted once below.
  expect(snapshot.readSharing).toMatchObject({requests:2,sharedRequests:1,startedReads:1,activeReads:0,activeWaiters:0});
 });
 async function fixture(timeoutMs=150){

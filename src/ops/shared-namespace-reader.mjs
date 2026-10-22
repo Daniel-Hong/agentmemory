@@ -1,18 +1,33 @@
 import {readNamespaceEntries} from './namespace-reader.mjs';
+import {performance} from 'node:perf_hooks';
 
 export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024}={}){
   const jobs=new Set(),reads=new Set(),pendingRequests=new Set();
+  let readSequence=0;
   const counts={requests:0,sharedRequests:0,startedReads:0,completeReads:0,scanBytes:0,directFallbacks:0,projectionFallbacks:0,activeReads:0,activeWaiters:0,peakSharedJobs:0};
   const notify=fn=>{try{const result=fn?.();if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>{});}catch{}};
-  async function actual(path,options){
+  const now=()=>{try{const value=performance.now();return Number.isFinite(value)?value:null;}catch{return null;}};
+  const nextId=()=>readSequence<Number.MAX_SAFE_INTEGER?++readSequence:null;
+  const metadata=info=>{const result={};try{for(const key of ['fileBytes','bytesRead'])if(Number.isSafeInteger(info?.[key])&&info[key]>=0)result[key]=info[key];if(typeof info?.complete==='boolean')result.complete=info.complete;}catch{}return result;};
+  const diagnose=(options,event)=>notify(()=>options.onDiagnostic?.({...event}));
+  function status(job){const value={started:job.started===true,...job.openedInfo};const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);return value;}
+  async function actual(path,options,job={readId:nextId()}){
     counts.startedReads++;counts.activeReads++;
     let promise;
+    let lastInfo;
+    job.started=true;job.startedAt=now();
+    const emit=(phase,info)=>diagnose(options,{phase,readId:job.readId,...metadata(info)});
+    emit('started');
     try{
-      promise=Promise.resolve(read(path,{...options,onRead:info=>{
+      promise=Promise.resolve(read(path,{...options,onOpen:info=>{
+        job.openedInfo=metadata(info);notify(()=>options.onOpen?.({...info}));emit('opened',info);
+      },onRead:info=>{
+        lastInfo={...info};
         counts.scanBytes+=info.bytesRead??0;if(info.complete)counts.completeReads++;
-        notify(()=>options.onRead?.(info));
+        notify(()=>options.onRead?.({...info}));
       }}));
-      reads.add(promise);return await promise;
+      reads.add(promise);const result=await promise;emit('completed',lastInfo);return result;
+    }catch(error){emit(options.signal?.aborted?'aborted':'failed',lastInfo);throw error;
     }finally{reads.delete(promise);counts.activeReads--;}
   }
   async function start(job){
@@ -28,7 +43,9 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
           if([...job.keys].some(key=>!waiter.keys.has(key)))return false;
           job.joinable=false;return true;
         },
-        onRead:info=>{job.joinable=false;notify(()=>job.options.onRead?.(info));}});
+        onOpen:info=>{for(const waiter of job.waiters)notify(()=>waiter.options.onOpen?.({...info}));},
+        onDiagnostic:event=>{for(const waiter of job.waiters)diagnose(waiter.options,event);},
+        onRead:info=>{job.joinable=false;for(const waiter of job.waiters)notify(()=>waiter.options.onRead?.({...info}));}},job);
       job.joinable=false;
       for(const waiter of [...job.waiters])waiter.finish(null,result);
     }catch(error){
@@ -51,20 +68,21 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     }
     const joined=Boolean(job);
     if(!job){
-      job={path,options,keys:new Set(requestedKeys),hinted,started:false,joinable:true,controller:new AbortController(),waiters:new Set()};
+      job={path,options,keys:new Set(requestedKeys),hinted,started:false,startedAt:null,openedInfo:null,readId:nextId(),joinable:true,controller:new AbortController(),waiters:new Set()};
       jobs.add(job);counts.peakSharedJobs=Math.max(counts.peakSharedJobs,jobs.size);
       queueMicrotask(()=>void start(job));
     }else if(!job.started){for(const key of requestedKeys)job.keys.add(key);job.hinted||=hinted;}
     if(joined){counts.sharedRequests++;notify(options.onShared);}
     const result=await new Promise((resolve,reject)=>{
-      const waiter={keys,finish(error,value){
+      const waiter={keys,options,finish(error,value){
         if(!job.waiters.delete(waiter))return;
         options.signal?.removeEventListener('abort',abort);
         if(!job.waiters.size){job.joinable=false;job.controller.abort();}
         if(error)reject(error);else resolve(value);
       }};
-      const abort=()=>waiter.finish(options.signal.reason??new DOMException('Aborted','AbortError'));
+      const abort=()=>{diagnose(options,{phase:'aborted',readId:job.readId,...status(job)});waiter.finish(options.signal.reason??new DOMException('Aborted','AbortError'));};
       job.waiters.add(waiter);options.signal?.addEventListener('abort',abort,{once:true});
+      diagnose(options,{phase:joined?'joined':'queued',readId:job.readId,shared:joined,...status(job)});
       if(options.signal?.aborted)abort();
     });
     if(result?.fallback){counts.projectionFallbacks++;return actual(path,options);}

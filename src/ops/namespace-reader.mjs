@@ -6,7 +6,7 @@ const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctime
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,onOpen,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
   if(!Number.isSafeInteger(checkIntervalBytes)||checkIntervalBytes<0)throw fail('state_namespace_check_interval_invalid');
   if(maxSelectedBytes!==Infinity&&(!Number.isSafeInteger(maxSelectedBytes)||maxSelectedBytes<0))throw fail('state_namespace_projection_limit_invalid');
@@ -75,6 +75,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
   try{
     const beforeStat=await handle.stat({bigint:true}),before=signature(beforeStat);
     fileBytes=Number(beforeStat.size);
+    try{const observed=onOpen?.({fileBytes});if(observed&&typeof observed.then==='function')Promise.resolve(observed).catch(()=>{});}catch{}
     if(fileBytes>maxFileBytes)throw fail('state_namespace_file_limit');
     signal?.throwIfAborted();
     stream=handle.createReadStream({autoClose:false,autoDestroy:false,highWaterMark:chunkSize,signal});

@@ -75,8 +75,8 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const budgetMs=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.max(0,deadline-clock()));
     const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
     let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED';
-    const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began)});
-    const failed=()=>{const diagnostics=details();lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
+    const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began),...(measurement?.certificateRef?{certificateRef:measurement.certificateRef}:{})});
+    const failed=()=>{const diagnostics=details();if(diagnostics.elapsedMs>=budgetMs)measurement?.event('deadline',undefined,{stage});lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
     async function capture(scope,key,index){
       const remaining=budgetMs-(clock()-began);if(remaining<=0)throw failed();
       let timer;
@@ -84,7 +84,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       finally{clearTimeout(timer);}
     }
     for(const {scope} of selected)if(!expected.has(scope))expected.set(scope,new Map());
-    const measurement=measurements.begin(expected.keys(),selected.length);
+    const measurement=measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began});
     let outcome='failed';
     try{
     let captureFailed=false,captureError;
@@ -93,20 +93,23 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       for(let offset=0;offset<selected.length;offset+=4)await Promise.all(selected.slice(offset,offset+4).map(async({scope,key},index)=>{expected.get(scope).set(key,(await capture(scope,key,offset+index))??null);capturedKeyCount++;}));
     }catch(error){captureFailed=true;captureError=error;}
     if(captureFailed){lastCode=captureError?.code==='STATE_DURABILITY_TIMEOUT'?'STATE_CAPTURE_TIMEOUT':typeof captureError?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(captureError.code)?captureError.code:'STATE_CAPTURE_FAILED';throw failed();}
+    measurement?.event('capture_finished',undefined,{capturedKeyCount});
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));
     async function check(){
       const absent=[],signatures=new Map();
       for(const file of files){let rows;const mismatch=unchangedMismatches.get(file.scope);
         if(mismatch){
           let current;try{current=signature(await stat(file.path,{bigint:true}));}catch(error){if(error.code!=='ENOENT')throw error;}
-          if(current===mismatch){measurement?.skipUnchangedMismatch();throw Error('state_namespace_not_committed');}
+          if(current===mismatch){measurement?.skipUnchangedMismatch();measurement?.event('unchanged_mismatch_skip',file.scope);throw Error('state_namespace_not_committed');}
           unchangedMismatches.delete(file.scope);
         }
         const controller=new AbortController(),remaining=budgetMs-(clock()-began);
         if(remaining<=0)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         const timer=setTimeout(()=>controller.abort(),remaining);
-        try{const read=await readSharing.read(file.path,{keys:new Set(expected.get(file.scope).keys()),joinKeys:sharedSelection?.get(file.scope),checkIntervalBytes:1024*1024,signal:controller.signal,onShared:()=>measurement?.sharedRead(),onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
+        measurement?.event('read_requested',file.scope);
+        try{const read=await readSharing.read(file.path,{keys:new Set(expected.get(file.scope).keys()),joinKeys:sharedSelection?.get(file.scope),checkIntervalBytes:1024*1024,signal:controller.signal,onDiagnostic:info=>measurement?.event('read_'+info.phase,file.scope,info),onShared:()=>measurement?.sharedRead(),onRead:info=>measurement?.read(file.scope,info)});rows=read.values;signatures.set(file.path,read.signature);}catch(error){if(error.code==='state_namespace_changed')measurement?.event('signature_changed',file.scope,{stage:'readback'});if(controller.signal.aborted)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});if(error.code==='ENOENT'){rows=new Map();absent.push(file.path);}else throw error;}finally{clearTimeout(timer);}
         for(const [key,want] of expected.get(file.scope))if(!isDeepStrictEqual(rows.get(key)??null,want)){
+          try{measurement?.event('mismatch',file.scope,{mismatch:!rows.has(key)&&want!==null?'missing':file.scope==='mem:embedding-retry:v1'&&want?.generation!==rows.get(key)?.generation?'retry_generation':'value'});}catch{}
           if(signatures.has(file.path))unchangedMismatches.set(file.scope,signatures.get(file.path));
           throw Error('state_namespace_not_committed');
         }
@@ -123,7 +126,9 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
             measurement?.enter('capture');
             item.revision=current;
             unchangedMismatches.delete(item.scope);
-            expected.get(item.scope).set(item.key,(await capture(item.scope,item.key,index))??null);
+            const previous=expected.get(item.scope).get(item.key),next=(await capture(item.scope,item.key,index))??null;
+            try{measurement?.event('revision_recapture',item.scope,{valueChanged:!isDeepStrictEqual(previous,next),...(item.scope==='mem:embedding-retry:v1'?{generationChanged:previous?.generation!==next?.generation}:{})});}catch{}
+            expected.get(item.scope).set(item.key,next);
           }
         }
         stage='readback';
@@ -131,14 +136,14 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
         const {absent,signatures}=await check();
         stage='fsync';
         measurement?.enter('fsync');
-        for(const file of files){if(absent.includes(file.path))continue;const handle=await open(file.path,'r');handles.push(handle);if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path))throw Error('state_namespace_changed');await handle.sync();if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path))throw Error('state_namespace_changed');}
+        for(const file of files){if(absent.includes(file.path))continue;const handle=await open(file.path,'r');handles.push(handle);if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path)){measurement?.event('signature_changed',file.scope,{stage:'fsync'});throw Error('state_namespace_changed');}await handle.sync();if(signature(await handle.stat({bigint:true}))!==signatures.get(file.path)){measurement?.event('signature_changed',file.scope,{stage:'fsync'});throw Error('state_namespace_changed');}}
         const directory=await open(storePath,'r');handles.push(directory);await directory.sync();
         // The validated bytes remain current only if the synced file's full signature still matches.
         stage='verify';
         measurement?.enter('verify');
         for(const file of files){
           let current;try{current=signature(await stat(file.path,{bigint:true}));}catch(error){if(error.code!=='ENOENT')throw error;}
-          if(current!==signatures.get(file.path))throw Error('state_namespace_changed');
+          if(current!==signatures.get(file.path)){measurement?.event('signature_changed',file.scope,{stage:'verify'});throw Error('state_namespace_changed');}
         }
         if(clock()-began>=budgetMs)throw Object.assign(Error('state_readback_timeout'),{code:'STATE_READBACK_TIMEOUT'});
         forgetKeys(selectedRevisions);
