@@ -1,5 +1,11 @@
 # Changelog
 
+## Bound concurrent certification scans (development only)
+
+- Admit one physical namespace read at a time per durability fence so compatible requests waiting behind it can union their keys for the next scan. Keep the first scan immediate; add no fixed batching delay, result cache, timeout increase or weaker verification. Preserve per-caller cancellation, full scan/signature/fsync and final ownership checks.
+- Route direct/projection and capacity fallbacks through the same bounded admission queue. Reject excess queue entries without I/O or acknowledgement; retain dirty state and existing retry/deadline behavior. Keep a physical slot until the actual reader settles after cancellation.
+- Reproduce CPU contention with isolated 271MB synthetic namespaces; body shape affects parse cost, and eight incompatible reads can exhaust15s even with cached disk pages. Scope, measured limits and pending operational validation are in docs/customizations/CERTIFICATION-READ-ADMISSION.md. No operating deployment or quarantine replay.
+
 ## Bounded certification failure correlation (development only)
 
 - Connect sanitized compression errors to an epoch-bound certificate reference and retain bounded failed-certificate timelines through existing health diagnostics. Record SDK capture completion, local revision recapture, shared physical read lifecycle, typed mismatch, signature-change stage and deadline without values, raw generations, keys, paths or session identifiers.
