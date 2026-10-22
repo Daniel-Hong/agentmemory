@@ -1,5 +1,6 @@
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
 import { registerCaptureReceipts } from "../capture/receipts.js";
+import { createCaptureReviewMetadata } from "../capture/review-metadata.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -217,6 +218,7 @@ export function registerCaptureFunctions(
   options: { restPort?: number; durableAfterMs?: number } = {},
 ): CaptureController {
   registerCaptureReceipts(sdk,kv);
+  sdk.registerFunction('mem::capture-review-metadata',createCaptureReviewMetadata(kv));
   const inspectOutbox=createOutboxMetadata(join(getEnvVar("AGENTMEMORY_HOME")||join(homedir(),".agentmemory"),"hook-outbox"));
   const policy = capturePolicy();
   const counterEpoch = randomUUID();

@@ -44,6 +44,7 @@ import { checkRequestGuard, configuredAllowedOrigins, timingSafeCompare } from "
 import { stripPrivateData } from "../functions/privacy.js";
 import { isSlotsEnabled, isReflectEnabled, parseSlotOwner } from "../functions/slots.js";
 import { renderViewerDocument } from "../viewer/document.js";
+import { validCaptureMetadataQuery, type CaptureMetadataQuery } from "../capture/review-metadata.js";
 import { getBoundViewerPort, getViewerSkipped } from "../viewer/server.js";
 import { MAX_FILES_UPPER_BOUND } from "../functions/replay.js";
 import { describeGraphNode } from "../functions/graph-node.js";
@@ -737,6 +738,19 @@ export function registerApiTriggers(
     catch{return {status_code:503,headers,body:{error:'EMBEDDING_RECEIPT_UNAVAILABLE'}};}
   });
   sdk.registerTrigger({type:'http',function_id:'api::embedding-receipts',config:{api_path:'/agentmemory/embedding/receipts',http_method:'GET'}});
+
+  sdk.registerFunction('api::capture-review-metadata',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'};
+    const denied=checkAuth(req,secret);if(denied)return {...denied,headers:{...denied.headers,...headers}};
+    const q=req.query_params??{},input:CaptureMetadataQuery={};
+    if(Object.keys(q).some(k=>!['status','limit','offset','reviewRef'].includes(k)))return {status_code:400,headers,body:{error:'INVALID_CAPTURE_METADATA_QUERY'}};
+    for(const name of ['status','reviewRef']as const)if(q[name]!==undefined){if(typeof q[name]!=='string')return {status_code:400,headers,body:{error:'INVALID_CAPTURE_METADATA_QUERY'}};input[name]=q[name] as string;}
+    for(const name of ['limit','offset']as const)if(q[name]!==undefined){const value=q[name];if(typeof value!=='number'&&(typeof value!=='string'||!/^(0|[1-9][0-9]{0,3})$/.test(value)))return {status_code:400,headers,body:{error:'INVALID_CAPTURE_METADATA_QUERY'}};input[name]=Number(value);}
+    if(!validCaptureMetadataQuery(input))return {status_code:400,headers,body:{error:'INVALID_CAPTURE_METADATA_QUERY'}};
+    try{return {status_code:200,headers,body:await sdk.trigger({function_id:'mem::capture-review-metadata',payload:input})};}
+    catch{return {status_code:503,headers,body:{error:'CAPTURE_METADATA_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-review-metadata',config:{api_path:'/agentmemory/capture/review-metadata',http_method:'GET'}});
 
   sdk.registerFunction("api::capture",
     async (req: HttpRequest): Promise<Response> => {

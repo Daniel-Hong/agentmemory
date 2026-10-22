@@ -1,5 +1,10 @@
 # Changelog
 
+## Capture review metadata (development only)
+
+- Add an authenticated, read-only metadata path that never queries capture inbox or canonical observation content and never returns preview, identifiers, generations, digests or raw errors. Process-local random references, explicit historical/non-atomic evidence, unavailable states and permanent retry/disk-verification false prevent false recovery claims.
+- Bound page size, query duration, accepted history rows and active lookups while retaining occupied capacity for outstanding SDK calls. The underlying metadata SDK list remains unpaged; no hard SDK-memory bound is claimed. Operating inspection, internal source checks and a single-item retry remain separate approval scopes. See docs/customizations/CAPTURE-REVIEW-METADATA.md.
+
 ## Small certification admission and recovery diagnostics (development only)
 
 - Reserve a strictly bounded small-file lane beside the single regular scan; preserve full verification, fsync/signatures, independent deadlines and bounded cancellation. Validate physical limits under growth and finalize key ownership at admission. Synthetic overload comparisons retain explicit incompatible-key and publication-change failures.

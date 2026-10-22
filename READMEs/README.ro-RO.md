@@ -1430,7 +1430,7 @@ fi
 | Prometheus / Grafana | iii OTEL + monitor de sănătate |
 | Sisteme de plugin-uri personalizate | `iii worker add <name>` |
 
-**229 fișiere sursă · ~54,000 LOC · 3,500+ teste · 322 funcții · 64 domenii KV**, toate pe trei primitive. Niciun `agentmemory plugin install`. Sistemul de plugin-uri este chiar iii.
+**230 fișiere sursă · ~54,000 LOC · 3,500+ teste · 324 funcții · 64 domenii KV**, toate pe trei primitive. Niciun `agentmemory plugin install`. Sistemul de plugin-uri este chiar iii.
 
 ---
 

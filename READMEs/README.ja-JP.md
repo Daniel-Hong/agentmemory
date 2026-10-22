@@ -1445,7 +1445,7 @@ fi
 | Prometheus / Grafana | iii OTEL + ヘルスモニタ |
 | カスタムプラグインシステム | `iii worker add <name>` |
 
-**229 ソースファイル · ~54,000 LOC · 3,500+ テスト · 322 functions · 64 KV スコープ** — すべて 3 つのプリミティブの上に。`agentmemory plugin install` はありません。プラグインシステムは iii そのものです。
+**230 ソースファイル · ~54,000 LOC · 3,500+ テスト · 324 functions · 64 KV スコープ** — すべて 3 つのプリミティブの上に。`agentmemory plugin install` はありません。プラグインシステムは iii そのものです。
 
 ---
 
