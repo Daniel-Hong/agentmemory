@@ -1,10 +1,11 @@
+import {engineFixture} from './helpers/engine-evidence.js';
 import {afterEach,expect,it,vi} from 'vitest';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createHash} from 'node:crypto';
 import {StateKV} from '../src/state/kv.js';import {KV} from '../src/state/schema.js';import {captureEventScope} from '../src/capture/event-record.js';import {acquireFileWriterLease,markFileWriterClean} from '../src/ops/file-writer-lease.mjs';
 const clean:Array<()=>void>=[];afterEach(()=>{for(const fn of clean.splice(0))fn();vi.unstubAllEnvs();});
 async function module(){return import('../src/capture/auto-recovery.js');}
 async function setup(){
- const d=mkdtempSync(join(tmpdir(),'am-auto-capture-'));vi.stubEnv('AGENTMEMORY_STATE_STORE_PATH',d);writeFileSync(join(d,'.agentmemory-writer.lock'),JSON.stringify({version:2,bootId:'00000000-0000-0000-0000-000000000000',clean:false}));const lease=acquireFileWriterLease(d,{engineUrl:'ws://127.0.0.1:12345'});clean.push(()=>{lease.close();rmSync(d,{recursive:true,force:true});});
+ const d=mkdtempSync(join(tmpdir(),'am-auto-capture-'));vi.stubEnv('AGENTMEMORY_STATE_STORE_PATH',d);const {evidence}=engineFixture(d);const lease=acquireFileWriterLease(d,{evidence});clean.push(()=>{lease.close();rmSync(d,{recursive:true,force:true});});
  const state=new Map<string,any>();const at=Date.parse('2026-10-23T00:00:00Z');let clock=at+120000;let failProof=false;let onProof:(()=>Promise<void>)|undefined;let calls=0;
  const sdk={trigger:async(x:any)=>{const {scope,key,value}=x.payload;const k=scope+'|'+key;if(x.function_id==='state::get')return structuredClone(state.get(k)??null);if(x.function_id==='state::set'){state.set(k,structuredClone(value));return value;}if(x.function_id==='state::delete'){state.delete(k);return null;}if(x.function_id==='state::list')return [...state].filter(([k])=>k.startsWith(scope+'|')).map(([,v])=>structuredClone(v));throw Error('Unexpected non-state invocation');}};
  const sessionId='fixture-session',observationId='obs_fixture',eventId='evh_fixture';const key='cap_'+createHash('sha256').update(`fixture\u0000${sessionId}\u0000${eventId}`).digest('hex').slice(0,40);
@@ -16,7 +17,7 @@ async function setup(){
  const durability={mutate:(_s:string,_k:string,fn:()=>unknown)=>fn(),waitForKeys:async(_kv:any,keys:any[],opts:any)=>{calls++;if(onProof&&keys.some(x=>x.scope===KV.observations(sessionId))){const fn=onProof;onProof=undefined;await fn();}if(failProof&&keys.some(x=>x.scope===captureEventScope(key))&&state.has(captureEventScope(key)+'|'+key))throw Error('state_durability_timeout');if(opts?.expectedValues)for(let i=0;i<keys.length;i++)expect(await sdk.trigger({function_id:'state::get',payload:keys[i]})).toEqual(opts.expectedValues[i]);return {synced:true,mutationFailures:0};}};
  const kv=new StateKV(sdk as never,{writerLease:lease,durability:durability as never});let admitted=true;
  const options={enabled:true,writerOwned:()=>true,admitted:()=>admitted,indexReady:()=>true,now:()=>clock};
- return {kv,state,key,lease,storePath:d,sdk,durability,sessionId,observationId,eventId,obs,history,options,advance:()=>clock+=3600000,failProof:(v:boolean)=>failProof=v,onProof:(fn:()=>Promise<void>)=>onProof=fn,admit:(v:boolean)=>admitted=v,calls:()=>calls};
+ return {kv,state,key,lease,evidence,storePath:d,sdk,durability,sessionId,observationId,eventId,obs,history,options,advance:()=>clock+=3600000,failProof:(v:boolean)=>failProof=v,onProof:(fn:()=>Promise<void>)=>onProof=fn,admit:(v:boolean)=>admitted=v,calls:()=>calls};
 }
 it('automatically certifies an already stored original without inference or resetting retry history',async()=>{
  const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,x.options);await a.tick();
@@ -66,8 +67,8 @@ it('accepts the actual initial-capture synthetic publication kind',async()=>{con
 
 it('preserves uncertain completion across a new worker instead of laundering its epoch',async()=>{
  const x=await setup(),m=await module(),first=m.createCaptureAutoRecovery(x.kv,x.options);x.failProof(true);await first.tick();const original=await x.kv.get(KV.observations(x.sessionId),x.observationId);const receipt=await x.kv.get(captureEventScope(x.key),x.key);
- x.lease.close();const lease=acquireFileWriterLease(x.storePath,{engineUrl:'ws://127.0.0.1:12345'});clean.push(()=>lease.close());const next=new StateKV(x.sdk as never,{writerLease:lease,durability:x.durability as never});x.advance();
- const restarted=m.createCaptureAutoRecovery(next,x.options);const before=x.calls();await restarted.tick();expect(restarted.snapshot()).toMatchObject({verifying:1,resolved:0,lastErrorCode:'WRITER_EPOCH_UNVERIFIED'});expect(x.calls()).toBe(before);expect(await next.get(captureEventScope(x.key),x.key)).toEqual(receipt);expect(await next.get(KV.observations(x.sessionId),x.observationId)).toEqual(original);
+ x.lease.close();const lease=acquireFileWriterLease(x.storePath,{evidence:{...x.evidence,gone:()=>false}});clean.push(()=>lease.close());const next=new StateKV(x.sdk as never,{writerLease:lease,durability:x.durability as never});x.advance();
+ const restarted=m.createCaptureAutoRecovery(next,x.options);const before=x.calls();await restarted.tick();expect(restarted.snapshot()).toMatchObject({verifying:1,resolved:0,lastErrorCode:'WRITER_ENGINE_OVERLAP'});expect(x.calls()).toBe(before);expect(await next.get(captureEventScope(x.key),x.key)).toEqual(receipt);expect(await next.get(KV.observations(x.sessionId),x.observationId)).toEqual(original);
 });
 it('retries checkpoint proof without replaying the capture or permanently blocking it',async()=>{
  const x=await setup(),m=await module(),normal=x.durability.waitForKeys;let failOnce=true;
@@ -84,3 +85,20 @@ it('does not consume publication budget when a hold arrives during source lookup
  const trigger=x.sdk.trigger;x.sdk.trigger=async input=>{if(input.function_id==='state::get'&&input.payload.scope===scope)x.admit(false);return trigger(input);};
  const a=m.createCaptureAutoRecovery(x.kv,x.options);await a.tick();const row=await x.kv.get<any>(KV.captureRecovery,x.key);expect(row).toMatchObject({verificationAttempts:0,reason:'ADMISSION_HELD'});expect(await x.kv.get(KV.captureInbox,x.key)).not.toBeNull();
 });
+it('persists authenticated control intent and restores it without resetting recovery budget',async()=>{
+ const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,{...x.options,enabled:false});expect((await a.setEnabled(true)).ok).toBe(true);expect(a.snapshot()).toMatchObject({enabled:true,configurationStatus:'verified'});const b=m.createCaptureAutoRecovery(x.kv,{...x.options,enabled:false});await b.initialize();expect(b.snapshot().enabled).toBe(true);expect((await b.setEnabled(false)).ok).toBe(true);expect(b.snapshot().enabled).toBe(false);
+});
+it('rejects enable under a hold without changing persisted configuration',async()=>{
+ const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,{...x.options,enabled:false});x.admit(false);expect(await a.setEnabled(true)).toMatchObject({ok:false,code:'BACKGROUND_HELD'});expect(await x.kv.get(KV.captureRecovery,'control')).toBeNull();
+});
+it('keeps disable immediate and prevents an older enable proof from turning it back on',async()=>{
+ const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,{...x.options,enabled:false}),normal=x.durability.waitForKeys;let release!:()=>void,entered!:()=>void;const start=new Promise<void>(r=>entered=r),hold=new Promise<void>(r=>release=r);let blocked=false;
+ x.durability.waitForKeys=async(...args:Parameters<typeof normal>)=>{if(!blocked&&args[2]?.expectedValues?.[0]?.enabled===true){blocked=true;entered();await hold;}return normal(...args);};
+ const enabling=a.setEnabled(true);await start;const disabling=a.setEnabled(false);expect(a.snapshot().enabled).toBe(false);release();expect((await enabling).ok).toBe(false);expect((await disabling).ok).toBe(true);expect(a.snapshot()).toMatchObject({enabled:false,durableEnabled:false});
+});
+it('rolls back enabling when a hold arrives during configuration certification',async()=>{
+ const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,{...x.options,enabled:false}),normal=x.durability.waitForKeys;let once=true;x.durability.waitForKeys=async(...args:Parameters<typeof normal>)=>{if(once&&args[2]?.expectedValues?.[0]?.enabled===true){once=false;x.admit(false);}return normal(...args);};
+ expect(await a.setEnabled(true)).toMatchObject({ok:false,code:'BACKGROUND_HELD'});expect(a.snapshot()).toMatchObject({enabled:false,durableEnabled:false});
+});
+
+it('allows disabling while storage protection remains held',async()=>{const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,{...x.options,admissionReason:()=> 'HOLD_STORAGE_ERROR'});x.admit(false);expect((await a.setEnabled(false)).ok).toBe(true);expect(a.snapshot()).toMatchObject({enabled:false,blockedReason:'HOLD_STORAGE_ERROR'});});

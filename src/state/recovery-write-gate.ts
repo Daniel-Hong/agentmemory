@@ -42,6 +42,7 @@ export function createRecordRecoveryGate(){
    function invoke(){const token={active:true,keys:new Set(ids)};return context.run(token,async()=>{try{return await fn();}finally{token.active=false;}});}
    return acquire(0);
   },
+  inExclusive:()=>context.getStore()?.active===true,
   size:()=>entries.size,
  };
 }

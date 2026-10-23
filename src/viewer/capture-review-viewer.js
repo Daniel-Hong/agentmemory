@@ -1,6 +1,6 @@
 (function(){
  'use strict';
- var key='agentmemory-capture-review-pending',busy=false,pending=null,opener=null,nextCursor=null,rows=[],cursorStack=[''],historyOffsets={},job=null,pollTimer=null,polling=false,deadCount=0;
+ var key='agentmemory-capture-review-pending',busy=false,pending=null,opener=null,nextCursor=null,rows=[],cursorStack=[''],historyOffsets={},job=null,pollTimer=null,polling=false,deadCount=0,automaticState=null;
  try{var saved=JSON.parse(localStorage.getItem(key)||'null');if(saved&&(saved.kind==='job'||typeof saved.eventId==='string')&&/^[a-f0-9-]{36}$/.test(saved.requestId))pending=saved;}catch{}
  function el(tag,text,attrs){var node=document.createElement(tag);if(text!==undefined)node.textContent=text;Object.entries(attrs||{}).forEach(function(a){node.setAttribute(a[0],a[1]);});return node;}
  function button(text,id,fn){var node=el('button',text,{type:'button',class:'btn',id:id});node.addEventListener('click',fn);return node;}
@@ -19,13 +19,17 @@
  var stop=button('작업 중지','capture-review-stop',async function(){if(busy||!activeJob())return;busy=true;controls();try{var result=await api('/jobs/stop','POST',{jobId:job.id});await applyJob(result);}catch{announce('중지 결과 미확정 · 서버 상태를 자동 확인합니다. 이미 진행 중인 한 건은 저장 결과를 확인합니다.');}finally{busy=false;controls();schedule();}});
  var progress=el('p','서버 재시도 작업 없음',{id:'capture-review-progress',role:'status','aria-live':'polite'});
 
+ var automaticDescription=el('p','검증 자동 복구 상태 확인 중',{id:'capture-automatic-recovery-state',role:'status'});
+ var automaticToggle=button('검증 자동 복구 켜기','capture-automatic-recovery-toggle',toggleAutomaticRecovery);
+ var automaticReasons={WRITER_NATIVE_PROBE_UNCERTAIN:'엔진 증명 실패 이력 · 현재 부팅에서 자동 복구 보류',WRITER_EPOCH_UNVERIFIED:'최초 쓰기 기준 미확인 · 엔진 전체 전환 확인 필요',NATIVE_ENGINE_UNVERIFIED:'로컬 엔진 연결·소유권 확인 불가',NATIVE_ENGINE_CHANGED:'엔진 연결 변경 · 새 기준 확인 필요',WRITER_ENGINE_OVERLAP:'이전 엔진 또는 worker 종료 미확인',WRITER_PRIOR_FOREIGN:'다른 호스트·연결의 표식 보존 중',WRITER_PRIOR_UNSUPPORTED:'이전 표식 형식 확인 필요',WRITER_MUTATION_UNCERTAIN:'이전 쓰기 결과 미확정',HOLD_STORAGE_ERROR:'저장장치 보호 정지',HOLD_MANUAL:'수동 일시정지',HOLD_DEPLOYMENT:'배포 일시정지',HOLD_MEMORY:'메모리 보호 정지',MEMORY_PRESSURE:'메모리 압력',BACKGROUND_HELD:'백그라운드 작업 보류',RECOVERY_CIRCUIT_OPEN:'반복 실패로 대기',RECOVERY_STORAGE_OR_STATE_UNAVAILABLE:'설정 또는 저장 상태 확인 불가',FILE_WRITER_UNSUPPORTED:'지원되는 단일 writer 확인 불가',SHUTTING_DOWN:'종료 중'};
  var close=button('닫기','capture-review-close',function(){clearTimeout(pollTimer);dialog.close();opener?.focus();});
- dialog.append(el('h2','수집 격리·복구 이력',{id:'capture-review-heading'}),message,el('p','저장 전에 실패한 수집 기록입니다. 요약·압축·그래프 격리와 별도로 집계합니다. 원인을 해결한 뒤 한 항목씩 재시도하세요. 원문과 이전 실패 이력은 보존합니다.'),select,refresh,bulk,stop,progress,summary,list,previous,next,sameRequest,history,close);
+ dialog.append(el('h2','수집 격리·복구 이력',{id:'capture-review-heading'}),message,el('p','저장 전에 실패한 수집 기록입니다. 요약·압축·그래프 격리와 별도로 집계합니다. 원인을 해결한 뒤 한 항목씩 재시도하세요. 원문과 이전 실패 이력은 보존합니다.'),select,refresh,automaticDescription,automaticToggle,bulk,stop,progress,summary,list,previous,next,sameRequest,history,close);
  document.body.append(dialog);
  var codes={SESSION_OBSERVATION_LIMIT:'세션 관측 한도 초과',OBSERVATION_NOT_STORED:'응답은 받았으나 실제 저장 미확인',CAPTURE_STORE_TIMEOUT:'저장 시간 초과',CAPTURE_STORE_FAILED:'수집 저장 실패 · 원인 점검 필요'};
  function announce(text){message.textContent=text;}
  function activeJob(){return job&&['running','stopping'].includes(job.status);}
- function controls(){bulk.disabled=busy||!!pending||!!activeJob()||deadCount===0;stop.disabled=busy||!activeJob()||job.stopRequested;stop.textContent=job?.stopRequested?'중지 요청됨 · 현재 항목 확인 중':'작업 중지';sameRequest.disabled=busy||!pending;previous.disabled=busy||cursorStack.length<2;next.disabled=busy||!nextCursor;select.disabled=busy;refresh.disabled=busy;list.querySelectorAll('[data-action="capture-review-retry-one"]').forEach(function(b){b.disabled=busy||!!pending||!!activeJob()||b.getAttribute('data-state')!=='dead';b.textContent=job?.current&&b.id==='capture-retry-'+job.current.eventId?'처리 중 · 결과 자동 확인':'이 항목 재시도';});}
+ function automaticWantsOff(){return !!automaticState&&(automaticState.enabled||automaticState.durableEnabled===true||automaticState.configurationStatus==='unknown');}
+ function controls(){automaticToggle.disabled=busy||!automaticState||!automaticWantsOff()&&!!automaticState.blockedReason;automaticToggle.textContent=automaticWantsOff()?'검증 자동 복구 끄기':'검증 자동 복구 켜기';bulk.disabled=busy||!!pending||!!activeJob()||deadCount===0;stop.disabled=busy||!activeJob()||job.stopRequested;stop.textContent=job?.stopRequested?'중지 요청됨 · 현재 항목 확인 중':'작업 중지';sameRequest.disabled=busy||!pending;previous.disabled=busy||cursorStack.length<2;next.disabled=busy||!nextCursor;select.disabled=busy;refresh.disabled=busy;list.querySelectorAll('[data-action="capture-review-retry-one"]').forEach(function(b){b.disabled=busy||!!pending||!!activeJob()||b.getAttribute('data-state')!=='dead';b.textContent=job?.current&&b.id==='capture-retry-'+job.current.eventId?'처리 중 · 결과 자동 확인':'이 항목 재시도';});}
  async function api(path,method,body){var controller=new AbortController(),timer=setTimeout(function(){controller.abort();},15000);var headers=method?{'Content-Type':'application/json'}:{};
   var token=typeof getViewerToken==='function'?getViewerToken():'';if(token)headers.Authorization='Bearer '+token;
   try{var response=await fetch((typeof REST==='string'?REST:'')+'/agentmemory/capture'+path,{method:method||'GET',headers:headers,body:body?JSON.stringify(body):undefined,signal:controller.signal});if(response.status===401&&typeof showViewerAuthPrompt==='function')showViewerAuthPrompt();var data=await response.json();if(!response.ok){var err=Error('조회 실패');err.status=response.status;throw err;}return data;}finally{clearTimeout(timer);}
@@ -83,8 +87,14 @@
  async function load(cursor){try{
   var page=await api('?review=true&status='+select.value+'&limit=25'+(cursor?'&cursor='+encodeURIComponent(cursor):''));rows=page.items||[];nextCursor=page.nextCursor||null;
   var cap=page.capture?.inbox;deadCount=cap?cap.dead:select.value==='dead'?page.total:deadCount;
-  summary.textContent='선택 상태 '+page.total+'건'+(cap?' · 수집 격리 '+cap.dead+'건 · 자동 재시도 '+cap.retrying+'건':'');var auto=page.capture?.automaticRecovery;if(auto?.enabled)summary.textContent+=' · 검증 복구 '+auto.resolved+'건 / 확인 중 '+auto.verifying+'건 / 점검 필요 '+auto.blocked+'건'+(auto.lastErrorCode?' · 자동 변경 보류':'')+(auto.breakerUntil>Date.now()?' · 반복 실패로 대기':'');render();
+  summary.textContent='선택 상태 '+page.total+'건'+(cap?' · 수집 격리 '+cap.dead+'건 · 자동 재시도 '+cap.retrying+'건':'');var auto=page.capture?.automaticRecovery;automaticState=auto||null;automaticDescription.textContent=auto?('검증 자동 복구 '+(auto.enabled?'켜짐':'꺼짐')+' · '+(auto.admitted?'조건 충족':automaticReasons[auto.blockedReason]||(auto.blockedReason?'보류':'사용 가능 · 비활성'))+(auto.configurationStatus==='pending'?' · 설정 저장 중':auto.configurationStatus==='unknown'?' · 설정 저장 결과 미확정':'')+' · 원본이 일치하고 이미 게시된 항목만 복구합니다.'):'이 서버는 검증 자동 복구 제어를 제공하지 않습니다.';if(auto)summary.textContent+=' · 검증 복구 '+auto.resolved+'건 / 확인 중 '+auto.verifying+'건 / 점검 필요 '+auto.blocked+'건'+(auto.lastErrorCode?' · 자동 변경 보류':'')+(auto.breakerUntil>Date.now()?' · 반복 실패로 대기':'');render();
  }catch{announce('수집 목록 조회 실패 · 비어 있다고 판정하지 않습니다.');}finally{controls();}}
+ async function toggleAutomaticRecovery(){
+  if(busy||!automaticState)return;var desired=!automaticWantsOff();busy=true;controls();
+  try{await api('/automatic-recovery','POST',{enabled:desired});announce('검증 자동 복구 설정 저장 결과를 확인합니다.');}
+  catch(error){announce(error.status===409?'보호 조건으로 설정 변경이 보류됐습니다. 상태를 다시 확인합니다.':'설정 변경 결과 미확정 · 상태만 다시 조회하며 요청을 반복하지 않습니다.');}
+  finally{await load(cursorStack[cursorStack.length-1]);busy=false;controls();}
+ }
  async function refreshAll(){await load(cursorStack[cursorStack.length-1]);await pollJobs();}
  async function sendLegacy(){
   if(busy||!pending||pending.kind==='job')return;busy=true;controls();

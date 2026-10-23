@@ -752,6 +752,16 @@ export function registerApiTriggers(
   });
   sdk.registerTrigger({type:'http',function_id:'api::capture-review-metadata',config:{api_path:'/agentmemory/capture/review-metadata',http_method:'GET'}});
 
+  sdk.registerFunction('api::capture-auto-recovery-control',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret)??requireConfiguredSecret(secret,'capture automatic recovery control');
+    if(denied)return {...denied,headers:{...denied.headers,...headers}};
+    const body=req.body;if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof (body as Record<string,unknown>).enabled!=='boolean'||Object.keys(req.query_params??{}).length)return {status_code:400,headers,body:{error:'INVALID_RECOVERY_CONTROL'}};
+    const controller=getCaptureController();if(!controller)return {status_code:503,headers,body:{error:'RECOVERY_CONTROL_UNAVAILABLE'}};
+    try{const result=await controller.setAutomaticRecoveryEnabled((body as {enabled:boolean}).enabled);return {status_code:result.ok?200:result.code==='RECOVERY_STORAGE_OR_STATE_UNAVAILABLE'?503:409,headers,body:result};}
+    catch{return {status_code:503,headers,body:{error:'RECOVERY_CONTROL_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-auto-recovery-control',config:{api_path:"/agentmemory/capture/automatic-recovery",http_method:"POST"}});
+
   sdk.registerFunction("api::capture",
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);

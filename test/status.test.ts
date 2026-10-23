@@ -603,3 +603,5 @@ it('renders HTML while automatic recovery is awaiting proof',()=>{
  const report=evaluateStatus(inputs({capture:{policy:{retryIntervalMs:10000,maxAttempts:5},inbox:{pending:0,retrying:0,dead:0},spool:[],sinceStart:{},automaticRecovery:{enabled:true,verifying:1,blocked:0,resolved:0,lastErrorCode:null}} as never}));
  expect(()=>renderStatusHtml(report,'fixture')).not.toThrow();
 });
+
+it('keeps pending verification visible when automatic recovery is turned off',()=>{const report=evaluateStatus(inputs({capture:{policy:{retryIntervalMs:10000,maxAttempts:5},inbox:{pending:0,retrying:0,dead:0},spool:[],sinceStart:{},automaticRecovery:{enabled:false,verifying:1,blocked:0,resolved:0,lastErrorCode:null}} as never}));expect(codes(report)).toContain('capture-automatic-recovery');});

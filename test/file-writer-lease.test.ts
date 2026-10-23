@@ -1,3 +1,4 @@
+import {engineFixture} from './helpers/engine-evidence.js';
 import {afterEach,describe,expect,it} from 'vitest';
 import {mkdtempSync,rmSync,existsSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -27,12 +28,26 @@ describe('native file writer ownership',()=>{
   const next=await m.acquireFileWriterLease(d);expect(m.ownsFileWriterLease(next,d)).toBe(true);next.close();
  });
 });
-it('does not launder an unknown epoch through one graceful worker cycle',async()=>{
- const m=await load(),d=dir(),options={engineUrl:'ws://127.0.0.1:12345'};let lease=m.acquireFileWriterLease(d,options);
- expect((m as any).fileWriterRecoveryAdmitted(lease)).toBe(false);expect(()=>(m as any).markFileWriterClean(lease)).toThrow('WRITER_EPOCH_UNVERIFIED');lease.close();lease=m.acquireFileWriterLease(d,options);expect((m as any).fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();
+it('does not admit an ordinary worker restart on the same engine',async()=>{
+ const m=await load(),d=dir(),{epoch,storeHash,evidence}=engineFixture(d);writeFileSync(join(d,'.agentmemory-writer.lock'),JSON.stringify({version:3,store:storeHash,epoch,clean:false}));const lease=m.acquireFileWriterLease(d,{evidence});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);expect(()=>m.markFileWriterClean(lease)).toThrow('WRITER_EPOCH_UNVERIFIED');lease.close();
 });
-it('admits only local-engine previous-boot evidence and preserves dirty same-boot restart',async()=>{
- const m=await load(),d=dir(),options={engineUrl:'ws://127.0.0.1:12345'};
- writeFileSync(join(d,'.agentmemory-writer.lock'),JSON.stringify({version:2,bootId:'00000000-0000-0000-0000-000000000000',clean:false}));
- let lease=m.acquireFileWriterLease(d,options);expect((m as any).fileWriterRecoveryAdmitted(lease)).toBe(true);(m as any).markFileWriterClean(lease);lease.close();lease=m.acquireFileWriterLease(d,options);expect((m as any).fileWriterRecoveryAdmitted(lease)).toBe(true);lease.close();lease=m.acquireFileWriterLease(d,options);expect((m as any).fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();
+it('admits a verified new engine only after both old processes terminated',async()=>{
+ const m=await load(),d=dir(),{evidence}=engineFixture(d);let lease=m.acquireFileWriterLease(d,{evidence:{...evidence,gone:()=>false}});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();
+ engineFixture(d);lease=m.acquireFileWriterLease(d,{evidence});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(true);m.markFileWriterClean(lease);lease.close();
 });
+it.each(['foreign','unsupported','pid-namespace'])('does not launder %s evidence across repeated cold starts',async(kind)=>{
+ const m=await load(),d=dir(),{epoch,storeHash,evidence}=engineFixture(d);const original=JSON.stringify(kind==='unsupported'?{version:2,clean:true}:{version:3,store:storeHash,epoch:{...epoch,...(kind==='foreign'?{host:'b'.repeat(64)}:{pidNamespace:'pid:[different]'})},clean:false});writeFileSync(join(d,'.agentmemory-writer.lock'),original);
+ for(let i=0;i<2;i++){const lease=m.acquireFileWriterLease(d,{evidence});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();}expect((await import('node:fs')).readFileSync(join(d,'.agentmemory-writer.lock'),'utf8')).toBe(original);
+});
+it('closes admission when the actual SDK peer changes',async()=>{const m=await load(),d=dir(),{evidence}=engineFixture(d);let current=true;const lease=m.acquireFileWriterLease(d,{evidence:{...evidence,current:()=>current}});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(true);current=false;expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();});
+
+it('retains overlap uncertainty rather than laundering a surviving earlier engine',async()=>{
+ const m=await load(),d=dir(),{epoch,storeHash,evidence}=engineFixture(d);let lease=m.acquireFileWriterLease(d,{evidence:{...evidence,gone:p=>p.pid!==201}});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();
+ const later={...epoch,worker:{pid:102,start:'12'},engine:{pid:202,start:'22'}};lease=m.acquireFileWriterLease(d,{evidence:{bootIdentity:()=>later.bootId,capture:()=>later,current:()=>true,gone:()=>true}});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);expect(m.fileWriterRecoveryReason(lease)).toBe('WRITER_ENGINE_OVERLAP');lease.close();
+});
+
+it('refuses a marker copied from another local store without rewriting it',async()=>{const m=await load(),a=dir(),b=dir(),{evidence}=engineFixture(a);const fs=await import('node:fs'),original=fs.readFileSync(join(a,'.agentmemory-writer.lock'),'utf8');fs.writeFileSync(join(b,'.agentmemory-writer.lock'),original);const lease=m.acquireFileWriterLease(b,{evidence});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);expect(m.fileWriterRecoveryReason(lease)).toBe('WRITER_PRIOR_FOREIGN');lease.close();expect(fs.readFileSync(join(b,'.agentmemory-writer.lock'),'utf8')).toBe(original);});
+
+it('invalidates old clean admission before an unverified worker can write',async()=>{const m=await load(),d=dir(),{epoch,storeHash,evidence}=engineFixture(d);const prior={version:3,store:storeHash,epoch,clean:true};writeFileSync(join(d,'.agentmemory-writer.lock'),JSON.stringify(prior));let lease=m.acquireFileWriterLease(d,{evidence:{...evidence,capture:()=>null}});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);lease.close();const saved=JSON.parse((await import('node:fs')).readFileSync(join(d,'.agentmemory-writer.lock'),'utf8'));expect(saved).toMatchObject({...prior,blockedUntilBoot:true,unverifiedWriter:true});lease=m.acquireFileWriterLease(d,{evidence});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);expect(()=>m.markFileWriterClean(lease)).toThrow('WRITER_EPOCH_UNVERIFIED');lease.close();});
+
+it('does not erase a current-boot unknown writer using a prior-boot marker',async()=>{const m=await load(),d=dir(),{epoch,storeHash,evidence}=engineFixture(d),old={...epoch,bootId:'22222222-2222-2222-2222-222222222222'};writeFileSync(join(d,'.agentmemory-writer.lock'),JSON.stringify({version:3,store:storeHash,epoch:old,clean:true}));let lease=m.acquireFileWriterLease(d,{evidence:{...evidence,capture:()=>null}});lease.close();lease=m.acquireFileWriterLease(d,{evidence});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(false);expect(m.fileWriterRecoveryReason(lease)).toBe('WRITER_NATIVE_PROBE_UNCERTAIN');lease.close();const later={...epoch,bootId:'33333333-3333-3333-3333-333333333333'};lease=m.acquireFileWriterLease(d,{evidence:{...evidence,capture:()=>later,current:()=>true}});expect(m.fileWriterRecoveryAdmitted(lease)).toBe(true);lease.close();});

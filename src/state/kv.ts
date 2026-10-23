@@ -1,5 +1,5 @@
 import {createRecordRecoveryGate} from './recovery-write-gate.js'
-import {ownsFileWriterLease,fileWriterRecoveryAdmitted,type FileWriterLease} from '../ops/file-writer-lease.mjs'
+import {ownsFileWriterLease,fileWriterRecoveryAdmitted,fileWriterRecoveryReason,type FileWriterLease} from '../ops/file-writer-lease.mjs'
 import { createCaptureReceiptPage } from '../capture/receipt-page.js'
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
@@ -115,6 +115,7 @@ export class StateKV {
   private writerLease?:FileWriterLease
   private writerStorePath?:string
   private uncertainMutation=false
+  get recoveryBlockReason(){return this.uncertainMutation?'WRITER_MUTATION_UNCERTAIN':this.writerLease?fileWriterRecoveryReason(this.writerLease):'FILE_WRITER_UNSUPPORTED'}
   get mutationOutcomeUncertain(){return this.uncertainMutation}
   get recoveryMutationSafe(){return !this.uncertainMutation&&!!this.writerLease&&fileWriterRecoveryAdmitted(this.writerLease)}
   readonly recoveryWrite?: ReturnType<typeof createRecordRecoveryGate>
@@ -142,7 +143,7 @@ export class StateKV {
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,fn)}
+    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>{if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(Error('WRITER_EPOCH_UNVERIFIED'));return fn()})}
     return this.recoveryWrite ? this.recoveryWrite.read(scope,key,perform) : perform()
   }
 

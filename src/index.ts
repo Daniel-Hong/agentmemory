@@ -1,3 +1,4 @@
+import {createEngineEpochEvidence} from "./ops/engine-epoch.mjs";
 import {acquireFileWriterLease,markFileWriterClean,ownsFileWriterLease} from "./ops/file-writer-lease.mjs";
 import { createBackgroundControl, installBackgroundControl, controlBackgroundFunctions, registerBackgroundControlApi } from "./ops/background-control.mjs";
 import { createMemoryPressureGuard } from "./ops/memory-pressure.mjs";
@@ -278,7 +279,9 @@ async function main() {
   } catch {}
   if (!process.env["AGENTMEMORY_STATE_STORE_PATH"] && process.env["AGENTMEMORY_DATA_DIR"]) process.env["AGENTMEMORY_STATE_STORE_PATH"] = join(process.env["AGENTMEMORY_DATA_DIR"], "state_store.db");
   const writerStorePath=process.env["AGENTMEMORY_STATE_STORE_PATH"];
-  const writerLease=stateBackend==="file"&&writerStorePath&&process.platform==="linux"?acquireFileWriterLease(writerStorePath,{engineUrl:config.engineUrl}):undefined;
+  const engineEvidence=createEngineEpochEvidence({engineUrl:config.engineUrl,enginePidPath:runtimeMetadataPath("iii.pid"),peer:()=>{const socket=(sdk as unknown as {ws?:{_socket?:{remoteAddress?:string;remotePort?:number;localAddress?:string;localPort?:number}}}).ws?._socket;return socket?{remoteAddress:socket.remoteAddress,remotePort:socket.remotePort,localAddress:socket.localAddress,localPort:socket.localPort}:null;}});
+  if(stateBackend==="file"&&writerStorePath&&process.platform==="linux"){const until=Date.now()+3000;while(!engineEvidence.capture()&&Date.now()<until)await new Promise(resolve=>setTimeout(resolve,25));}
+  const writerLease=stateBackend==="file"&&writerStorePath&&process.platform==="linux"?acquireFileWriterLease(writerStorePath,{evidence:engineEvidence}):undefined;
   const kv = new StateKV(sdk, { backend: stateBackend,writerLease });
   writeWorkerPidfile();
   const secret = resolveWorkerSecret();
@@ -378,7 +381,7 @@ async function main() {
 
   registerPrivacyFunction(sdk);
   registerObserveFunction(sdk, kv, dedupMap, config.maxObservationsPerSession);
-  const capture = resources.capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort,autoRecovery:{enabled:process.env["AGENTMEMORY_AUTO_CAPTURE_RECOVERY"]==="true",writerOwned:()=>!!writerLease&&ownsFileWriterLease(writerLease,writerStorePath!),admitted:()=>!shuttingDown&&persistentBackground&&!control.isPaused()&&pressure?.snapshot().level==="normal"} });
+  const capture = resources.capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort,autoRecovery:{enabled:process.env["AGENTMEMORY_AUTO_CAPTURE_RECOVERY"]==="true",writerOwned:()=>!!writerLease&&ownsFileWriterLease(writerLease,writerStorePath!),admitted:()=>!shuttingDown&&persistentBackground&&!control.isPaused()&&pressure?.snapshot().level==="normal",admissionReason:()=>{if(shuttingDown)return "SHUTTING_DOWN";const holds=control.snapshot().holds;if(holds.includes("storage_error"))return "HOLD_STORAGE_ERROR";if(holds.includes("manual"))return "HOLD_MANUAL";if(holds.includes("deployment"))return "HOLD_DEPLOYMENT";if(holds.includes("memory"))return "HOLD_MEMORY";if(pressure?.snapshot().level!=="normal")return "MEMORY_PRESSURE";return null;}} });
   operationalState.captureProgress = { snapshot: () => capture.progress() };
   registerImageQuotaCleanup(sdk, kv);
   registerVisionSearchFunctions(sdk, kv, imageEmbeddingProvider);
@@ -738,7 +741,7 @@ async function main() {
     `Ready. ${embeddingProvider ? "Triple-stream (BM25+Vector+Graph)" : "BM25+Graph"} search active.`,
   );
   bootLog(
-    `REST API: 141 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
+    `REST API: 142 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,

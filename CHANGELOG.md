@@ -179,6 +179,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- Complete opt-in capture reconciliation with verified native engine cold-start admission and authenticated ON/OFF controls; retain fail-closed writer evidence, durable setting verification and independent holds. Development-only synthetic validation; no operating activation.
+
+
 ## [0.9.30-daniel.27] — 2026-10-22
 ## [0.9.30-daniel.26] — 2026-10-22
 ## [0.9.30-daniel.25] — 2026-10-22

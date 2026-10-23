@@ -208,6 +208,7 @@ export interface CaptureController {
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
   status(): Promise<CaptureStatus>;
+  setAutomaticRecoveryEnabled(value:boolean):ReturnType<ReturnType<typeof createCaptureAutoRecovery>["setEnabled"]>;
   progress(): CaptureProgress;
   durability(): SentMark;
   start(): void;
@@ -220,7 +221,7 @@ export function registerCaptureFunctions(
   kv: StateKV,
   options: { restPort?: number; durableAfterMs?: number;autoRecovery?:Omit<CaptureAutoRecoveryOptions,"indexReady"> } = {},
 ): CaptureController {
-  const automaticRecovery=createCaptureAutoRecovery(kv,{enabled:false,writerOwned:()=>false,admitted:()=>false,...options.autoRecovery,admitted:()=>!stopped&&(options.autoRecovery?.admitted()??false),indexReady:obs=>getSearchIndex().sessionOf(obs.id)===obs.sessionId&&getVectorIndex()?.get(obs.id)?.sessionId===obs.sessionId});
+  const automaticRecovery=createCaptureAutoRecovery(kv,{enabled:false,writerOwned:()=>false,...options.autoRecovery,admitted:()=>!stopped&&(options.autoRecovery?.admitted()??false),indexReady:obs=>getSearchIndex().sessionOf(obs.id)===obs.sessionId&&getVectorIndex()?.get(obs.id)?.sessionId===obs.sessionId});
   registerCaptureReceipts(sdk,kv);
   const reviewMetadata=createCaptureReviewMetadata(kv);
   sdk.registerFunction('mem::capture-review-metadata',async input=>reviewMetadata(captureMetadataInvocationQuery(input)));
@@ -610,6 +611,7 @@ export function registerCaptureFunctions(
   }
 
   async function status(): Promise<CaptureStatus> {
+    await automaticRecovery.initialize().catch(()=>{});
     let inbox: CaptureStatus["inbox"] = null;
     try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
@@ -701,6 +703,7 @@ export function registerCaptureFunctions(
     status,
     progress,
     durability: () => ({ ...mark }),
+    setAutomaticRecoveryEnabled:value=>automaticRecovery.setEnabled(value),
     start() {
       if (stopped || timers.length) return;
       const sweepTimer = setInterval(() => {

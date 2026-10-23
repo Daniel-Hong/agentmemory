@@ -664,7 +664,8 @@ export interface AuditEntry {
     | "slot_reflect"
     | "graph_compact"
     | "audit_migrate"
-    | "session_sweep";
+    | "session_sweep"
+    | "capture_recovery_control";
   userId?: string;
   functionId: string;
   targetIds: string[];
