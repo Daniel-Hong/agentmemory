@@ -62,3 +62,16 @@ it('limits event metadata to safe primitive numbers and booleans',()=>{
  m.finish('failed','STATE_READBACK_TIMEOUT','readback');
  expect(measurements.snapshot()!.failureTraces.recent[0].timeline).toEqual([{phase:'read_opened',atMs:expect.any(Number),ageMs:3.2,started:true}]);
 });
+it('pins compact first failures despite later trace eviction and returns safe evidence for recovery checkpoints',()=>{
+ const measurements=createDurabilityMeasurements();
+ for(let n=0;n<50;n++){
+  const m=measurements.begin(['mem:obs:PRIVATE'],1)!;
+  m.event('read_aborted','mem:obs:PRIVATE',{readerPhase:'stream',readerTimings:{streamMs:123,processingMs:4,PRIVATE:999},bytesRead:64,path:'PRIVATE',processCpuMs:2,eventLoopActiveMs:3});
+  expect(m.readbackEvidence()).toEqual({readerPhase:'stream',readerTimings:{streamMs:123,processingMs:4},bytesRead:64,processCpuMs:2,eventLoopActiveMs:3});
+  m.finish('failed','STATE_READBACK_TIMEOUT','readback');
+ }
+ const view=measurements.snapshot()!;
+ expect(view.readbackFailureEvidence).toMatchObject({limit:8,omitted:42,retention:'first_per_process'});
+ expect(view.readbackFailureEvidence.first).toHaveLength(8);expect(view.readbackFailureEvidence.first[0].certificateRef).toMatch(/:1$/);
+ expect(JSON.stringify(view)).not.toContain('PRIVATE');
+});

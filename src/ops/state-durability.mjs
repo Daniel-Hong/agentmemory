@@ -75,7 +75,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const budgetMs=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.max(0,deadline-clock()));
     const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
     let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED';
-    const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began),...(measurement?.certificateRef?{certificateRef:measurement.certificateRef}:{})});
+    const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began),...(measurement?.certificateRef?{certificateRef:measurement.certificateRef}:{}),...(measurement?.readbackEvidence?.()?{reader:measurement.readbackEvidence()}:{})});
     const failed=()=>{const diagnostics=details();if(diagnostics.elapsedMs>=budgetMs)measurement?.event('deadline',undefined,{stage});lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
     async function capture(scope,key,index){
       const remaining=budgetMs-(clock()-began);if(remaining<=0)throw failed();

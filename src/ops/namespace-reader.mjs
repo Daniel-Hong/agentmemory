@@ -1,4 +1,5 @@
 import {open,stat} from 'node:fs/promises';
+import {createReadProgress} from './read-progress.mjs';
 
 const fail=code=>Object.assign(Error(code),{code});
 const white=char=>char===' '||char==='\n'||char==='\r'||char==='\t';
@@ -6,12 +7,13 @@ const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctime
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,onOpen,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
   if(!Number.isSafeInteger(checkIntervalBytes)||checkIntervalBytes<0)throw fail('state_namespace_check_interval_invalid');
   if(maxSelectedBytes!==Infinity&&(!Number.isSafeInteger(maxSelectedBytes)||maxSelectedBytes<0))throw fail('state_namespace_projection_limit_invalid');
   if(maxFileBytes!==Infinity&&(!Number.isSafeInteger(maxFileBytes)||maxFileBytes<1))throw fail('state_namespace_file_limit_invalid');
   if(allowProjectionOverflow!==undefined&&typeof allowProjectionOverflow!=='function')throw fail('state_namespace_projection_policy_invalid');
+  const progress=createReadProgress(onProgress);progress('open');
   const handle=await open(path,'r'),utf8=new TextDecoder('utf-8',{fatal:true});
   const values=new Map(),seen=new Set();let stream,fileBytes=null,complete=false;
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
@@ -73,21 +75,25 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     if(state==='value'&&valueStart!==null){valueParts.push(text.slice(valueStart));valueStart=0;}
   }
   try{
+    progress('stat');
     const beforeStat=await handle.stat({bigint:true}),before=signature(beforeStat);
     fileBytes=Number(beforeStat.size);
     try{const observed=onOpen?.({fileBytes});if(observed&&typeof observed.then==='function')Promise.resolve(observed).catch(()=>{});}catch{}
     if(fileBytes>maxFileBytes)throw fail('state_namespace_file_limit');
     signal?.throwIfAborted();
     stream=handle.createReadStream({autoClose:false,autoDestroy:false,highWaterMark:chunkSize,signal,...(maxFileBytes===Infinity?{}:{end:maxFileBytes-1})});
+    progress('stream');
     for await(const chunk of stream.iterator({destroyOnReturn:false})){
+      progress('processing',{bytesRead});
       if(bytesRead+chunk.length>maxFileBytes)throw fail('state_namespace_file_limit');
       if(checkIntervalBytes&&bytesRead-lastSignatureCheck>=checkIntervalBytes){
         signal?.throwIfAborted();
+        progress('stat',{bytesRead});
         const opened=signature(await handle.stat({bigint:true}));
         let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
         signal?.throwIfAborted();
         if(before!==opened||opened!==current)throw fail('state_namespace_changed');
-        lastSignatureCheck=bytesRead;
+        lastSignatureCheck=bytesRead;progress('processing',{bytesRead});
       }
       const rawText=chunk.toString('latin1'),delimiter=/["\\]/g,structural=/["{}\[\]]/g;
       let end=chunk.length;
@@ -107,7 +113,9 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       let text;try{text=utf8.decode(prefix,{stream:!prefixComplete});}catch{throw fail('state_namespace_utf8');}
       await consume(text);
       if(prefixComplete)break;
+      progress('stream',{bytesRead});
     }
+    progress('stat',{bytesRead});
     const after=signature(await handle.stat({bigint:true}));
     let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
     if(before!==after||after!==current)throw fail('state_namespace_changed');
@@ -115,7 +123,8 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     complete=true;
     return{values,entries,bytesRead,maxEntryChars,signature:after};
   }finally{
-    try{stream?.destroy();await handle.close();}
-    finally{try{const observer=onRead?.({fileBytes,bytesRead,entries,complete});if(observer&&typeof observer.then==='function')Promise.resolve(observer).catch(()=>{});}catch{}}
+    progress('close',{bytesRead,failed:!complete});let closeFailed=true;
+    try{stream?.destroy();await handle.close();closeFailed=false;}
+    finally{progress('complete',{bytesRead,complete,failed:closeFailed});try{const observer=onRead?.({fileBytes,bytesRead,entries,complete});if(observer&&typeof observer.then==='function')Promise.resolve(observer).catch(()=>{});}catch{}}
   }
 }

@@ -1,5 +1,6 @@
 import {createHmac,randomBytes} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
+import {readerEvidence} from './read-progress.mjs';
 
 const HISTORY_LIMIT=8,NAMESPACE_LIMIT=8,FAILURE_LIMIT=32,FAILURE_TTL_MS=15*60*1000,EVENT_LIMIT=32;
 const EVENTS=new Set(['capture_finished','revision_recapture','read_requested','read_queued','read_joined','read_started','read_opened','read_completed','read_failed','read_aborted','unchanged_mismatch_skip','mismatch','signature_changed','deadline']);
@@ -29,6 +30,7 @@ function kind(scope){
 export function createDurabilityMeasurements({clock=()=>performance.now(),wallClock=()=>Date.now()}={}){
   const salt=safe(()=>randomBytes(32),null);
   let recent=[],sequence=0,evicted=0,unavailable=0,failures=[],failureEvicted=0,failureExpired=0,failureClockUnavailable=false;
+  const firstReadbackFailures=[];let omittedReadbackFailures=0;
   const totals={sinceAt:safe(()=>wallClock(),null),counterEpoch:safe(()=>randomBytes(16).toString('hex'),null),
     completed:0,verified:0,failed:0,unknown:0,failedStages:{},failureReasons:{},saturated:false};
   function increment(object,key){
@@ -67,7 +69,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
     }
     const id=++sequence;
     const certificateRef=/^[0-9a-f]{32}$/.test(totals.counterEpoch??'')?totals.counterEpoch+':'+id:null;
-    const timeline=[];let omittedEvents=0;
+    const timeline=[];let omittedEvents=0,lastReader;
     function observe(work){if(!closed&&valid)try{work();}catch{valid=false;}}
     function advance(next){
       const now=clock();
@@ -76,10 +78,12 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
     }
     return {
       certificateRef,
+      readbackEvidence:()=>safe(()=>lastReader?structuredClone(lastReader):undefined,undefined),
       event(eventPhase,scope,info={}){observe(()=>{
         if(!EVENTS.has(eventPhase))return;
         const now=number(clock());if(now===null)throw Error('measurement_clock_unavailable');
         const entry={phase:eventPhase,atMs:Math.max(0,now-began)};
+        const reader=readerEvidence(info);if(reader){Object.assign(entry,reader);lastReader=reader;}else if(eventPhase==='read_queued')lastReader={readerPhase:'queued',readerTimings:{}};
         const namespace=namespaces.get(scope);if(namespace)entry.namespaceToken=namespace.token;
         for(const key of ['readId','bytesRead','fileBytes','ageMs','capturedKeyCount']){const value=number(info[key]);if(value!==null&&(key!=='readId'||Number.isSafeInteger(value)))entry[key]=value;}
         for(const key of ['shared','started','complete','valueChanged','generationChanged'])if(typeof info[key]==='boolean')entry[key]=info[key];
@@ -123,6 +127,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
         const failureOverflow=nextFailures.length>FAILURE_LIMIT;
         const boundedFailures=failureOverflow?nextFailures.slice(-FAILURE_LIMIT):nextFailures;
         recent=nextRecent;failures=boundedFailures;
+        if(outcome==='failed'&&stage==='readback'&&lastReader){if(firstReadbackFailures.length<8)firstReadbackFailures.push({certificateRef,startedAt:number(startedAt),completedAt,failedStage:sample.failedStage,...lastReader});else omittedReadbackFailures++;}
         if(evict)evicted++;if(failureOverflow)failureEvicted++;
         return true;
       },false);
@@ -131,5 +136,6 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
     };
   },null);if(!measurement)unavailable++;return measurement;}
   return {begin,complete,snapshot:()=>safe(()=>{pruneFailures();return structuredClone({version:1,historyLimit:HISTORY_LIMIT,namespaceLimit:NAMESPACE_LIMIT,evicted,unavailable,totals,recent,
+    readbackFailureEvidence:{limit:8,retention:'first_per_process',omitted:omittedReadbackFailures,first:firstReadbackFailures},
     failureTraces:{limit:FAILURE_LIMIT,retentionMs:FAILURE_TTL_MS,eventLimit:EVENT_LIMIT,evicted:failureEvicted,expired:failureExpired,clockUnavailable:failureClockUnavailable,lookupCoverage:'bounded_missing_is_unknown',physicalReadCompletionAfterAbort:'unknown',recent:failures}});},null)};
 }

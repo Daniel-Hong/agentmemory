@@ -1,5 +1,6 @@
 import {readNamespaceEntries} from './namespace-reader.mjs';
 import {performance} from 'node:perf_hooks';
+import {readerEvidence} from './read-progress.mjs';
 import {stat} from 'node:fs/promises';
 
 export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64,maxSmallParallelReads=0,smallReadMaxBytes=1024*1024}={}){
@@ -32,7 +33,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   const nextId=()=>readSequence<Number.MAX_SAFE_INTEGER?++readSequence:null;
   const metadata=info=>{const result={};try{for(const key of ['fileBytes','bytesRead'])if(Number.isSafeInteger(info?.[key])&&info[key]>=0)result[key]=info[key];if(typeof info?.complete==='boolean')result.complete=info.complete;}catch{}return result;};
   const diagnose=(options,event)=>notify(()=>options.onDiagnostic?.({...event}));
-  function status(job){const value={started:job.started===true,...job.openedInfo};const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);return value;}
+  function status(job){const value={};try{Object.assign(value,{started:job.started===true,...job.openedInfo,...readerEvidence(job.progress)});if(job.cpuStart&&job.progress){const cpu=process.cpuUsage(job.cpuStart),loop=performance.eventLoopUtilization(job.loopStart);value.processCpuMs=(cpu.user+cpu.system)/1000;value.eventLoopActiveMs=Math.max(0,loop.active);value.eventLoopIdleMs=Math.max(0,loop.idle);}const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);}catch{}return value;}
   async function actual(path,options,job={readId:nextId()}){
     options.signal?.throwIfAborted();
     let small=false;
@@ -54,11 +55,11 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     let promise;
     let lastInfo;
     if(job.waiters?.size===1&&!job.hinted){job.keys=new Set([...job.waiters][0].keys);options={...options,keys:job.keys};}
-    job.started=true;job.startedAt=now();
-    const emit=(phase,info)=>diagnose(options,{phase,readId:job.readId,...metadata(info)});
+    job.started=true;job.startedAt=now();try{job.cpuStart=process.cpuUsage();job.loopStart=performance.eventLoopUtilization();}catch{}
+    const emit=(phase,info)=>diagnose(options,{phase,readId:job.readId,...metadata(info),...(job.progress?status(job):{})});
     emit('started');
     try{
-      promise=Promise.resolve(read(path,{...options,onOpen:info=>{
+      promise=Promise.resolve(read(path,{...options,onProgress:info=>{job.progress=info;notify(()=>options.onProgress?.(info));},onOpen:info=>{
         job.openedInfo=metadata(info);notify(()=>options.onOpen?.({...info}));emit('opened',info);
       },onRead:info=>{
         lastInfo={...info};

@@ -106,16 +106,16 @@ it('allows disabling while storage protection remains held',async()=>{const x=aw
 it('retains bounded failure evidence after global traces are gone and coordinator restarts',async()=>{
  const x=await setup(),m=await module();
  x.durability.waitForKeys=async(_kv:any,keys:any[])=>{
-  if(keys.some((k:any)=>k.scope===KV.observations(x.sessionId)))throw Object.assign(Error('private raw message must not escape'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics:{stage:'readback',errorCode:'STATE_READBACK_TIMEOUT',elapsedMs:15001,certificateRef:'private-ref',sessionId:'private-session'}});
+  if(keys.some((k:any)=>k.scope===KV.observations(x.sessionId)))throw Object.assign(Error('private raw message must not escape'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics:{stage:'readback',errorCode:'STATE_READBACK_TIMEOUT',elapsedMs:15001,reader:{readerPhase:'stream',readerTimings:{streamMs:14000,processingMs:35,PRIVATE:8},bytesRead:64,PRIVATE:'private'},certificateRef:'private-ref',sessionId:'private-session'}});
   return {synced:true,mutationFailures:0};
  };
  const a=m.createCaptureAutoRecovery(x.kv,x.options);await a.tick();
  const row=await x.kv.get<any>(KV.captureRecovery,x.key);
- expect(row).toMatchObject({verificationAttempts:1,phase:'checking',lastVerificationFailure:{operation:'source_certificate',stage:'readback',code:'STATE_READBACK_TIMEOUT',elapsedMs:15001}});
+ expect(row).toMatchObject({verificationAttempts:1,phase:'checking',lastVerificationFailure:{operation:'source_certificate',stage:'readback',code:'STATE_READBACK_TIMEOUT',elapsedMs:15001,reader:{readerPhase:'stream',readerTimings:{streamMs:14000,processingMs:35},bytesRead:64}}});
  expect(await x.kv.get(KV.captureInbox,x.key)).not.toBeNull();expect(await x.kv.get(captureEventScope(x.key),x.key)).toBeNull();
  const restarted=m.createCaptureAutoRecovery(x.kv,x.options);await restarted.initialize();
  expect(restarted.snapshot()).toMatchObject({verificationFailureCounts:{'source_certificate:readback:STATE_READBACK_TIMEOUT':1}});
- expect(JSON.stringify(row.lastVerificationFailure)).not.toMatch(/private|session|certificateRef/);
+ expect(JSON.stringify(row.lastVerificationFailure)).not.toMatch(/private|PRIVATE|session|certificateRef/);
 });
 
 it('redacts unsupported failure fields without changing failed verification or receipt semantics',async()=>{

@@ -1,3 +1,4 @@
+import {readerEvidence,validReaderEvidence} from '../ops/read-progress.mjs';
 import {recordAudit} from "../functions/audit.js";
 import type {CaptureRecoveryCheckpoint,CaptureRecoveryFailure} from "../types.js";
 import {createHash,randomUUID} from 'node:crypto';
@@ -20,10 +21,10 @@ const fail=(reason:string)=>Object.assign(Error(reason),{recoveryReason:reason})
 const FAILURE_OPERATIONS=new Set(['source_read','source_certificate','checkpoint','commit','completion_read','completion_certificate','completion_freshness']);
 const FAILURE_STAGES=new Set(['capture','readback','fsync','verify','freshness','unknown']);
 const FAILURE_CODES=new Set(['STATE_READBACK_TIMEOUT','STATE_CAPTURE_TIMEOUT','STATE_DURABILITY_TIMEOUT','STATE_EXPECTATION_CHANGED','STATE_CAPTURE_FAILED','STATE_SYNC_FAILED','state_namespace_changed','state_namespace_not_committed','CERTIFICATE_CHANGED','CERTIFICATE_UNAVAILABLE','UNKNOWN']);
-const validFailure=(v:any)=>v&&Object.keys(v).every(k=>['operation','stage','code','elapsedMs'].includes(k))&&FAILURE_OPERATIONS.has(v.operation)&&FAILURE_STAGES.has(v.stage)&&FAILURE_CODES.has(v.code)&&(v.elapsedMs===undefined||Number.isSafeInteger(v.elapsedMs)&&v.elapsedMs>=0&&v.elapsedMs<=86_400_000);
+const validFailure=(v:any)=>v&&Object.keys(v).every(k=>['operation','stage','code','elapsedMs','reader'].includes(k))&&FAILURE_OPERATIONS.has(v.operation)&&FAILURE_STAGES.has(v.stage)&&FAILURE_CODES.has(v.code)&&(v.elapsedMs===undefined||Number.isSafeInteger(v.elapsedMs)&&v.elapsedMs>=0&&v.elapsedMs<=86_400_000)&&(v.reader===undefined||validReaderEvidence(v.reader));
 function failureEvidence(error:any,operation:string):CaptureRecoveryFailure {
  const fallback={operation,stage:'unknown',code:'UNKNOWN'};
- try{const d=error?.diagnostics??{},code=[d.errorCode,error?.code].find(v=>FAILURE_CODES.has(v))??(error?.message==='certificate_changed'?'CERTIFICATE_CHANGED':error?.message==='certificate_unavailable'?'CERTIFICATE_UNAVAILABLE':'UNKNOWN');return {operation,stage:FAILURE_STAGES.has(d.stage)?d.stage:code==='CERTIFICATE_CHANGED'?'freshness':'unknown',code,...(Number.isFinite(d.elapsedMs)&&d.elapsedMs>=0?{elapsedMs:Math.min(86_400_000,Math.floor(d.elapsedMs))}:{})};}catch{return fallback;}
+ try{const d=error?.diagnostics??{},reader=readerEvidence(d.reader),code=[d.errorCode,error?.code].find(v=>FAILURE_CODES.has(v))??(error?.message==='certificate_changed'?'CERTIFICATE_CHANGED':error?.message==='certificate_unavailable'?'CERTIFICATE_UNAVAILABLE':'UNKNOWN');return {operation,...(reader?{reader}:{}),stage:FAILURE_STAGES.has(d.stage)?d.stage:code==='CERTIFICATE_CHANGED'?'freshness':'unknown',code,...(Number.isFinite(d.elapsedMs)&&d.elapsedMs>=0?{elapsedMs:Math.min(86_400_000,Math.floor(d.elapsedMs))}:{})};}catch{return fallback;}
 }
 function validRow(v:any):v is Row{return v?.version===1&&v.kind==='item'&&/^cap_[a-f0-9]{40}$/.test(v.key)&&typeof v.id==='string'&&['sessionId','observationId','eventId'].every(k=>typeof v[k]==='string'&&v[k])&&/^[a-f0-9]{64}$/.test(v.sourceDigest)&&/^[a-f0-9]{64}$/.test(v.projection)&&['checking','verifying','resolved','blocked'].includes(v.phase)&&Number.isSafeInteger(v.verificationAttempts)&&v.verificationAttempts>=0&&v.verificationAttempts<=MAX_PROOFS&&Number.isFinite(v.nextAttemptAt)&&v.nextAttemptAt>=0&&(v.lastVerificationFailure===undefined||validFailure(v.lastVerificationFailure));}
 export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecoveryOptions){
