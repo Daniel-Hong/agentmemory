@@ -1054,4 +1054,5 @@ export type CaptureRetryJobItemState = 'queued' | 'working' | 'waiting' | 'recov
 export type CaptureRetryJobItem = { key: string; eventId: string; requestId: string; status: CaptureRetryJobItemState; errorCode?: string };
 export type CaptureRetryJob = { id: string; all: boolean; eventId?: string; key?: string; status: 'running'|'stopping'|'stopped'|'completed'; stopRequested: boolean; createdAt: string; updatedAt: string; items: CaptureRetryJobItem[] };
 
-export interface CaptureRecoveryCheckpoint {version:1;kind:"item";key:string;id:string;sessionId:string;observationId:string;eventId:string;sourceDigest:string;projection:string;phase:"checking"|"verifying"|"resolved"|"blocked";reason:string;createdAt:string;updatedAt:string;verificationAttempts:number;nextAttemptAt:number}
+export interface CaptureRecoveryFailure {operation:string;stage:string;code:string;elapsedMs?:number}
+export interface CaptureRecoveryCheckpoint {version:1;kind:"item";key:string;id:string;sessionId:string;observationId:string;eventId:string;sourceDigest:string;projection:string;phase:"checking"|"verifying"|"resolved"|"blocked";reason:string;createdAt:string;updatedAt:string;verificationAttempts:number;nextAttemptAt:number;lastVerificationFailure?:CaptureRecoveryFailure}

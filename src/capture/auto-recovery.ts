@@ -1,5 +1,5 @@
 import {recordAudit} from "../functions/audit.js";
-import type {CaptureRecoveryCheckpoint} from "../types.js";
+import type {CaptureRecoveryCheckpoint,CaptureRecoveryFailure} from "../types.js";
 import {createHash,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import type {StateKV} from '../state/kv.js';
@@ -17,10 +17,18 @@ type Control={version:1;kind:'control';failures:number;openUntil:number;enabled?
 const validControl=(v:any):v is Control=>v?.version===1&&v.kind==='control'&&Number.isSafeInteger(v.failures)&&v.failures>=0&&Number.isFinite(v.openUntil)&&v.openUntil>=0&&(v.enabled===undefined||typeof v.enabled==='boolean');
 export interface CaptureAutoRecoveryOptions {enabled:boolean;writerOwned:()=>boolean;admitted:()=>boolean;indexReady:(obs:any)=>boolean;admissionReason?:()=>string|null;now?:()=>number}
 const fail=(reason:string)=>Object.assign(Error(reason),{recoveryReason:reason});
-function validRow(v:any):v is Row{return v?.version===1&&v.kind==='item'&&/^cap_[a-f0-9]{40}$/.test(v.key)&&typeof v.id==='string'&&['sessionId','observationId','eventId'].every(k=>typeof v[k]==='string'&&v[k])&&/^[a-f0-9]{64}$/.test(v.sourceDigest)&&/^[a-f0-9]{64}$/.test(v.projection)&&['checking','verifying','resolved','blocked'].includes(v.phase)&&Number.isSafeInteger(v.verificationAttempts)&&v.verificationAttempts>=0&&v.verificationAttempts<=MAX_PROOFS&&Number.isFinite(v.nextAttemptAt)&&v.nextAttemptAt>=0;}
+const FAILURE_OPERATIONS=new Set(['source_read','source_certificate','checkpoint','commit','completion_read','completion_certificate','completion_freshness']);
+const FAILURE_STAGES=new Set(['capture','readback','fsync','verify','freshness','unknown']);
+const FAILURE_CODES=new Set(['STATE_READBACK_TIMEOUT','STATE_CAPTURE_TIMEOUT','STATE_DURABILITY_TIMEOUT','STATE_EXPECTATION_CHANGED','STATE_CAPTURE_FAILED','STATE_SYNC_FAILED','state_namespace_changed','state_namespace_not_committed','CERTIFICATE_CHANGED','CERTIFICATE_UNAVAILABLE','UNKNOWN']);
+const validFailure=(v:any)=>v&&Object.keys(v).every(k=>['operation','stage','code','elapsedMs'].includes(k))&&FAILURE_OPERATIONS.has(v.operation)&&FAILURE_STAGES.has(v.stage)&&FAILURE_CODES.has(v.code)&&(v.elapsedMs===undefined||Number.isSafeInteger(v.elapsedMs)&&v.elapsedMs>=0&&v.elapsedMs<=86_400_000);
+function failureEvidence(error:any,operation:string):CaptureRecoveryFailure {
+ const fallback={operation,stage:'unknown',code:'UNKNOWN'};
+ try{const d=error?.diagnostics??{},code=[d.errorCode,error?.code].find(v=>FAILURE_CODES.has(v))??(error?.message==='certificate_changed'?'CERTIFICATE_CHANGED':error?.message==='certificate_unavailable'?'CERTIFICATE_UNAVAILABLE':'UNKNOWN');return {operation,stage:FAILURE_STAGES.has(d.stage)?d.stage:code==='CERTIFICATE_CHANGED'?'freshness':'unknown',code,...(Number.isFinite(d.elapsedMs)&&d.elapsedMs>=0?{elapsedMs:Math.min(86_400_000,Math.floor(d.elapsedMs))}:{})};}catch{return fallback;}
+}
+function validRow(v:any):v is Row{return v?.version===1&&v.kind==='item'&&/^cap_[a-f0-9]{40}$/.test(v.key)&&typeof v.id==='string'&&['sessionId','observationId','eventId'].every(k=>typeof v[k]==='string'&&v[k])&&/^[a-f0-9]{64}$/.test(v.sourceDigest)&&/^[a-f0-9]{64}$/.test(v.projection)&&['checking','verifying','resolved','blocked'].includes(v.phase)&&Number.isSafeInteger(v.verificationAttempts)&&v.verificationAttempts>=0&&v.verificationAttempts<=MAX_PROOFS&&Number.isFinite(v.nextAttemptAt)&&v.nextAttemptAt>=0&&(v.lastVerificationFailure===undefined||validFailure(v.lastVerificationFailure));}
 export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecoveryOptions){
  const now=options.now??Date.now;let busy=false,halted=false,enabled=options.enabled,revision=0,initialized:Promise<void>|undefined;let durableEnabled:boolean|null=null,configurationStatus='unloaded';
- let view={enabled:options.enabled,supported:false,phase:'idle',resolved:0,verifying:0,blocked:0,reasonCounts:{}as Record<string,number>,breakerUntil:0,lastCheckedAt:null as string|null,lastErrorCode:null as string|null};
+ let view={enabled:options.enabled,supported:false,phase:'idle',resolved:0,verifying:0,blocked:0,reasonCounts:{}as Record<string,number>,breakerUntil:0,lastCheckedAt:null as string|null,lastErrorCode:null as string|null,verificationFailureCounts:{}as Record<string,number>};
  const blockReason=()=>{
   if(halted)return 'RECOVERY_STORAGE_OR_STATE_UNAVAILABLE';
   if(!options.writerOwned()||!kv.recoveryWrite||kv.backend!=='file'||!kv.durability)return 'FILE_WRITER_UNSUPPORTED';
@@ -57,7 +65,8 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
   const rows=all.filter(validRow),control=all.find(r=>r?.kind==='control') as Control|undefined;
   if(control&&!validControl(control))throw fail('RECOVERY_STATE_UNSUPPORTED');
   const counts:Record<string,number>={};for(const r of rows)if(r.phase!=='resolved'){const reason=SAFE_REASONS.has(r.reason)?r.reason:'RECOVERY_STATE_UNSUPPORTED';counts[reason]=(counts[reason]??0)+1;}
-  view={...view,supported:kv.recoveryMutationSafe&&!!kv.recoveryWrite&&kv.backend==='file'&&!!kv.durability&&options.writerOwned(),resolved:rows.filter(r=>r.phase==='resolved').length,verifying:rows.filter(r=>['checking','verifying'].includes(r.phase)).length,blocked:rows.filter(r=>r.phase==='blocked').length,reasonCounts:counts,breakerUntil:control?.openUntil??0,lastCheckedAt:new Date(now()).toISOString()};
+  const verificationFailureCounts:Record<string,number>={};for(const r of rows)if(r.phase!=='resolved'&&r.lastVerificationFailure){const f=r.lastVerificationFailure,k=f.operation+':'+f.stage+':'+f.code;verificationFailureCounts[k]=(verificationFailureCounts[k]??0)+1;}
+  view={...view,verificationFailureCounts,supported:kv.recoveryMutationSafe&&!!kv.recoveryWrite&&kv.backend==='file'&&!!kv.durability&&options.writerOwned(),resolved:rows.filter(r=>r.phase==='resolved').length,verifying:rows.filter(r=>['checking','verifying'].includes(r.phase)).length,blocked:rows.filter(r=>r.phase==='blocked').length,reasonCounts:counts,breakerUntil:control?.openUntil??0,lastCheckedAt:new Date(now()).toISOString()};
   return {rows,control:control??{version:1,kind:'control',failures:0,openUntil:0}as Control};
  }
  function keys(row:Row){return [{scope:KV.captureReview,key:row.key},{scope:KV.captureInbox,key:row.key},{scope:KV.observations(row.sessionId),key:row.observationId},{scope:'mem:embedding-retry:v1',key:row.observationId},{scope:'mem:embedding-committed:v1',key:row.observationId},{scope:captureEventScope(row.key),key:row.key}];}
@@ -93,11 +102,13 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
  async function drive(row:Row,control:Control){
   await withKeyedLock('capture:'+row.key,async()=>{
    if(!admitted())return;
+   let operation='source_read';
    try{
     let before=await read(row);check(row,before,true);
     if(before[1]){
-     view.phase='verifying_source';await certify(row,before);
-     row={...row,phase:'verifying',reason:'COMPLETION_PROOF_PENDING',updatedAt:new Date(now()).toISOString()};await persist(row);
+     view.phase='verifying_source';operation='source_certificate';await certify(row,before);
+     row={...row,phase:'verifying',reason:'COMPLETION_PROOF_PENDING',updatedAt:new Date(now()).toISOString()};operation='checkpoint';await persist(row);
+     operation='commit';
      await kv.recoveryWrite!.exclusive(keys(row),async()=>{
       if(!admitted())throw fail('ADMISSION_CHANGED');
       const current=await read(row);check(row,current,true);if(!isDeepStrictEqual(before,current))throw fail('STATE_CHANGED');
@@ -107,9 +118,10 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
       await kv.delete(KV.captureInbox,row.key);
      });
     }
-    view.phase='verifying_completion';before=await read(row);check(row,before,true);if(before[1]||before[0]?.status!=='completed'||!before[5])throw fail('COMPLETION_UNVERIFIED');await certify(row,before);
+    view.phase='verifying_completion';operation='completion_read';before=await read(row);check(row,before,true);if(before[1]||before[0]?.status!=='completed'||!before[5])throw fail('COMPLETION_UNVERIFIED');operation='completion_certificate';await certify(row,before);
+    operation='completion_freshness';
     await kv.recoveryWrite!.exclusive(keys(row),async()=>{if(!admitted())throw fail('ADMISSION_CHANGED');const after=await read(row);check(row,after,true);if(!isDeepStrictEqual(before,after))throw Error('certificate_changed');});
-    row={...row,phase:'resolved',reason:'VERIFIED_DURABLE',updatedAt:new Date(now()).toISOString()};await persist(row);await persist({...control,failures:0,openUntil:0});
+    operation='checkpoint';row={...row,phase:'resolved',reason:'VERIFIED_DURABLE',updatedAt:new Date(now()).toISOString()};await persist(row);await persist({...control,failures:0,openUntil:0});
    }catch(error:any){
     if(!admitted()){if(!kv.recoveryMutationSafe||!options.writerOwned())throw error;await persist({...row,reason:'ADMISSION_HELD',nextAttemptAt:now()+COOLDOWN});return;}
     if(error?.recoveryReason==='PUBLICATION_PENDING'){const attempts=row.verificationAttempts+1;await persist({...row,verificationAttempts:attempts,phase:attempts>=MAX_PROOFS?'blocked':'checking',reason:attempts>=MAX_PROOFS?'PUBLICATION_WAIT_EXHAUSTED':'PUBLICATION_PENDING',nextAttemptAt:now()+COOLDOWN*2**(attempts-1)});return;}
@@ -117,7 +129,7 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
     let reason=error?.recoveryReason==='RECOVERY_CHECKPOINT_UNVERIFIED'?undefined:error?.recoveryReason;
     if(!reason){try{check(row,await read(row),true);}catch(current:any){reason=current?.recoveryReason;}}
     if(reason){row={...row,phase:'blocked',reason,updatedAt:new Date(now()).toISOString()};}
-    else {const attempts=row.verificationAttempts+1;row={...row,verificationAttempts:attempts,phase:attempts>=MAX_PROOFS?'blocked':row.phase==='checking'?'checking':'verifying',reason:attempts>=MAX_PROOFS?'VERIFICATION_BUDGET_EXHAUSTED':'VERIFICATION_PENDING',nextAttemptAt:now()+COOLDOWN*2**(attempts-1),updatedAt:new Date(now()).toISOString()};const failures=control.failures+1;await persist({...control,failures,openUntil:failures>=3?now()+BREAKER_MS:control.openUntil});}
+    else {const attempts=row.verificationAttempts+1;row={...row,lastVerificationFailure:failureEvidence(error,operation),verificationAttempts:attempts,phase:attempts>=MAX_PROOFS?'blocked':row.phase==='checking'?'checking':'verifying',reason:attempts>=MAX_PROOFS?'VERIFICATION_BUDGET_EXHAUSTED':'VERIFICATION_PENDING',nextAttemptAt:now()+COOLDOWN*2**(attempts-1),updatedAt:new Date(now()).toISOString()};const failures=control.failures+1;await persist({...control,failures,openUntil:failures>=3?now()+BREAKER_MS:control.openUntil});}
     await persist(row);
    }
   });

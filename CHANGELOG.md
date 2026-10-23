@@ -179,6 +179,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- Preserve whitelisted automatic recovery verification failure stages/codes in existing checkpoints and expose unresolved aggregate categories; no deadline, retry, circuit or durability changes. Development only.
+
+
 - Complete opt-in capture reconciliation with verified native engine cold-start admission and authenticated ON/OFF controls; retain fail-closed writer evidence, durable setting verification and independent holds. Development-only synthetic validation; no operating activation.
 
 
