@@ -1,3 +1,4 @@
+import {acquireFileWriterLease,markFileWriterClean,ownsFileWriterLease} from "./ops/file-writer-lease.mjs";
 import { createBackgroundControl, installBackgroundControl, controlBackgroundFunctions, registerBackgroundControlApi } from "./ops/background-control.mjs";
 import { createMemoryPressureGuard } from "./ops/memory-pressure.mjs";
 import { serializeLongSessionProvider } from "./ops/long-session.mjs";
@@ -270,14 +271,16 @@ async function main() {
     },
   }));
 
-  writeWorkerPidfile();
 
   let stateBackend: "file" | "redis" = "file";
   try {
     stateBackend = getStateBackend();
   } catch {}
   if (!process.env["AGENTMEMORY_STATE_STORE_PATH"] && process.env["AGENTMEMORY_DATA_DIR"]) process.env["AGENTMEMORY_STATE_STORE_PATH"] = join(process.env["AGENTMEMORY_DATA_DIR"], "state_store.db");
-  const kv = new StateKV(sdk, { backend: stateBackend });
+  const writerStorePath=process.env["AGENTMEMORY_STATE_STORE_PATH"];
+  const writerLease=stateBackend==="file"&&writerStorePath&&process.platform==="linux"?acquireFileWriterLease(writerStorePath,{engineUrl:config.engineUrl}):undefined;
+  const kv = new StateKV(sdk, { backend: stateBackend,writerLease });
+  writeWorkerPidfile();
   const secret = resolveWorkerSecret();
   const ingress = createShutdownIngress();
   const lifecycle = createBackgroundLifecycle(() => { ingress.close(); closeLongSessionInferenceAdmission(); });
@@ -328,7 +331,8 @@ async function main() {
     });
     resources.viewer?.closeAllConnections();
     if (resources.viewer) await settleWithin(new Promise<void>(resolve => resources.viewer!.close(() => resolve())), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
-    await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
+    const sdkDrained=await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
+    if(writerLease&&kv.recoveryMutationSafe&&outcome.verified&&!bootFailed&&sdkDrained&&!kv.mutationOutcomeUncertain){try{markFileWriterClean(writerLease);}catch{/* The dirty marker remains conservative on failure. */}}
     if (outcome.verified) clearWorkerPidfile();
     process.exit(outcome.verified && !bootFailed ? 0 : 1);
   }
@@ -374,7 +378,7 @@ async function main() {
 
   registerPrivacyFunction(sdk);
   registerObserveFunction(sdk, kv, dedupMap, config.maxObservationsPerSession);
-  const capture = resources.capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort });
+  const capture = resources.capture = registerCaptureFunctions(sdk, kv, { restPort: config.restPort,autoRecovery:{enabled:process.env["AGENTMEMORY_AUTO_CAPTURE_RECOVERY"]==="true",writerOwned:()=>!!writerLease&&ownsFileWriterLease(writerLease,writerStorePath!),admitted:()=>!shuttingDown&&persistentBackground&&!control.isPaused()&&pressure?.snapshot().level==="normal"} });
   operationalState.captureProgress = { snapshot: () => capture.progress() };
   registerImageQuotaCleanup(sdk, kv);
   registerVisionSearchFunctions(sdk, kv, imageEmbeddingProvider);

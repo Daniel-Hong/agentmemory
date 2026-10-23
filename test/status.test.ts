@@ -483,7 +483,7 @@ describe("status wiring", () => {
 
   it("reports the active state backend from config, not a hardcoded value", () => {
     expect(api).toMatch(/stateBackend: kv.backend === "redis" \? "redis" : "file"/);
-    expect(index).toMatch(/new StateKV\(sdk, \{ backend: stateBackend \}\)/);
+    expect(index).toMatch(/new StateKV\(sdk, \{ backend: stateBackend,writerLease \}\)/);
   });
 
   it("the viewer has a Health tab that reads the status report", () => {
@@ -590,4 +590,16 @@ it('retains failed attempt history when its timestamp is unavailable',()=>{
  expect(history?.level).toBe('info');
  expect(history?.message).toContain('190 failed append attempts');
  expect(history?.message).toContain('outcomes remain unknown');
+});
+
+it('keeps unverified automatic recovery visible even after inbox removal',()=>{
+ const capture={policy:{retryIntervalMs:10000,maxAttempts:5},inbox:{pending:0,retrying:0,dead:0},spool:[],sinceStart:{},automaticRecovery:{enabled:true,verifying:1,blocked:0,resolved:2,lastErrorCode:null}};
+ const report=evaluateStatus(inputs({capture:capture as never}));expect(codes(report)).toContain('capture-automatic-recovery');
+ capture.automaticRecovery.verifying=0;capture.automaticRecovery.lastErrorCode='WRITER_EPOCH_UNVERIFIED' as never;
+ expect(codes(evaluateStatus(inputs({capture:capture as never})))).toContain('capture-automatic-recovery');
+ capture.automaticRecovery.enabled=false;expect(codes(evaluateStatus(inputs({capture:capture as never})))).not.toContain('capture-automatic-recovery');
+});
+it('renders HTML while automatic recovery is awaiting proof',()=>{
+ const report=evaluateStatus(inputs({capture:{policy:{retryIntervalMs:10000,maxAttempts:5},inbox:{pending:0,retrying:0,dead:0},spool:[],sinceStart:{},automaticRecovery:{enabled:true,verifying:1,blocked:0,resolved:0,lastErrorCode:null}} as never}));
+ expect(()=>renderStatusHtml(report,'fixture')).not.toThrow();
 });

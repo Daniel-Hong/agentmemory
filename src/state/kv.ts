@@ -1,3 +1,5 @@
+import {createRecordRecoveryGate} from './recovery-write-gate.js'
+import {ownsFileWriterLease,fileWriterRecoveryAdmitted,type FileWriterLease} from '../ops/file-writer-lease.mjs'
 import { createCaptureReceiptPage } from '../capture/receipt-page.js'
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
@@ -10,6 +12,7 @@ import { createGraphFileList } from '../ops/graph-file-list.mjs'
 export type StateBackend = 'file' | 'redis'
 
 export interface StateKVOptions {
+  writerLease?: FileWriterLease
   backend?: StateBackend
   durability?: ReturnType<typeof createStateDurabilityFence>
 }
@@ -109,6 +112,12 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
 }
 
 export class StateKV {
+  private writerLease?:FileWriterLease
+  private writerStorePath?:string
+  private uncertainMutation=false
+  get mutationOutcomeUncertain(){return this.uncertainMutation}
+  get recoveryMutationSafe(){return !this.uncertainMutation&&!!this.writerLease&&fileWriterRecoveryAdmitted(this.writerLease)}
+  readonly recoveryWrite?: ReturnType<typeof createRecordRecoveryGate>
   readonly backend: StateBackend
   readonly durability: ReturnType<typeof createStateDurabilityFence> | null
   readonly observationReader: ReturnType<typeof createObservationReader> | null
@@ -122,6 +131,7 @@ export class StateKV {
   ) {
     this.backend = options.backend ?? 'file'
     const storePath = this.backend === 'file' ? getEnvVar('AGENTMEMORY_STATE_STORE_PATH') : undefined
+    if (this.backend === 'file' && storePath && ownsFileWriterLease(options.writerLease,storePath)) {this.recoveryWrite=createRecordRecoveryGate();this.writerLease=options.writerLease;this.writerStorePath=storePath;}
     this.durability = this.backend === 'file'
       ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath }) : null)
       : null
@@ -132,14 +142,21 @@ export class StateKV {
   }
 
   private mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
+    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,fn)}
+    return this.recoveryWrite ? this.recoveryWrite.read(scope,key,perform) : perform()
+  }
+
+  private performMutation<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
     const finish = this.observationReader?.beginMutation?.(scope)
     try {
       return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
+        this.uncertainMutation=true
         this.observationReader?.invalidateCaptureSummary(scope)
         this.graphFileList?.invalidate(scope)
         throw error
       }).finally(() => finish?.())
     } catch (error) {
+      this.uncertainMutation=true
       finish?.()
       throw error
     }

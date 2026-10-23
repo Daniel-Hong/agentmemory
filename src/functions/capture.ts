@@ -1,3 +1,5 @@
+import {createCaptureAutoRecovery,type CaptureAutoRecoveryOptions} from "../capture/auto-recovery.js";
+import {getSearchIndex,getVectorIndex} from "./search.js";
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
 import { registerCaptureReceipts } from "../capture/receipts.js";
 import { createCaptureReviewMetadata, captureMetadataInvocationQuery } from "../capture/review-metadata.js";
@@ -92,6 +94,7 @@ export interface CaptureProgress {
   stallAfterMs: number;
 }
 export interface CaptureStatus {
+  automaticRecovery?: ReturnType<ReturnType<typeof createCaptureAutoRecovery>["snapshot"]>;
   legacyOutbox?: OutboxMetadata;
   progress?: CaptureProgress;
   policy: CapturePolicy;
@@ -215,8 +218,9 @@ export interface CaptureController {
 export function registerCaptureFunctions(
   sdk: IIIClient,
   kv: StateKV,
-  options: { restPort?: number; durableAfterMs?: number } = {},
+  options: { restPort?: number; durableAfterMs?: number;autoRecovery?:Omit<CaptureAutoRecoveryOptions,"indexReady"> } = {},
 ): CaptureController {
+  const automaticRecovery=createCaptureAutoRecovery(kv,{enabled:false,writerOwned:()=>false,admitted:()=>false,...options.autoRecovery,admitted:()=>!stopped&&(options.autoRecovery?.admitted()??false),indexReady:obs=>getSearchIndex().sessionOf(obs.id)===obs.sessionId&&getVectorIndex()?.get(obs.id)?.sessionId===obs.sessionId});
   registerCaptureReceipts(sdk,kv);
   const reviewMetadata=createCaptureReviewMetadata(kv);
   sdk.registerFunction('mem::capture-review-metadata',async input=>reviewMetadata(captureMetadataInvocationQuery(input)));
@@ -636,7 +640,7 @@ export function registerCaptureFunctions(
       seen.add(summary.path);
       spool.push(summary);
     }
-    return { policy, inbox, legacyOutbox:await inspectOutbox(), progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
+    return { automaticRecovery:automaticRecovery.snapshot(),policy, inbox, legacyOutbox:await inspectOutbox(), progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
@@ -711,7 +715,9 @@ export function registerCaptureFunctions(
       const jobTick=backgroundTask(async()=>{if(!stopped)await retryJobs.tick();});
       const jobTimer=setInterval(()=>{if(!stopped)trackMaintenance(jobTick);},1000);
       jobTimer.unref();
-      timers.push(sweepTimer, pruneTimer,jobTimer);
+      const autoTick=backgroundTask(async()=>{if(!stopped)await automaticRecovery.tick();});
+      const autoTimer=setInterval(()=>{if(!stopped)trackMaintenance(autoTick);},60_000);autoTimer.unref();
+      timers.push(sweepTimer, pruneTimer,jobTimer,autoTimer);
     },
     stop() {
       stopped = true;

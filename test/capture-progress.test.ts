@@ -119,3 +119,7 @@ describe("capture active progress", () => {
     expect(await kv.list(KV.captureInbox)).toEqual([dead]);
   });
 });
+
+it('reports automatic recovery disabled by default without altering historical capture counts',async()=>{
+ const {controller}=boot();const state=await controller.status();expect(state.automaticRecovery).toMatchObject({enabled:false,resolved:0,verifying:0,blocked:0});expect(state.sinceStart).toMatchObject({accepted:0,recovered:0,deadLettered:0});controller.stop();
+});

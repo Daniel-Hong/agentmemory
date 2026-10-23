@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add opt-in verified capture quarantine reconciliation with per-record mutation coordination, lifetime Linux writer ownership, durable per-item checkpoints and bounded proof retries. Preserve original observations, retry history and historical warning totals. Unknown writer epochs remain held; no operating activation or production recovery is included. See docs/customizations/CAPTURE-AUTO-RECOVERY.md.
+
 - Fix the capture review metadata internal SDK boundary for iii-engine's caller envelope, retaining strict HTTP filters and privacy/read-only guarantees. Add real-engine registered-path and malformed-envelope regression coverage; operating quarantine recovery remains unverified.
 
 ## Capture review metadata (development only)

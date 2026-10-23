@@ -83,7 +83,7 @@
  async function load(cursor){try{
   var page=await api('?review=true&status='+select.value+'&limit=25'+(cursor?'&cursor='+encodeURIComponent(cursor):''));rows=page.items||[];nextCursor=page.nextCursor||null;
   var cap=page.capture?.inbox;deadCount=cap?cap.dead:select.value==='dead'?page.total:deadCount;
-  summary.textContent='선택 상태 '+page.total+'건'+(cap?' · 수집 격리 '+cap.dead+'건 · 자동 재시도 '+cap.retrying+'건':'');render();
+  summary.textContent='선택 상태 '+page.total+'건'+(cap?' · 수집 격리 '+cap.dead+'건 · 자동 재시도 '+cap.retrying+'건':'');var auto=page.capture?.automaticRecovery;if(auto?.enabled)summary.textContent+=' · 검증 복구 '+auto.resolved+'건 / 확인 중 '+auto.verifying+'건 / 점검 필요 '+auto.blocked+'건'+(auto.lastErrorCode?' · 자동 변경 보류':'')+(auto.breakerUntil>Date.now()?' · 반복 실패로 대기':'');render();
  }catch{announce('수집 목록 조회 실패 · 비어 있다고 판정하지 않습니다.');}finally{controls();}}
  async function refreshAll(){await load(cursorStack[cursorStack.length-1]);await pollJobs();}
  async function sendLegacy(){

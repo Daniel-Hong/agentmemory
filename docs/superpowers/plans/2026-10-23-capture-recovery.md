@@ -1,0 +1,14 @@
+# Verified capture recovery implementation plan
+
+Goal: reconcile a quarantined capture whose original and published indexes already exist, without repeated manual replay, weakened durability, or new LLM work.
+
+Design decision: reuse capture history, keyed locks, background control and durability fences. Automatic recovery never creates an observation or resets its retry cycle. Missing/conflicting/unsupported data remains blocked. A failed completion proof resumes verification, not inference. Linux file-store workers acquire a lifetime OS writer lock before registering state-mutating handlers; compatible worker concurrency fails closed. Mixed legacy workers, external direct writers and shared storage across hosts are unsupported.
+
+1. Test and implement lifetime Linux file-writer ownership using a parent-held FD and the installed flock utility. Test conflict, child exit and process crash release in temporary paths.
+2. Test and implement source/identity/projection classification, durable recovery checkpoints, one-at-a-time reconciliation, verification-only restart, bounded backoff/circuit breaker, and deletion coordination. Require a valid writer capability and normal background/memory admission. Keep long readback outside the session observation lock.
+3. Integrate an opt-in scheduler and body-free status/reason counts into existing capture/status UI paths. Keep historical counters; no external notifications or new permissions.
+4. Run single-worker targeted synthetic tests, type/build checks and independent review. Full browser tests, large benchmarks and production activation are deferred because of the unresolved NVMe incident. Record every unexecuted aggregate check.
+
+Safety focus: deletion between check and mutation; concurrent compatible worker; crash after metadata completion before certificate; unrelated manual job; no source/raw/identifier/digest leakage in public status. Existing receipt/source/generation/fsync/deadline semantics remain mandatory. Runtime rollback must stop the newer writer before starting older code and preserve new recovery records.
+
+Implementation decisions after independent review: use per-record StateKV gates for the six selected records, not a global write lock. Long disk fences run outside the gates. SDK rejection poisons automatic mutation admission for that writer; SDK shutdown is not an engine cancellation/drain guarantee. Unknown startup epochs cannot become clean through an ordinary worker restart. First installation stays held until a same-host OS boot boundary is evidenced by retained boot metadata; same-boot unclean restarts remain held. Local engine/store only, no copied/shared lock metadata, forwarded engine connections or nonparticipating writers. This conservative bootstrap is a deployment limitation, not an instruction to reboot production now.

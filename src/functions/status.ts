@@ -523,6 +523,8 @@ function captureProblems(capture: CaptureStatus | null, now: Date, restPort: num
   const problems: StatusProblem[] = [];
   const base = captureRestBase(restPort);
   const inbox = capture.inbox;
+  const auto=capture.automaticRecovery;
+  if(auto?.enabled&&(auto.verifying>0||auto.blocked>0||auto.lastErrorCode))problems.push({level:"warn",code:"capture-automatic-recovery",message:`Automatic capture recovery: ${auto.verifying} awaiting verification, ${auto.blocked} require inspection${auto.lastErrorCode?"; automatic changes held":""}.`,fix:"Retain originals and inspect the recovery status. Unknown or unverified outcomes are not completed delivery; manual or storage protection holds remain in force."});
   if (inbox && inbox.dead > 0) {
     problems.push({
       level: "warn",

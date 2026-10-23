@@ -61,6 +61,7 @@ export const KV = {
   projectSessionsIndex: "mem:idx:project-sessions",
   obsSessionIndex: (shard: number) => `mem:idx:obs:${shard}`,
   captureJobs: "mem:capture:jobs",
+  captureRecovery: "mem:capture-recovery:v1",
   captureReview: "mem:capture:review",
   captureInbox: "mem:capture:inbox",
   captureEvents: (shard: string) => `mem:capture:events:${shard}`,

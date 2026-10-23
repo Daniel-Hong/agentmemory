@@ -1044,6 +1044,7 @@ export interface CaptureReviewHistory {
   key: string; eventId: string; sessionId: string; project: string; hookType: string; observationId: string;
   acceptedAt: string; updatedAt: string; status: "pending" | "retrying" | "dead" | "completed";
   totalAttempts: number; cycleAttempts?: number; manualRetries: number; recoveredAt?: string;
+  automaticRecovery?: {id:string;completedAt:string};
   failures: Array<{at: string; attempt: number; code: string; legacy?: boolean}>;
   requests: Record<string,{startedAt: string; finishedAt?: string; outcome?: "recovered" | "dead" | "waiting" | "gone" | "stopped"}>;
 }
@@ -1051,3 +1052,5 @@ export interface CaptureReviewHistory {
 export type CaptureRetryJobItemState = 'queued' | 'working' | 'waiting' | 'recovered' | 'dead' | 'skipped';
 export type CaptureRetryJobItem = { key: string; eventId: string; requestId: string; status: CaptureRetryJobItemState; errorCode?: string };
 export type CaptureRetryJob = { id: string; all: boolean; eventId?: string; key?: string; status: 'running'|'stopping'|'stopped'|'completed'; stopRequested: boolean; createdAt: string; updatedAt: string; items: CaptureRetryJobItem[] };
+
+export interface CaptureRecoveryCheckpoint {version:1;kind:"item";key:string;id:string;sessionId:string;observationId:string;eventId:string;sourceDigest:string;projection:string;phase:"checking"|"verifying"|"resolved"|"blocked";reason:string;createdAt:string;updatedAt:string;verificationAttempts:number;nextAttemptAt:number}
