@@ -295,6 +295,11 @@ describe("Export/Import Functions", () => {
     expect(result.success).toBe(true);
   });
 
+  it("retains compatibility with the deployed daniel.28 export format", async () => {
+    const result = await sdk.trigger("mem::import", {exportData: {version: "0.9.30-daniel.28", exportedAt: "2026-01-01T00:00:00Z", sessions: [], observations: {}, memories: [], summaries: []}, strategy: "merge"});
+    expect(result.success).toBe(true);
+  });
+
   it("import rejects unsupported version", async () => {
     const exportData = {
       version: "1.0.0",

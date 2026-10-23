@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain import compatibility with the deployed daniel.28 export version while preparing diagnostic releases; retain rejection of unsupported versions and all record validation. No operating import or data migration is performed.
+
 - Add bounded namespace read phase evidence (open/stat/stream/processing/close), physical-window process CPU/event-loop context, first-eight readback failure retention and safe per-item recovery checkpoint detail. Preserve all durability, deadline and retry guarantees; this is diagnostic development only, not a performance fix.
 
 - Add opt-in verified capture quarantine reconciliation with per-record mutation coordination, lifetime Linux writer ownership, durable per-item checkpoints and bounded proof retries. Preserve original observations, retry history and historical warning totals. Unknown writer epochs remain held; no operating activation or production recovery is included. See docs/customizations/CAPTURE-AUTO-RECOVERY.md.
