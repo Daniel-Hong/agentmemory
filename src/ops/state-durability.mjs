@@ -74,24 +74,35 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const pinned=expectedValues===undefined?undefined:structuredClone(expectedValues);
     const budgetMs=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.max(0,deadline-clock()));
     const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
-    let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED';
+    let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED',captureClosed=false;
     const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began),...(measurement?.certificateRef?{certificateRef:measurement.certificateRef}:{}),...(measurement?.readbackEvidence?.()?{reader:measurement.readbackEvidence()}:{})});
     const failed=()=>{const diagnostics=details();if(diagnostics.elapsedMs>=budgetMs)measurement?.event('deadline',undefined,{stage});lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
     async function capture(scope,key,index){
       const remaining=budgetMs-(clock()-began);if(remaining<=0)throw failed();
       let timer;
-      try{const value=(await Promise.race([kv.get(scope,key),new Promise((_,reject)=>{timer=setTimeout(()=>reject(failed()),remaining);})]))??null;if(pinned&&!isDeepStrictEqual(value,pinned[index]))throw Object.assign(Error('state_expectation_changed'),{code:'STATE_EXPECTATION_CHANGED'});return pinned?pinned[index]:value;}
+      try{const value=(await Promise.race([kv.get(scope,key),new Promise((_,reject)=>{timer=setTimeout(()=>reject(captureClosed?captureTimeout():failed()),remaining);})]))??null;if(pinned&&!isDeepStrictEqual(value,pinned[index]))throw Object.assign(Error('state_expectation_changed'),{code:'STATE_EXPECTATION_CHANGED'});return pinned?pinned[index]:value;}
       finally{clearTimeout(timer);}
     }
     for(const {scope} of selected)if(!expected.has(scope))expected.set(scope,new Map());
     const measurement=measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began});
     let outcome='failed';
     try{
-    let captureFailed=false,captureError;
+    let captureFailed=false,captureError,nextCapture=0;
+    async function captureNext(){
+      while(!captureClosed&&nextCapture<selected.length){
+        const index=nextCapture++,{scope,key}=selected[index];
+        try{
+          const value=(await capture(scope,key,index))??null;
+          if(captureClosed)return;
+          expected.get(scope).set(key,value);capturedKeyCount++;
+        }catch(error){captureClosed=true;throw error;}
+      }
+    }
     try{
-      // Bound SDK concurrency; serial capture alone can exhaust the publication deadline.
-      for(let offset=0;offset<selected.length;offset+=4)await Promise.all(selected.slice(offset,offset+4).map(async({scope,key},index)=>{expected.get(scope).set(key,(await capture(scope,key,offset+index))??null);capturedKeyCount++;}));
+      // Refill free SDK slots instead of waiting for the slowest lookup in each quartet.
+      await Promise.all(Array.from({length:Math.min(4,selected.length)},()=>captureNext()));
     }catch(error){captureFailed=true;captureError=error;}
+    finally{captureClosed=true;}
     if(captureFailed){lastCode=captureError?.code==='STATE_DURABILITY_TIMEOUT'?'STATE_CAPTURE_TIMEOUT':typeof captureError?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(captureError.code)?captureError.code:'STATE_CAPTURE_FAILED';throw failed();}
     measurement?.event('capture_finished',undefined,{capturedKeyCount});
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));

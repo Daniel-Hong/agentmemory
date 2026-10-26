@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refill the existing four SDK capture slots as lookups complete, instead of waiting at each four-request barrier. Preserve deadlines, expected-value checks and disk certification. This reduces synthetic mixed-latency capture cost but does not establish an operating readback fix. Development only; see docs/customizations/SDK-CAPTURE-WINDOW.md.
+
 - Add an explicit same-user maintenance cold-stop tool with pinned pidfds, historical uncertainty retention, private live/stable copies and observed systemd stop barriers. Existing normal guards remain unchanged; no operating execution or automatic writer start. See docs/customizations/MAINTENANCE-COLD-STOP.md.
 
 - Retain a bounded shutdown phase/worker timeline in the existing final receipt, with explicit omitted coverage and best-effort diagnostics. Preserve storage proofs, timeout and sticky failure policy. Development only; see docs/customizations/SHUTDOWN-TIMELINE.md.
