@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an explicit same-user maintenance cold-stop tool with pinned pidfds, historical uncertainty retention, private live/stable copies and observed systemd stop barriers. Existing normal guards remain unchanged; no operating execution or automatic writer start. See docs/customizations/MAINTENANCE-COLD-STOP.md.
+
 - Retain a bounded shutdown phase/worker timeline in the existing final receipt, with explicit omitted coverage and best-effort diagnostics. Preserve storage proofs, timeout and sticky failure policy. Development only; see docs/customizations/SHUTDOWN-TIMELINE.md.
 
 - Retain import compatibility with the deployed daniel.28 export version while preparing diagnostic releases; retain rejection of unsupported versions and all record validation. No operating import or data migration is performed.

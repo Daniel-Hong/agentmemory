@@ -1,0 +1,15 @@
+# Explicit maintenance cold stop
+
+Approved development scope: a separate maintenance mode, never a normal-stop guard exception. Preserve the current uncertainty and existing holds; do not start a writer, clear counters, release holds, deploy or touch operating data in development.
+
+Approaches: ordinary stop/retry is deterministically blocked by the historical failure counter; weakening that guard is rejected. An explicit offline maintenance acquisition and pidfd-bound graceful stop is selected. A generic service/update framework is out of scope.
+
+The Linux, same-UID tool consumes a private, freshly reviewed plan binding the store, two exact process identities, executable/entrypoint hashes, host/boot/namespaces and existing writer epoch. It admits only local directories. It durably records historical uncertainty and a non-atomic live acquisition BEFORE sending SIGTERM through already bound pidfds. No SIGKILL, PID discovery, root execution, credentials or network access.
+
+After the worker exits and is reaped, it rechecks the engine and epoch, records engine-stop intent, requests SIGTERM and proves both identities absent. It acquires the existing writer flock, copies again to a new stable directory, checks source signatures and inventory stability plus destination hashes, fsyncs files/directories and writes the final private checkpoint. Copies never replace originals. Evidence failure, timeout, PID reuse, remaining processes, source replacement, symlinks, copy limits or a held flock stop the operation. No normal verified shutdown receipt is fabricated. A stable copy proves the acquired bytes, not the intended outcome of the old failed mutation, nor absence of an uncooperative native writer. A fresh normal startup writer/engine guard is still mandatory.
+
+An interrupted invocation is not replayed. A verify-stopped-only mode may finish copying/checking from the SAME pinned plan and prior durable live acquisition only when both original processes are absent; it sends no signals. Output is aggregate phase/booleans only; plans, paths and hashes remain in 0700/0600 local evidence. No engine or writer is launched by this tool.
+
+Current scope is two source roots (engine data and optionally outbox), 16GiB/10000-file hard ceilings, one streaming copy at a time, no LLM or ports. Core tests use tiny real files; process-boundary tests use only spawned synthetic children. Real installed-engine termination behavior must be distinguished from these tests in the report.
+
+Supervisor refinement: actual agentmemory.service uses Restart=on-failure. Managed execution therefore requires exact unit membership and MainPID==pinned worker at admission, observed deactivating stop intent, no changed nonzero MainPID, no queued unit jobs and actual unit inactivity before signalling any remaining bound engine. Normal systemctl stop terminates the worker; the helper does not signal it independently. --require-service is mandatory in the operating handoff. No service setting/permission changes.
