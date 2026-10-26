@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain a bounded shutdown phase/worker timeline in the existing final receipt, with explicit omitted coverage and best-effort diagnostics. Preserve storage proofs, timeout and sticky failure policy. Development only; see docs/customizations/SHUTDOWN-TIMELINE.md.
+
 - Retain import compatibility with the deployed daniel.28 export version while preparing diagnostic releases; retain rejection of unsupported versions and all record validation. No operating import or data migration is performed.
 
 - Add bounded namespace read phase evidence (open/stat/stream/processing/close), physical-window process CPU/event-loop context, first-eight readback failure retention and safe per-item recovery checkpoint detail. Preserve all durability, deadline and retry guarantees; this is diagnostic development only, not a performance fix.

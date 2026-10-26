@@ -313,6 +313,7 @@ async function main() {
       work: async progress => {
         progress({ stage: "boot_gate" }); await bootGate;
         let disk: unknown = null;
+        progress({ stage: "lifecycle" });
         await lifecycle.shutdown(async ({ drained }) => {
           progress({ stage: "ingress" }); await ingress.drain();
           progress({ stage: "control" }); await control.settled();
