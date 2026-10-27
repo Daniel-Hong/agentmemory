@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { scrubRecord, stripPrivateData } from '../functions/privacy.js';
+import { normalizeCaptureData } from '../functions/privacy.js';
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -12,7 +12,6 @@ export function captureSourceDigest(hookType: string, timestamp: string, raw: un
 }
 
 export function capturePayloadDigest(body: {hookType:string;timestamp:string;data:unknown}): string {
-  const clean=scrubRecord(body.data);
-  const raw=JSON.parse(stripPrivateData(JSON.stringify(clean)));
+  const raw=normalizeCaptureData(body.data);
   return captureSourceDigest(body.hookType,body.timestamp,raw);
 }

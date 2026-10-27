@@ -11,15 +11,16 @@ import {registerCaptureReceipts} from '../src/capture/receipts.js';
 import {captureEventScope} from '../src/capture/event-record.js';
 import {KV} from '../src/state/schema.js';
 import {createStateDurabilityFence} from '../src/ops/state-durability.mjs';
+import {normalizeCaptureData,scrubRecord,stripPrivateData} from '../src/functions/privacy.js';
 
 let dir:string;
 beforeEach(async()=>{dir=await mkdtemp(join(tmpdir(),'am-receipt-handoff-'));vi.resetModules();vi.stubEnv('AGENTMEMORY_HOME',dir);vi.stubEnv('AGENTMEMORY_SECRET','synthetic-secret');vi.stubEnv('AGENTMEMORY_URL','http://127.0.0.1:45679');vi.stubEnv('AGENTMEMORY_CAPTURE_SPOOL_DIR',join(dir,'managed'));vi.stubEnv('AGENTMEMORY_CAPTURE_DRAIN_CHILD','1');});
 afterEach(async()=>{vi.unstubAllGlobals();vi.unstubAllEnvs();await rm(dir,{recursive:true,force:true});});
-async function setup(){
- const body={project:'synthetic',sessionId:'synthetic-session',eventId:'synthetic-event',hookType:'post_tool_use',timestamp:'2026-10-21T00:00:00Z',cwd:'/synthetic',data:{tool_output:'synthetic '.repeat(40000)}};
+async function setup(extraData:Record<string,unknown>={}){
+ const body={project:'synthetic',sessionId:'synthetic-session',eventId:'synthetic-event',hookType:'post_tool_use',timestamp:'2026-10-21T00:00:00Z',cwd:'/synthetic',data:{tool_output:'synthetic '.repeat(40000),...extraData}};
  const key='cap_'+createHash('sha256').update(`${body.project}\u0000${body.sessionId}\u0000${body.eventId}`).digest('hex').slice(0,40);
  const done={key,project:body.project,sessionId:body.sessionId,eventId:body.eventId,observationId:'synthetic-obs',acceptedAt:body.timestamp,completedAt:body.timestamp,attempts:1};
- const obs={id:done.observationId,sessionId:body.sessionId,captureKey:key,sourceRaw:{id:done.observationId,sessionId:body.sessionId,captureKey:key,eventId:body.eventId,hookType:body.hookType,timestamp:body.timestamp,raw:body.data}};
+ const obs={id:done.observationId,sessionId:body.sessionId,captureKey:key,sourceRaw:{id:done.observationId,sessionId:body.sessionId,captureKey:key,eventId:body.eventId,hookType:body.hookType,timestamp:body.timestamp,raw:normalizeCaptureData(body.data)}};
  const kv=mockKV();await kv.set(captureEventScope(key),key,done);await kv.set(KV.observations(body.sessionId),obs.id,obs);
  const eventFile=join(dir,encodeURIComponent(captureEventScope(key))+'.bin'),obsFile=join(dir,encodeURIComponent(KV.observations(body.sessionId))+'.bin');
  await writeFile(eventFile,JSON.stringify({[key]:done}));await writeFile(obsFile,Buffer.concat([Buffer.from(JSON.stringify({[obs.id]:obs})),Buffer.from([255,0,123])]));
@@ -38,6 +39,23 @@ async function setup(){
  return {body,key,done,obs,kv,fence,eventFile,obsFile,client,pending,outbox,clientDir,get posts(){return posts;},reject:()=>{postStatus=413;}};
 }
 describe('actual compatibility collector and body-free durable receipt with file fence',()=>{
+ it.each([
+  {['sk-'+'a'.repeat(26)]:'first',['pk-'+'a'.repeat(26)]:'second'},
+  {a:'<private>start',b:'end</private>'},
+ ])('matches structured normalization before verified receipt removes the local duplicate',async data=>{
+  const f=await setup(data);expect(await f.client().flush()).toBe(true);expect(await f.pending()).toEqual([]);expect(f.posts).toBe(0);
+  expect(f.fence.snapshot().measurements.recent.at(-1)?.outcome).toBe('verified');
+ });
+ it('retains an old differently normalized source and the exact pending original without rewriting either',async()=>{
+  const f=await setup({a:'<private>start',b:'end</private>'});
+  const oldRaw=JSON.parse(stripPrivateData(JSON.stringify(scrubRecord(f.body.data))));
+  const oldObs={...f.obs,sourceRaw:{...f.obs.sourceRaw,raw:oldRaw}};
+  await f.kv.set(KV.observations(f.body.sessionId),f.obs.id,oldObs);
+  await writeFile(f.obsFile,JSON.stringify({[f.obs.id]:oldObs}));const before=await readFile(f.obsFile,'utf8');
+  expect(await f.client().flush()).toBe(false);expect((await f.pending())[0].body).toEqual(f.body);
+  expect(await f.client().flush()).toBe(false);expect((await f.pending())[0].body).toEqual(f.body);
+  expect(await readFile(f.obsFile,'utf8')).toBe(before);expect(f.posts).toBe(1);
+ });
  it('removes only an already durable matching duplicate and never resends it',async()=>{
   const f=await setup();expect(await f.client().flush()).toBe(true);expect(await f.pending()).toEqual([]);expect(f.posts).toBe(0);expect(f.fence.snapshot().measurements.recent.at(-1)?.outcome).toBe('verified');
  });

@@ -63,6 +63,13 @@ export function scrubRecord<T>(value: T, options: { scrubKeys?: boolean } = {}):
   return value;
 }
 
+export function normalizeCaptureData(value: unknown): unknown {
+  const serialized = JSON.stringify(value);
+  return serialized === undefined
+    ? undefined
+    : scrubRecord(JSON.parse(serialized), { scrubKeys: true });
+}
+
 export const SCRUBBED_WRITE_FUNCTIONS: ReadonlySet<string> = new Set([
   "mem::remember",
   "mem::evolve",

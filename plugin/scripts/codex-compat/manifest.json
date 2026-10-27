@@ -14,7 +14,7 @@
     "subagent-start.mjs": "24a02be53008721379cbf115884a7739baa2884f8d5f3e12a967b9ae8b0c2869",
     "subagent-stop.mjs": "8fc6929af24afd799cbaec3a3ca210971c9f51f139f6666fe0025fdfdc62dba8",
     "provenance.json": "4d768394ad40a29be9d2721fccffd0a054ec97bcc6b868305a27e755eb9b1759",
-    "_capture.mjs": "bffe56e4f125d57cd26a4a5247a8b892756ccc4511df9d0f77d39cd4896bc3bb"
+    "_capture.mjs": "bcd0595416214771b6e2e95309ea236d171e6c04e5d371fe4c19d6724015dcb9"
   },
   "deploymentMapping": {
     "plugin/scripts/long-session-hook-client.mjs": "plugin/scripts/codex-compat/long-session-hook-client.mjs",

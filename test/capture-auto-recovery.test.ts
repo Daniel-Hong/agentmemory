@@ -1,4 +1,6 @@
 import {engineFixture} from './helpers/engine-evidence.js';
+import {scrubRecord,stripPrivateData} from '../src/functions/privacy.js';
+import {captureSourceDigest} from '../src/capture/receipt-digest.js';
 import {afterEach,expect,it,vi} from 'vitest';
 import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {createHash} from 'node:crypto';
 import {StateKV} from '../src/state/kv.js';import {KV} from '../src/state/schema.js';import {captureEventScope} from '../src/capture/event-record.js';import {acquireFileWriterLease,markFileWriterClean} from '../src/ops/file-writer-lease.mjs';
@@ -24,6 +26,28 @@ it('automatically certifies an already stored original without inference or rese
  expect(await x.kv.get(KV.captureInbox,x.key)).toBeNull();expect(await x.kv.get(KV.observations(x.sessionId),x.observationId)).toEqual(x.obs);
  expect(await x.kv.get(KV.captureReview,x.key)).toMatchObject({status:'completed',totalAttempts:5,cycleAttempts:5,manualRetries:0});expect(await x.kv.get(captureEventScope(x.key),x.key)).toMatchObject({key:x.key,observationId:x.observationId});
  expect(a.snapshot()).toMatchObject({resolved:1,verifying:0});expect(JSON.stringify(a.snapshot())).not.toContain(x.key);
+});
+it('blocks an old normalization checkpoint without resetting its budget, history or original across restart',async()=>{
+ const x=await setup(),m=await module();
+ const inbox:any=await x.kv.get(KV.captureInbox,x.key);
+ inbox.payload.data={a:'<private>start',b:'end</private>'};
+ await x.kv.set(KV.captureInbox,x.key,inbox);
+ const oldRaw=JSON.parse(stripPrivateData(JSON.stringify(scrubRecord(inbox.payload.data))));
+ const oldObs={...x.obs,sourceRaw:{...x.obs.sourceRaw,raw:oldRaw}};
+ await x.kv.set(KV.observations(x.sessionId),x.observationId,oldObs);
+ const row={version:1,kind:'item',id:'synthetic-recovery',key:x.key,sessionId:x.sessionId,observationId:x.observationId,eventId:x.eventId,sourceDigest:captureSourceDigest(inbox.payload.hookType,inbox.payload.timestamp,oldRaw),projection:createHash('sha256').update(oldObs.title+' '+oldObs.narrative).digest('hex'),phase:'checking',reason:'VERIFICATION_PENDING',verificationAttempts:2,nextAttemptAt:0,createdAt:inbox.acceptedAt,updatedAt:inbox.acceptedAt};
+ const control={version:1,kind:'control',failures:2,openUntil:0,enabled:true};
+ await x.kv.set(KV.captureRecovery,x.key,row);await x.kv.set(KV.captureRecovery,'control',control);
+ await m.createCaptureAutoRecovery(x.kv,x.options).tick();
+ const blocked=await x.kv.get<any>(KV.captureRecovery,x.key);
+ expect(blocked).toMatchObject({...row,phase:'blocked',reason:'SOURCE_MISMATCH',updatedAt:expect.any(String)});
+ x.advance();await m.createCaptureAutoRecovery(x.kv,x.options).tick();
+ expect(await x.kv.get(KV.captureRecovery,x.key)).toEqual(blocked);
+ expect(await x.kv.get(KV.captureRecovery,'control')).toEqual(control);
+ expect(await x.kv.get(KV.captureInbox,x.key)).toEqual(inbox);
+ expect(await x.kv.get(KV.observations(x.sessionId),x.observationId)).toEqual(oldObs);
+ expect(await x.kv.get(KV.captureReview,x.key)).toEqual(x.history);
+ expect(await x.kv.get(captureEventScope(x.key),x.key)).toBeNull();
 });
 it('retains the original when a deletion lands after preflight and before finalization',async()=>{
  const x=await setup(),m=await module(),a=m.createCaptureAutoRecovery(x.kv,x.options);x.onProof(async()=>{await x.kv.set(captureEventScope(x.key),x.key,{key:x.key,state:'deleted'});await x.kv.delete(KV.observations(x.sessionId),x.observationId);});await a.tick();

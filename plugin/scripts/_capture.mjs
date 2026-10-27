@@ -56,6 +56,10 @@ function scrubRecord(value, options = {}) {
 	}
 	return value;
 }
+function normalizeCaptureData(value) {
+	const serialized = JSON.stringify(value);
+	return serialized === void 0 ? void 0 : scrubRecord(JSON.parse(serialized), { scrubKeys: true });
+}
 //#endregion
 //#region src/capture/receipt-digest.ts
 function canonical(value) {
@@ -71,8 +75,7 @@ function captureSourceDigest(hookType, timestamp, raw) {
 	])).digest("hex");
 }
 function capturePayloadDigest(body) {
-	const clean = scrubRecord(body.data);
-	const raw = JSON.parse(stripPrivateData(JSON.stringify(clean)));
+	const raw = normalizeCaptureData(body.data);
 	return captureSourceDigest(body.hookType, body.timestamp, raw);
 }
 //#endregion

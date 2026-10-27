@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Align capture receipt payload normalization with the unchanged structured observe privacy contract. Preserve collision-suffixed keys, field boundaries, legacy source digests, fail-closed receipt verification, pending originals and recovery budgets. Development only; see docs/customizations/UPSTREAM-0.9.31-INTEGRATION.md.
+
 
 - Coordinate observation bulk chunk processing with durable certification through bounded atomic admission; retain absolute deadlines, grouped sharing, physical-tail ownership, complete validation and fsync. Small synthetic comparisons improve certificate and small-request latency; production timeout reduction remains unverified. See docs/customizations/READ-COORDINATION.md.
 

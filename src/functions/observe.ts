@@ -7,7 +7,7 @@ import { StateKV } from "../state/kv.js";
 import { emitLiveEvent } from "../viewer/live-events.js";
 import { addSessionToProjectIndex } from "../state/session-index.js";
 import { indexObservationSession } from "../state/obs-index.js";
-import { scrubRecord } from "./privacy.js";
+import { normalizeCaptureData } from "./privacy.js";
 import { DedupMap, recordDedupSkip } from "./dedup.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { getFinalizeIdleMs, isAutoCompressEnabled } from "../config.js";
@@ -129,10 +129,7 @@ export function registerObserveFunction(
         }
       }
 
-      const serializedData = JSON.stringify(payload.data);
-      const sanitizedRaw = serializedData === undefined
-        ? undefined
-        : scrubRecord(JSON.parse(serializedData), { scrubKeys: true });
+      const sanitizedRaw = normalizeCaptureData(payload.data);
 
       let originChannel: Origin["channel"] = "agent";
       if (payload.hookType === "prompt_submit") originChannel = "user";
