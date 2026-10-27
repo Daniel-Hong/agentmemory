@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add bounded anonymous classification/admission/holder and event-loop-window evidence to existing storage verification diagnostics; preserve scheduling, deadlines, expected values, freshness and fsync. See docs/customizations/READ-ADMISSION-DIAGNOSTICS.md.
+
 - Refill the existing four SDK capture slots as lookups complete, instead of waiting at each four-request barrier. Preserve deadlines, expected-value checks and disk certification. This reduces synthetic mixed-latency capture cost but does not establish an operating readback fix. Development only; see docs/customizations/SDK-CAPTURE-WINDOW.md.
 
 - Add an explicit same-user maintenance cold-stop tool with pinned pidfds, historical uncertainty retention, private live/stable copies and observed systemd stop barriers. Existing normal guards remain unchanged; no operating execution or automatic writer start. See docs/customizations/MAINTENANCE-COLD-STOP.md.

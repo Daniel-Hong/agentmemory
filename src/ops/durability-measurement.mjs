@@ -1,9 +1,10 @@
 import {createHmac,randomBytes} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {readerEvidence} from './read-progress.mjs';
+import {readAdmissionEvidence} from './read-admission-evidence.mjs';
 
 const HISTORY_LIMIT=8,NAMESPACE_LIMIT=8,FAILURE_LIMIT=32,FAILURE_TTL_MS=15*60*1000,EVENT_LIMIT=32;
-const EVENTS=new Set(['capture_finished','revision_recapture','read_requested','read_queued','read_joined','read_started','read_opened','read_completed','read_failed','read_aborted','unchanged_mismatch_skip','mismatch','signature_changed','deadline']);
+const EVENTS=new Set(['read_classification_failed','read_classifying','read_classified','read_admission_queued','read_admitted','capture_finished','revision_recapture','read_requested','read_queued','read_joined','read_started','read_opened','read_completed','read_failed','read_aborted','unchanged_mismatch_skip','mismatch','signature_changed','deadline']);
 const safe=(work,fallback)=>{try{return work();}catch{return fallback;}};
 const number=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?Math.min(value,Number.MAX_SAFE_INTEGER):null;
 const REASONS=new Map(Object.entries({
@@ -69,7 +70,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
     }
     const id=++sequence;
     const certificateRef=/^[0-9a-f]{32}$/.test(totals.counterEpoch??'')?totals.counterEpoch+':'+id:null;
-    const timeline=[];let omittedEvents=0,lastReader;
+    const timeline=[],readAdmissions=new Map();let omittedEvents=0,omittedReadAdmissions=0,lastReader;
     function observe(work){if(!closed&&valid)try{work();}catch{valid=false;}}
     function advance(next){
       const now=clock();
@@ -83,6 +84,11 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
         if(!EVENTS.has(eventPhase))return;
         const now=number(clock());if(now===null)throw Error('measurement_clock_unavailable');
         const entry={phase:eventPhase,atMs:Math.max(0,now-began)};
+        const admission=readAdmissionEvidence(info.admission);
+        if(admission&&Number.isSafeInteger(info.readId)&&info.readId>=0){
+          if(!readAdmissions.has(info.readId)&&readAdmissions.size===4){readAdmissions.delete(readAdmissions.keys().next().value);omittedReadAdmissions++;}
+          readAdmissions.set(info.readId,{readId:info.readId,...admission});
+        }
         const reader=readerEvidence(info);if(reader){Object.assign(entry,reader);lastReader=reader;}else if(eventPhase==='read_queued')lastReader={readerPhase:'queued',readerTimings:{}};
         const namespace=namespaces.get(scope);if(namespace)entry.namespaceToken=namespace.token;
         for(const key of ['readId','bytesRead','fileBytes','ageMs','capturedKeyCount']){const value=number(info[key]);if(value!==null&&(key!=='readId'||Number.isSafeInteger(value)))entry[key]=value;}
@@ -123,7 +129,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
         const next=[...recent,sample],evict=next.length>HISTORY_LIMIT;
         const nextRecent=evict?next.slice(-HISTORY_LIMIT):next;
         pruneFailures();
-        const nextFailures=outcome==='failed'?[...failures,{...sample,timeline,omittedEvents}]:failures;
+        const nextFailures=outcome==='failed'?[...failures,{...sample,timeline,omittedEvents,readAdmissions:[...readAdmissions.values()],omittedReadAdmissions}]:failures;
         const failureOverflow=nextFailures.length>FAILURE_LIMIT;
         const boundedFailures=failureOverflow?nextFailures.slice(-FAILURE_LIMIT):nextFailures;
         recent=nextRecent;failures=boundedFailures;

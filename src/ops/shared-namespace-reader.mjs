@@ -1,5 +1,7 @@
 import {readNamespaceEntries} from './namespace-reader.mjs';
 import {performance} from 'node:perf_hooks';
+import * as perf from 'node:perf_hooks';
+import {readAdmissionEvidence} from './read-admission-evidence.mjs';
 import {readerEvidence} from './read-progress.mjs';
 import {stat} from 'node:fs/promises';
 
@@ -7,6 +9,30 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   if(!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1||!Number.isSafeInteger(maxSmallParallelReads)||maxSmallParallelReads<0||maxSmallParallelReads>1||!Number.isSafeInteger(smallReadMaxBytes)||smallReadMaxBytes<1)throw Error('state_namespace_admission_options');
   const jobs=new Set(),reads=new Set(),pendingRequests=new Set(),admissions=new Set(),jobWork=new Set(),waiting=[];
   let admitted=0,admittedSmall=0,peakQueued=0,admissionRejected=0;
+  const holders=new Set(),lastHolders=new Map();let loopHistogram,loopWindowStart;
+  const diagnosticSafe=work=>{try{return work();}catch{return undefined;}};
+  function monitorStart(){loopWindowStart=undefined;diagnosticSafe(()=>{loopHistogram??=perf.monitorEventLoopDelay({resolution:20});loopHistogram.reset();loopHistogram.enable();loopWindowStart=performance.now();});}
+  function monitorStop(){diagnosticSafe(()=>loopHistogram?.disable());}
+  function holder(job,endedAt){
+    const evidence=readerEvidence(job.progress),cpu=job.cpuStart?process.cpuUsage(job.cpuStart):null,loop=job.loopStart?performance.eventLoopUtilization(job.loopStart):null;
+    return {readId:job.readId,lane:job.lane,phase:evidence?.readerPhase,...evidence,...evidence?.readerTimings,...metadata(job.openedInfo),
+      processCpuMs:cpu?(cpu.user+cpu.system)/1000:undefined,eventLoopActiveMs:loop?.active,eventLoopIdleMs:loop?.idle,
+      ageMs:Math.max(0,(endedAt??now())-job.startedAt),...(endedAt===undefined?{}:{endedAgoMs:Math.max(0,now()-endedAt)})};
+  }
+  function admission(job){return diagnosticSafe(()=>{
+    if(!job.admissionPhase)return undefined;
+    const at=now(),cpu=job.requestCpuStart?process.cpuUsage(job.requestCpuStart):null,loop=job.requestLoopStart?performance.eventLoopUtilization(job.requestLoopStart):null;
+    const current=[...holders].filter(v=>v!==job);
+    return readAdmissionEvidence({phase:job.admissionPhase,lane:job.lane,classificationPerformed:job.classificationPerformed,
+      classificationMs:job.classifiedAt===undefined?Math.max(0,at-job.classificationStartedAt):Math.max(0,job.classifiedAt-job.classificationStartedAt),
+      admissionWaitMs:job.enqueuedAt===undefined?0:Math.max(0,(job.admittedAt??at)-job.enqueuedAt),
+      requestCpuMs:cpu?(cpu.user+cpu.system)/1000:undefined,requestEventLoopActiveMs:loop?.active,requestEventLoopIdleMs:loop?.idle,
+      loopDelaySamples:loopWindowStart===undefined?undefined:loopHistogram?.count,loopDelayMaxMs:loopWindowStart!==undefined&&loopHistogram?.count?loopHistogram.max/1e6:undefined,loopDelayMeanMs:loopWindowStart!==undefined&&loopHistogram?.count?loopHistogram.mean/1e6:undefined,loopResolutionMs:20,loopWindowMs:loopWindowStart===undefined?undefined:Math.max(0,at-loopWindowStart),
+      outstandingPhysicalReads:reads.size,queueDepth:waiting.length,activeHolderCount:current.length,omittedActiveHolders:Math.max(0,current.length-2),
+      queuedHolders:job.queuedHolders,omittedQueuedHolders:job.omittedQueuedHolders,activeHolders:current.slice(0,2).map(v=>holder(v)),
+      lastHolders:[...lastHolders.values()].map(v=>({...v.info,endedAgoMs:Math.max(0,at-v.endedAt)}))});
+  });}
+  function boundary(job,options,phase){diagnose(options,{phase,readId:job.readId,admission:admission(job)});}
   function pump(){
     while(true){
       const index=waiting.findIndex(item=>item.small?admittedSmall<maxSmallParallelReads:admitted<maxParallelReads);
@@ -16,11 +42,12 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
       Promise.resolve().then(()=>{item.signal?.throwIfAborted();return item.work();}).then(item.resolve,item.reject).finally(()=>{if(item.small)admittedSmall--;else admitted--;pump();});
     }
   }
-  function schedule(work,signal,small=false){
+  function schedule(work,signal,small=false,job,options){
+    if(job)diagnosticSafe(()=>{job.lane=small?'small':'regular';job.enqueuedAt=now();job.admissionPhase='queued';const current=[...holders];job.queuedHolders=current.slice(0,2).map(v=>holder(v));job.omittedQueuedHolders=Math.max(0,current.length-2);boundary(job,options,'admission_queued');});
     const pending=new Promise((resolve,reject)=>{
       if(signal?.aborted){reject(signal.reason??new DOMException('Aborted','AbortError'));return;}
       if(waiting.length>=maxQueuedReads){admissionRejected++;reject(Object.assign(Error('state_namespace_admission_limit'),{code:'state_namespace_admission_limit'}));return;}
-      const item={work,signal,small,resolve,reject,abort(){const index=waiting.indexOf(item);if(index>=0){waiting.splice(index,1);reject(signal.reason??new DOMException('Aborted','AbortError'));}}};
+      const item={work:()=>{if(job)diagnosticSafe(()=>{job.admittedAt=now();job.admissionPhase='admitted';boundary(job,options,'admitted');});return work();},signal,small,resolve,reject,abort(){const index=waiting.indexOf(item);if(index>=0){waiting.splice(index,1);reject(signal.reason??new DOMException('Aborted','AbortError'));}}};
       signal?.addEventListener('abort',item.abort,{once:true});waiting.push(item);peakQueued=Math.max(peakQueued,waiting.length);pump();
     });
     admissions.add(pending);return pending.finally(()=>admissions.delete(pending));
@@ -33,21 +60,23 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   const nextId=()=>readSequence<Number.MAX_SAFE_INTEGER?++readSequence:null;
   const metadata=info=>{const result={};try{for(const key of ['fileBytes','bytesRead'])if(Number.isSafeInteger(info?.[key])&&info[key]>=0)result[key]=info[key];if(typeof info?.complete==='boolean')result.complete=info.complete;}catch{}return result;};
   const diagnose=(options,event)=>notify(()=>options.onDiagnostic?.({...event}));
-  function status(job){const value={};try{Object.assign(value,{started:job.started===true,...job.openedInfo,...readerEvidence(job.progress)});if(job.cpuStart&&job.progress){const cpu=process.cpuUsage(job.cpuStart),loop=performance.eventLoopUtilization(job.loopStart);value.processCpuMs=(cpu.user+cpu.system)/1000;value.eventLoopActiveMs=Math.max(0,loop.active);value.eventLoopIdleMs=Math.max(0,loop.idle);}const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);}catch{}return value;}
+  function status(job){const value={};try{Object.assign(value,{started:job.started===true,...job.openedInfo,...readerEvidence(job.progress),admission:admission(job)});if(job.cpuStart&&job.progress){const cpu=process.cpuUsage(job.cpuStart),loop=performance.eventLoopUtilization(job.loopStart);value.processCpuMs=(cpu.user+cpu.system)/1000;value.eventLoopActiveMs=Math.max(0,loop.active);value.eventLoopIdleMs=Math.max(0,loop.idle);}const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);}catch{}return value;}
   async function actual(path,options,job={readId:nextId()}){
     options.signal?.throwIfAborted();
+    diagnosticSafe(()=>{job.classificationStartedAt=now();job.admissionPhase='classifying';job.classificationPerformed=Boolean(maxSmallParallelReads);job.requestCpuStart=process.cpuUsage();job.requestLoopStart=performance.eventLoopUtilization();boundary(job,options,'classifying');});
     let small=false;
     if(maxSmallParallelReads){
-      const size=(await stat(path)).size;
+      let size;try{size=(await stat(path)).size;}catch(error){diagnosticSafe(()=>{job.classifiedAt=now();job.admissionPhase='classification_failed';boundary(job,options,'classification_failed');});throw error;}
       options.signal?.throwIfAborted();small=size<=smallReadMaxBytes;
     }
-    if(!small)return schedule(()=>physical(path,options,job),options.signal);
+    diagnosticSafe(()=>{job.classifiedAt=now();job.admissionPhase='classified';boundary(job,options,'classified');});
+    if(!small)return schedule(()=>physical(path,options,job),options.signal,false,job,options);
     const maximum=Math.min(options.maxFileBytes??Infinity,smallReadMaxBytes);
-    try{return await schedule(()=>physical(path,{...options,maxFileBytes:maximum},job),options.signal,true);}
+    try{return await schedule(()=>physical(path,{...options,maxFileBytes:maximum},job),options.signal,true,job,options);}
     catch(error){
       if(error?.code!=='state_namespace_file_limit'||maximum===options.maxFileBytes)throw error;
       options.signal?.throwIfAborted();job.readId=nextId();
-      return schedule(()=>physical(path,options,job),options.signal);
+      return schedule(()=>physical(path,options,job),options.signal,false,job,options);
     }
   }
   async function physical(path,options,job){
@@ -55,8 +84,8 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     let promise;
     let lastInfo;
     if(job.waiters?.size===1&&!job.hinted){job.keys=new Set([...job.waiters][0].keys);options={...options,keys:job.keys};}
-    job.started=true;job.startedAt=now();try{job.cpuStart=process.cpuUsage();job.loopStart=performance.eventLoopUtilization();}catch{}
-    const emit=(phase,info)=>diagnose(options,{phase,readId:job.readId,...metadata(info),...(job.progress?status(job):{})});
+    job.started=true;job.startedAt=now();diagnosticSafe(()=>{job.admissionPhase='reading';holders.add(job);});try{job.cpuStart=process.cpuUsage();job.loopStart=performance.eventLoopUtilization();}catch{}
+    const emit=(phase,info)=>diagnose(options,{phase,readId:job.readId,...metadata(info),...status(job)});
     emit('started');
     try{
       promise=Promise.resolve(read(path,{...options,onProgress:info=>{job.progress=info;notify(()=>options.onProgress?.(info));},onOpen:info=>{
@@ -68,7 +97,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
       }}));
       reads.add(promise);const result=await promise;emit('completed',lastInfo);return result;
     }catch(error){emit(options.signal?.aborted?'aborted':'failed',lastInfo);throw error;
-    }finally{reads.delete(promise);counts.activeReads--;}
+    }finally{diagnosticSafe(()=>{try{const endedAt=now();lastHolders.set(job.lane,{info:holder(job,endedAt),endedAt});}finally{holders.delete(job);job.admissionPhase='complete';}});reads.delete(promise);counts.activeReads--;}
   }
   async function start(job){
     try{
@@ -129,8 +158,9 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   return {
     async read(path,options){
       options.signal?.throwIfAborted();counts.requests++;counts.activeWaiters++;
+      if(!pendingRequests.size)monitorStart();
       const pending=shared(path,options);pendingRequests.add(pending);
-      try{return await pending;}finally{pendingRequests.delete(pending);counts.activeWaiters--;}
+      try{return await pending;}finally{pendingRequests.delete(pending);counts.activeWaiters--;if(!pendingRequests.size)monitorStop();}
     },
     async drain(){
       await Promise.resolve();

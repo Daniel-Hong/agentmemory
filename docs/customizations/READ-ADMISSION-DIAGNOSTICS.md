@@ -1,0 +1,19 @@
+# Read admission diagnostics
+
+The .30 failure traces cannot separate classification stat from admission wait: their `queued` event precedes both. They also omit the competing reader. This instrumentation changes neither scheduling nor verification.
+
+At classification start/end, admission enqueue/start, and caller abort, collect bounded numeric stage durations, process CPU/event-loop utilization, and at most two anonymous active-holder snapshots plus the last completed holder per lane. Holders include transient reader sequence, lane, phase, age and byte counts; paths, namespace keys and values never enter the diagnostic schema. The native event-loop-delay histogram uses 20ms resolution only while callers are outstanding. Its window and sample count are reported; it is an overlapping-request window, not a per-phase measurement or proof of disk delay.
+
+Keep a bounded latest causal snapshot per certificate, separately from the 32-event timeline, so retries/skip events cannot evict the final pre-read cause. Tests must distinguish blocked classification, occupied slot, cancellation and surviving shared callers; callback failure must not change results. No production requests or deployment in this stage. All original deadlines, concurrency bounds, signatures, expected-value comparisons and fsync remain intact.
+
+Alternatives rejected: a larger event log still loses in-progress state and costs more memory; per-request histograms/timers multiply overhead; increasing concurrency or thresholds would change behavior before attribution. This is a narrow diagnostic proposal selected under the existing no-repeat-questions implementation authorization.
+
+## Bounds and interpretation
+
+The existing one regular/one small admission limit and 15-second budget are unchanged. Four new boundary events per ordinary physical read (classification start/end, admission enqueue/start) are emitted; a classification failure adds its single endpoint. A small-to-regular growth fallback adds one admission pair. No new JavaScript timer or per-chunk observer is added. The shared native monitor samples at 20ms resolution, resets at the first caller of a window and disables at the last caller. Zero samples means unknown; the nominal 20ms interval is not itself evidence of a 20ms application stall. CPU/utilization values describe the process during overlapping work, not a per-request CPU charge.
+
+Each certificate retains at most four causal reader contexts independently of its existing 32-event timeline, with omitted count. Each context contains at most two holders in each of three lists (enqueue, current, last completed per lane), with omission counts for larger configurations. The numeric/enum allowlist is tested below 4KiB per context; 32 retained failures therefore add at most512KiB of serialized causal contexts, plus bounded counters/native monitor. Completed/expired callers cannot mutate stored failure snapshots. Existing15-minute failure expiry remains.
+
+A tiny alternating synthetic probe (400 reads of a9-byte file, no live data) measured baseline0.48–0.72ms/read and instrumented0.74–0.86ms/read; this is a cost check, not a production performance claim. Each normal read emitted8 diagnostics instead of4, and observed payload maximum was1312bytes. The additional absolute cost was below0.4ms/read in this sample. Full/browser/load tests remain excluded because of the host storage history.
+
+One failed trace can now separate: classification still pending; queue wait with the target lane and holder age/phase; physical read progressing or stuck; a blocker that completed before the target started; and a shared event-loop-delay window with coverage. Existing value mismatch/signature events continue to identify publication churn. It cannot by itself prove disk hardware fault or identify the engine writer responsible for a file replacement; those remain explicit limits rather than reasons to weaken verification.
