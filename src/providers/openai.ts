@@ -1,4 +1,5 @@
 import { SEMANTIC_MERGE_SYSTEM } from "../prompts/consolidation.js";
+import { SUMMARY_SYSTEM, REDUCE_SYSTEM } from "../prompts/summary.js";
 import { operationalState } from "../ops/context.js";
 import { INCREMENTAL_SUMMARY_SYSTEM, INCREMENTAL_SUMMARY_FORMAT } from "../ops/long-session.mjs";
 import { STRUCTURED_COMPRESSION_SYSTEM, STRUCTURED_COMPRESSION_FORMAT } from "../ops/structured-compression.mjs";
@@ -88,12 +89,14 @@ export class OpenAIProvider implements MemoryProvider {
       if (readiness && !await readiness.ensureReady()) throw providerDeferredError(readiness);
       const origin = new URL(this.baseUrl).origin;
       const consolidation = systemPrompt === SEMANTIC_MERGE_SYSTEM;
+      const summary = systemPrompt === INCREMENTAL_SUMMARY_SYSTEM || systemPrompt === SUMMARY_SYSTEM || systemPrompt === REDUCE_SYSTEM;
       const body: Record<string, any> = {
         model: this.model, stream: false,
         messages: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-        options: { num_predict: systemPrompt === INCREMENTAL_SUMMARY_SYSTEM || consolidation ? 768 : this.maxTokens },
+        options: { num_predict: summary || consolidation ? 768 : this.maxTokens },
       };
-      if (systemPrompt === INCREMENTAL_SUMMARY_SYSTEM) body.format = INCREMENTAL_SUMMARY_FORMAT;
+      if (summary) body.format = INCREMENTAL_SUMMARY_FORMAT;
+      if (summary && systemPrompt !== INCREMENTAL_SUMMARY_SYSTEM) body.messages[0].content += '\nFor this structured request return JSON {"title":"...","narrative":"...","keyDecisions":[],"filesModified":[],"concepts":[]} instead of XML.';
       if (systemPrompt.startsWith(STRUCTURED_COMPRESSION_SYSTEM)) body.format = STRUCTURED_COMPRESSION_FORMAT;
       if (systemPrompt === GRAPH_EXTRACTION_SYSTEM || systemPrompt.startsWith(STRUCTURED_GRAPH_EXTRACTION_SYSTEM)) body.format = buildGraphExtractionFormat(userPrompt);
       if (systemPrompt === CONSERVATIVE_REFLECTION_SYSTEM) body.format = buildConservativeReflectionFormat(userPrompt);
@@ -121,7 +124,7 @@ export class OpenAIProvider implements MemoryProvider {
         }
         throw new Error(`Ollama native chat error (${response.status})`);
       }
-      const requestKind = systemPrompt === INCREMENTAL_SUMMARY_SYSTEM ? "summary"
+      const requestKind = summary ? "summary"
         : systemPrompt.startsWith(STRUCTURED_COMPRESSION_SYSTEM) ? "compression"
         : systemPrompt === CONSERVATIVE_REFLECTION_SYSTEM ? "reflect"
         : systemPrompt.startsWith("You are a memory consolidation engine.") ? "consolidation" : "graph";
@@ -142,9 +145,8 @@ export class OpenAIProvider implements MemoryProvider {
       body.reasoning_effort = this.reasoningEffort;
     }
 
-    let response: Response;
     try {
-      response = await fetchWithTimeout(
+      const response = await fetchWithTimeout(
         url,
         {
           method: "POST",
@@ -153,8 +155,33 @@ export class OpenAIProvider implements MemoryProvider {
         },
         this.timeoutMs,
       );
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`OpenAI API error (${response.status}): ${text}`);
+      }
+
+      const data = (await response.json()) as {
+        choices?: Array<{
+          message?: { content?: string; reasoning?: string; reasoning_content?: string };
+        }>;
+      };
+      const message = data.choices?.[0]?.message;
+      const content = message?.content;
+      if (content) {
+        return content;
+      }
+      const reasoning = message?.reasoning ?? message?.reasoning_content;
+      if (reasoning) {
+        return reasoning;
+      }
+      throw new Error(
+        `OpenAI returned unexpected response: ${JSON.stringify(data).slice(0, 200)}`,
+      );
     } catch (err) {
-      const aborted = err instanceof Error && err.name === "AbortError";
+      const aborted =
+        err instanceof Error &&
+        (err.name === "AbortError" || err.name === "TimeoutError");
       if (aborted) {
         throw new Error(
           `OpenAI API request timed out after ${this.timeoutMs}ms — set OPENAI_TIMEOUT_MS (or AGENTMEMORY_LLM_TIMEOUT_MS) to raise the bound or check the provider status.`,
@@ -162,29 +189,6 @@ export class OpenAIProvider implements MemoryProvider {
       }
       throw err;
     }
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`OpenAI API error (${response.status}): ${text}`);
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{
-        message?: { content?: string; reasoning?: string; reasoning_content?: string };
-      }>;
-    };
-    const message = data.choices?.[0]?.message;
-    const content = message?.content;
-    if (content) {
-      return content;
-    }
-    const reasoning = message?.reasoning ?? message?.reasoning_content;
-    if (reasoning) {
-      return reasoning;
-    }
-    throw new Error(
-      `OpenAI returned unexpected response: ${JSON.stringify(data).slice(0, 200)}`,
-    );
   }
 }
 

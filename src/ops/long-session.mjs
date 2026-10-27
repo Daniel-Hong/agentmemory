@@ -146,6 +146,8 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
     if (!session) return { success: false, error: 'session_not_found' };
     const all = orderedLongSessionRows(await kv.list(KV.observations(id)));
     const old = await kv.get(KV.summaries, id);
+    const sessionIdentity = JSON.stringify([session.id,session.project,session.cwd,session.agentId,session.startedAt]);
+    const summaryBefore = JSON.stringify(old);
     const processed = processedLongSessionIds(old, all);
     const progress = session.summaryProgress ?? {};
     const blockedObservations = {...progress.blockedObservations};
@@ -190,6 +192,7 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
     }
     await updateProgress(id, { ...progress, status: 'running', pendingCount: outstanding.length, processedCount: processed.size, updatedAt: new Date(now).toISOString() });
     const started = Date.now();
+    const selectedRevisions = new Map(batch.map(({row})=>[row.id,createHash('sha256').update(JSON.stringify(row)).digest('hex')]));
     try {
       if (provider.name === 'noop' || provider.name === 'resilient(noop)') throw Error('no_provider');
       const parsed = scrubRecord(parseIncrementalSummary(await provider.summarize(INCREMENTAL_SUMMARY_SYSTEM, JSON.stringify({ observations: batch.map(x => x.projected) }))));
@@ -210,7 +213,16 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
         title: surfaced.at(-1).title, narrative: surfaced.slice(-3).map(x => x.narrative).join('\n\n'), surfacedSourceAt:surfaced.at(-1).sourceTimestamp??surfaced.at(-1).createdAt,
         keyDecisions: union('keyDecisions'), filesModified: union('filesModified'), concepts: union('concepts'),
         observationCount: processed.size, processedObservationIds: [...processed], sourceOffsets: offsets, sourceProjectionSnapshots:pins, schedulingTurn:(old?.schedulingTurn??0)+1, segments, revision: LONG_SESSION_REVISION };
-      await kv.set(KV.summaries, id, summary);
+      await withLock(`obs:${id}`,async()=>{
+        const currentSession=await kv.get(KV.sessions,id);
+        if (!currentSession || JSON.stringify([currentSession.id,currentSession.project,currentSession.cwd,currentSession.agentId,currentSession.startedAt])!==sessionIdentity ||
+            JSON.stringify(await kv.get(KV.summaries,id))!==summaryBefore) throw Error('source_changed');
+        for (const [key,revision] of selectedRevisions) {
+          const current=await kv.get(KV.observations(id),key);
+          if (!current || createHash('sha256').update(JSON.stringify(current)).digest('hex')!==revision) throw Error('source_changed');
+        }
+        await kv.set(KV.summaries,id,summary);
+      });
       const latestSession=await kv.get(KV.sessions,id);
       const remaining = Math.max(0,Math.max(all.length,latestSession?.observationCount??0)-processed.size);
       const held = all.filter(o=>!processed.has(o.id)&&blockedObservations[o.id]?.status==='blocked').length;
@@ -246,7 +258,8 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
     if(stopped)return {success:true,deferred:true,reason:'shutting_down',retained:true};
     if (!id) return { success: false, error: 'sessionId is required' };
     if (jobs.has(id)) return { success: true, queued: true, reason: 'already_running' };
-    const promise = withLock('agentmemory:summary:global', () => run({ ...data, sessionId: id }));
+    // The shared provider owns LLM serialization; session jobs own coalescing.
+    const promise = run({ ...data, sessionId: id });
     jobs.set(id, promise);
     try { return await promise; } finally { if (jobs.get(id) === promise) jobs.delete(id); }
   });

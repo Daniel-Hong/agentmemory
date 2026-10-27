@@ -74,3 +74,13 @@ describe("native Ollama compatibility", () => {
     expect(init.headers.Authorization).toBe("Bearer fake-key");
   });
 });
+
+it.each(['summary','reduce'])('keeps the native JSON grammar and output cap for the official %s consumer',async(kind)=>{
+  const {SUMMARY_SYSTEM,REDUCE_SYSTEM}=await import('../src/prompts/summary.js');
+  vi.stubEnv('AGENTMEMORY_OLLAMA_NATIVE_CHAT','true');
+  const content=JSON.stringify({title:'Verified',narrative:'Verified synthetic source evidence.',keyDecisions:[],filesModified:[],concepts:[]});
+  const fetch=vi.fn(async()=>response({message:{content},done:true,done_reason:'stop'}));vi.stubGlobal('fetch',fetch);
+  const provider=new OpenAIProvider('synthetic','synthetic',4096,'http://fixture.invalid:11434/v1');
+  expect(await provider.summarize(kind==='summary'?SUMMARY_SYSTEM:REDUCE_SYSTEM,'synthetic input')).toBe(content);
+  const body=JSON.parse((fetch.mock.calls[0]as any[])[1].body);expect(body.format).toEqual(INCREMENTAL_SUMMARY_FORMAT);expect(body.options.num_predict).toBe(768);expect(body.messages[0].content).toContain('instead of XML');
+});

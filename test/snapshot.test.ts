@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+const snapshotContent = vi.hoisted(() => vi.fn(() => '{"version":"0.4.0","sessions":[],"memories":[]}'));
+
 vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -17,17 +19,17 @@ vi.mock("node:fs/promises", async () => ({
 
 vi.mock("node:fs", () => ({
   existsSync: vi.fn().mockReturnValue(true),
+  readFileSync: vi.fn(() => snapshotContent()),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
-  readFileSync: vi
-    .fn()
-    .mockReturnValue('{"version":"0.4.0","sessions":[],"memories":[]}'),
 }));
 
 import { readFileSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { registerSnapshotFunction } from "../src/functions/snapshot.js";
 import { currentAuditScope } from "./helpers/mocks.js";
+import { withKeyedLock } from "../src/state/keyed-mutex.js";
+import { KV } from "../src/state/schema.js";
 import { getProjectSessionIndex } from "../src/state/session-index.js";
 import type { Session, Memory, SnapshotMeta } from "../src/types.js";
 
@@ -71,8 +73,9 @@ function mockSdk() {
 }
 
 beforeEach(() => {
-  gitMock.mockReset().mockImplementation(async (_cmd, args) => ({ stdout: args[0] === "log" ? "" : args[1] === "--is-inside-work-tree" ? "true" : "a".repeat(40), stderr: "" }));
-  vi.mocked(readFileSync).mockReset().mockReturnValue('{"version":"0.4.0","sessions":[],"memories":[]}');
+  gitMock.mockReset().mockImplementation(async (_cmd, args) => ({ stdout: args[0] === "show" ? String(vi.mocked(readFileSync)()) : args[0] === "log" ? "" : args[1] === "--is-inside-work-tree" ? "true" : "a".repeat(40), stderr: "" }));
+  snapshotContent.mockReset().mockReturnValue('{"version":"0.4.0","sessions":[],"memories":[]}');
+  vi.mocked(readFileSync).mockReset().mockImplementation(() => snapshotContent());
   vi.mocked(lstat).mockReset().mockResolvedValue({ isDirectory: () => true } as never);
 });
 
@@ -119,7 +122,7 @@ describe("Snapshot Functions", () => {
       message: "Test snapshot",
     })) as { success: boolean; snapshot: SnapshotMeta };
 
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     expect(result.snapshot).toBeDefined();
     expect(result.snapshot.commitHash).toBe("a".repeat(40));
     expect(result.snapshot.message).toBe("Test snapshot");
@@ -171,7 +174,7 @@ describe("Snapshot Functions", () => {
       commitHash: "abc1234",
     })) as { success: boolean; commitHash: string };
 
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     expect(result.commitHash).toBe("abc1234");
   });
 
@@ -184,7 +187,7 @@ describe("Snapshot Functions", () => {
       status: "completed",
       observationCount: 0,
     };
-    vi.mocked(readFileSync).mockReturnValueOnce(
+    snapshotContent.mockReturnValueOnce(
       JSON.stringify({
         version: "0.4.0",
         sessions: [restoredSession],
@@ -200,9 +203,32 @@ describe("Snapshot Functions", () => {
       commitHash: "abc1234",
     })) as { success: boolean };
 
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     const index = await getProjectSessionIndex(kv as never, "proj-restored");
     expect(index?.map((e) => e.id)).toEqual(["ses_restored"]);
+  });
+
+  it("waits for summary publication before replacing restored observation content", async () => {
+    const old = { id: "obs_locked", sessionId: "ses_1", timestamp: "2026-02-01T00:00:00Z",
+      type: "decision", title: "Original", narrative: "Old content", facts: [], concepts: [], files: [], importance: 5 };
+    const replacement = { ...old, title: "Restored", narrative: "Changed content" };
+    await kv.set(KV.observations("ses_1"), old.id, old);
+    snapshotContent.mockReturnValueOnce(JSON.stringify({
+      sessions: [], memories: [], observations: { ses_1: [replacement] },
+    }));
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const publishing = withKeyedLock("obs:ses_1", async () => { entered(); await gate; });
+    await ready;
+    const restoring = sdk.trigger("mem::snapshot-restore", { commitHash: "abc1234" });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(await kv.get(KV.observations("ses_1"), old.id)).toEqual(old);
+    } finally { release(); await publishing; }
+    expect(await restoring).toMatchObject({ success: true });
+    expect(await kv.get(KV.observations("ses_1"), old.id)).toEqual(replacement);
   });
 
   it("snapshot-create records an audit entry", async () => {
@@ -276,7 +302,7 @@ describe("snapshot-restore bounds graph provenance", () => {
     const sdk = mockSdk();
     const kv = mockKV();
     registerSnapshotFunction(sdk as never, kv as never, "/tmp/agentmemory-snapshots");
-    vi.mocked(readFileSync).mockReturnValueOnce(
+    snapshotContent.mockReturnValueOnce(
       JSON.stringify({
         version: "0.4.0",
         sessions: [],
@@ -296,7 +322,7 @@ describe("snapshot-restore bounds graph provenance", () => {
     const result = (await sdk.trigger("mem::snapshot-restore", {
       commitHash: "abc1234",
     })) as { success: boolean };
-    expect(result.success).toBe(true);
+    expect(result.success, JSON.stringify(result)).toBe(true);
     const n = await kv.get<{ name: string; sourceObservationIds: string[] }>("mem:graph:nodes", "gn_bloat");
     expect(n!.name).toBe("src/hot.ts");
     expect(n!.sourceObservationIds).toEqual(bloatedIds("obs", 250).slice(-32));

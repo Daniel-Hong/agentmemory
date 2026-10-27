@@ -11,6 +11,7 @@ import { createStateDurabilityFence } from '../src/ops/state-durability.mjs';
 import { operationalState } from '../src/ops/context.js';
 import { withKeyedLock } from '../src/state/keyed-mutex.js';
 import { KV } from '../src/state/schema.js';
+import { FINALIZE_DUE_KEY } from '../src/functions/session-finalize.js';
 import { mockSdk } from './helpers/mocks.js';
 
 vi.mock('../src/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -146,7 +147,8 @@ async function fixture(features = true, callerBudgetMs = 120) {
 }
 
 describe('legacy backlog completion through the actual client and REST functions', () => {
-  it('documents local managed ownership allowing session-end before a late observation, without silently refreshing feature evidence', async () => {
+  it('keeps late managed observations pending finalization without silently refreshing feature evidence', async () => {
+    vi.stubEnv('AGENTMEMORY_FINALIZE_IDLE_MS','120000');
     const f = await fixture(true, 1200); f.observeOfflineOnce();
     const body = { sessionId: f.sessionId, project: 'synthetic-project', eventId: 'synthetic-small-event', hookType: 'post_tool_use', cwd: '/synthetic', timestamp: new Date().toISOString(), data: { tool_output: 'small synthetic observation' } };
     await f.client.enqueue('/agentmemory/observe', body);
@@ -158,7 +160,9 @@ describe('legacy backlog completion through the actual client and REST functions
     expect(before).toMatchObject({ status: 'queued' });
     expect(await f.drainManaged()).toMatchObject({ delivered: 1, remaining: 0 });
     expect(await f.kv.list(KV.observations(f.sessionId))).toHaveLength(1);
-    expect(await f.kv.get(KV.sessions, f.sessionId)).toMatchObject({ status: 'completed', observationCount: 1 });
+    expect(await f.kv.get(KV.sessions, f.sessionId)).toMatchObject({ status: 'active', observationCount: 1 });
+    expect(await f.kv.get(KV.summaryRepairs,f.sessionId)).toMatchObject({sessionId:f.sessionId,dueAt:initialTime+120000});
+    expect((await f.kv.get(KV.config,FINALIZE_DUE_KEY))[f.sessionId]).toBe(initialTime+120000);
     expect(await f.kv.get(FEATURE_NAMESPACE, f.sessionId)).toEqual(before);
   });
   it.each(['session_read', 'session_write', 'feature_observations_read'])('retains the session-end original while %s exceeds the caller budget, then acknowledges its retry', async stage => {

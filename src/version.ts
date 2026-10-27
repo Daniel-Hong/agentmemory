@@ -1,2 +1,2 @@
-export const VERSION = "0.9.30-daniel.27";
-export const III_PINNED_VERSION = "0.22.1";
+export const VERSION = "0.9.31-daniel.1";
+export const III_PINNED_VERSION = "0.25.0";

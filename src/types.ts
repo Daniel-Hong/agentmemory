@@ -62,6 +62,7 @@ export interface RawObservation {
   toolOutput?: unknown;
   userPrompt?: string;
   assistantResponse?: string;
+  assistantResponseBytes?: number;
   raw: unknown;
   modality?: "text" | "image" | "mixed";
   imageData?: string;
@@ -81,6 +82,14 @@ export interface ObservationSource {
   userPrompt?: string;
   assistantResponse?: string;
   payload?: unknown;
+}
+
+export interface ObservationCompression {
+  status: "pending" | "failed" | "complete";
+  revision: string;
+  attempts: number;
+  lastAttemptAt?: string;
+  error?: "dispatch_failed" | "compression_failed" | "parse_failed" | "validation_failed" | "source_unavailable";
 }
 
 export interface CompressedObservation {
@@ -107,6 +116,8 @@ export interface CompressedObservation {
   agentId?: string;
   origin?: Origin;
   captureKey?: string;
+  compressedAt?: string;
+  compression?: ObservationCompression;
 }
 
 export type ObservationType =
@@ -151,6 +162,16 @@ export interface Memory {
   origin?: Origin;
 }
 
+export interface SessionSummaryRepair {
+  sessionId: string;
+  token: string;
+  dueAt: number;
+  attempts: number;
+  compressionCursor?: string;
+  heldReason?: "summary_contract_unverified";
+  lastError?: "pending" | "no_provider" | "summary_failed" | "compression_pending" | "source_unavailable" | "recovery_failed" | "summary_contract_unverified";
+}
+
 export interface SessionSummary {
   processedObservationIds?: string[];
   sourceOffsets?: Record<string, number>;
@@ -165,6 +186,8 @@ export interface SessionSummary {
   filesModified: string[];
   concepts: string[];
   observationCount: number;
+  coveredThrough?: string;
+  coveredFingerprint?: string;
 }
 
 export type HookType =
@@ -213,7 +236,6 @@ export interface MemoryProvider {
 export interface AgentMemoryConfig {
   engineUrl: string;
   restPort: number;
-  streamsPort: number;
   viewerPort: number;
   provider: ProviderConfig;
   tokenBudget: number;
@@ -226,6 +248,7 @@ export interface SearchResult {
   observation: CompressedObservation;
   score: number;
   sessionId: string;
+  layer?: "memory" | "observation" | "lesson" | "insight";
 }
 
 export interface ContextBlock {
@@ -279,7 +302,7 @@ export interface HealthSnapshot {
   eventLoopLagMs: number;
   uptimeSeconds: number;
   kvConnectivity?: { status: string; latencyMs?: number; error?: string };
-  streamRelay?: "ok" | "down" | "unknown";
+  liveEvents?: { subscribers: number; eventsSent: number; dropped: number; lastEventAt: number | null };
   status: "healthy" | "degraded" | "critical";
   alerts: string[];
   notes?: string[];
@@ -322,12 +345,15 @@ export interface MemoryRelation {
 
 export interface HybridSearchResult {
   observation: CompressedObservation;
+  layer?: "memory" | "observation" | "lesson" | "insight";
   bm25Score: number;
   vectorScore: number;
   graphScore: number;
   combinedScore: number;
   sessionId: string;
   graphContext?: string;
+  rerankScore?: number;
+  rerankPosition?: number;
 }
 
 export interface CompactSearchResult {
@@ -337,6 +363,7 @@ export interface CompactSearchResult {
   type: ObservationType;
   score: number;
   timestamp: string;
+  layer?: "memory" | "observation" | "lesson" | "insight";
 }
 
 export interface CompactLessonResult {
@@ -375,8 +402,16 @@ export interface ExportPagination {
   hasMore: boolean;
 }
 
+export interface ExportCollectionPagination {
+  offset: number;
+  limit?: number;
+  collections?: string[];
+  totals: Record<string, number>;
+  hasMore: boolean;
+}
+
 export interface ExportData {
-  version: "0.3.0" | "0.4.0" | "0.5.0" | "0.6.0" | "0.6.1" | "0.7.0" | "0.7.2" | "0.7.3" | "0.7.4" | "0.7.5" | "0.7.6" | "0.7.7" | "0.7.9" | "0.8.0" | "0.8.1" | "0.8.2" | "0.8.3" | "0.8.4" | "0.8.5" | "0.8.6" | "0.8.7" | "0.8.8" | "0.8.9" | "0.8.10" | "0.8.11" | "0.8.12" | "0.8.13" | "0.9.0" | "0.9.1" | "0.9.2" | "0.9.3" | "0.9.4" | "0.9.5" | "0.9.6" | "0.9.7" | "0.9.8" | "0.9.9" | "0.9.10" | "0.9.11" | "0.9.12" | "0.9.13" | "0.9.14" | "0.9.15" | "0.9.16" | "0.9.17" | "0.9.18" | "0.9.19" | "0.9.20" | "0.9.21" | "0.9.22" | "0.9.23" | "0.9.24" | "0.9.25" | "0.9.26" | "0.9.27" | "0.9.28" | "0.9.29" | "0.9.30" | "0.9.30-daniel.1" | "0.9.30-daniel.2" | "0.9.30-daniel.3" | "0.9.30-daniel.4" | "0.9.30-daniel.5" | "0.9.30-daniel.6" | "0.9.30-daniel.7" | "0.9.30-daniel.8" | "0.9.30-daniel.9" | "0.9.30-daniel.10" | "0.9.30-daniel.11" | "0.9.30-daniel.15" | "0.9.30-daniel.16" | "0.9.30-daniel.18" | "0.9.30-daniel.19" | "0.9.30-daniel.20" | "0.9.30-daniel.21" | "0.9.30-daniel.22" | "0.9.30-daniel.23" | "0.9.30-daniel.24" | "0.9.30-daniel.25" | "0.9.30-daniel.26" | "0.9.30-daniel.27" | "0.9.30-daniel.28";
+  version: "0.3.0" | "0.4.0" | "0.5.0" | "0.6.0" | "0.6.1" | "0.7.0" | "0.7.2" | "0.7.3" | "0.7.4" | "0.7.5" | "0.7.6" | "0.7.7" | "0.7.9" | "0.8.0" | "0.8.1" | "0.8.2" | "0.8.3" | "0.8.4" | "0.8.5" | "0.8.6" | "0.8.7" | "0.8.8" | "0.8.9" | "0.8.10" | "0.8.11" | "0.8.12" | "0.8.13" | "0.9.0" | "0.9.1" | "0.9.2" | "0.9.3" | "0.9.4" | "0.9.5" | "0.9.6" | "0.9.7" | "0.9.8" | "0.9.9" | "0.9.10" | "0.9.11" | "0.9.12" | "0.9.13" | "0.9.14" | "0.9.15" | "0.9.16" | "0.9.17" | "0.9.18" | "0.9.19" | "0.9.20" | "0.9.21" | "0.9.22" | "0.9.23" | "0.9.24" | "0.9.25" | "0.9.26" | "0.9.27" | "0.9.28" | "0.9.29" | "0.9.30" | "0.9.30-daniel.1" | "0.9.30-daniel.2" | "0.9.30-daniel.3" | "0.9.30-daniel.4" | "0.9.30-daniel.5" | "0.9.30-daniel.6" | "0.9.30-daniel.7" | "0.9.30-daniel.8" | "0.9.30-daniel.9" | "0.9.30-daniel.10" | "0.9.30-daniel.11" | "0.9.30-daniel.15" | "0.9.30-daniel.16" | "0.9.30-daniel.18" | "0.9.30-daniel.19" | "0.9.30-daniel.20" | "0.9.30-daniel.21" | "0.9.30-daniel.22" | "0.9.30-daniel.23" | "0.9.30-daniel.24" | "0.9.30-daniel.25" | "0.9.30-daniel.26" | "0.9.30-daniel.27" | "0.9.30-daniel.28" | "0.9.31" | "0.9.31-daniel.1" | "0.9.30-daniel.29" | "0.9.30-daniel.30" | "0.9.30-daniel.31" | "0.9.30-daniel.32";
   exportedAt: string;
   sessions: Session[];
   observations: Record<string, CompressedObservation[]>;
@@ -400,6 +435,7 @@ export interface ExportData {
   insights?: Insight[];
   accessLogs?: AccessLogExport[];
   pagination?: ExportPagination;
+  collectionPagination?: ExportCollectionPagination;
 }
 
 export interface AccessLogExport {
@@ -519,6 +555,56 @@ export interface GraphQueryResult {
   warning?: string;
 }
 
+export interface GraphIndexMembership {
+  ids: string[];
+}
+
+export interface GraphRetrievalIndexControl {
+  schema: 2;
+  buildId: string;
+  status: "building" | "ready" | "paused";
+  revision: number;
+  nodes: number;
+  edges: number;
+  historyEdges: number;
+  incompleteRecords: number;
+  nodesByType: Record<string, number>;
+  edgesByType: Record<string, number>;
+  otherTypes: number;
+  updatedAt: string;
+  pending?: { kind: "node" | "edge" | "history"; id: string };
+  batchPending?: boolean;
+  error?: string;
+}
+
+export interface GraphRetrievalIndexRecord {
+  row: (GraphNode | GraphEdge) & { indexIncomplete?: boolean } | null;
+  postings: string[];
+  incomplete: boolean;
+}
+
+export interface GraphCascadeProgress {
+  schema: 1;
+  generation: string | null;
+  sourceFingerprint: string;
+  offset: number;
+  reason: string;
+  updatedAt: string;
+}
+
+export type { GraphIndexMigration, GraphIndexManifestPage } from "./state/graph-index-migration.js";
+
+export interface GraphMutationWrite {
+  scope: string;
+  key: string;
+  value: unknown;
+}
+
+export interface GraphMutationJournal {
+  writes: GraphMutationWrite[];
+  snapshot: GraphSnapshot;
+}
+
 export interface GraphSnapshot {
   version: 1;
   topNodes: GraphNode[];
@@ -538,6 +624,8 @@ export interface GraphSnapshot {
   updatedAt: string;
   dirty: boolean;
   resetAt?: string;
+  sampleIncomplete?: boolean;
+  pendingMutation?: GraphMutationJournal;
 }
 
 export type ConsolidationTier =
@@ -663,6 +751,7 @@ export interface AuditEntry {
     | "slot_delete"
     | "slot_reflect"
     | "graph_compact"
+    | "graph_index_migrate"
     | "audit_migrate"
     | "session_sweep"
     | "capture_recovery_control";
@@ -903,6 +992,7 @@ export interface Insight {
   sourceMemoryIds: string[];
   sourceLessonIds: string[];
   sourceCrystalIds: string[];
+  evidenceVersion?: 1;
   project?: string;
   tags: string[];
   createdAt: string;

@@ -1,3 +1,4 @@
+import { pinGraphState } from "../state/graph-generation.js";
 import {createSnapshotRecovery, ensurePrivateSnapshotDir, publishSnapshotFile} from "../ops/snapshot-recovery.mjs";
 import {backgroundPaused} from "../ops/background-control.mjs";
 import type { IIIClient } from "iii-sdk";
@@ -11,14 +12,19 @@ import type {
   Session,
   Memory,
   GraphNode,
+  GraphEdge,
+  CompressedObservation,
   AccessLogExport,
 } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import type { SearchIndexRevision } from "../state/search-index.js";
 import { addSessionToProjectIndex } from "../state/session-index.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { recordAudit, safeAudit } from "./audit.js";
 import { boundRecordSources } from "./graph.js";
+import { persistGraphRecords, validateGraphRecords } from "../state/graph-ingestion.js";
+import { flushIndexSave, getSearchIndex, indexRecords, vectorIndexRemove } from "./search.js";
 import { VERSION } from "../version.js";
 import { logger } from "../logger.js";
 
@@ -26,8 +32,8 @@ const COMMIT_HASH_RE = /^[0-9a-f]{7,40}$/i;
 
 const execFileAsync = promisify(execFile);
 
-async function gitExec(dir: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd: dir });
+async function gitExec(dir: string, args: string[], maxBuffer?: number): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd: dir, maxBuffer });
   return stdout.trim();
 }
 
@@ -42,13 +48,14 @@ async function ensureGitRepo(dir: string): Promise<void> {
 
 export function registerSnapshotFunction(
   sdk: IIIClient,
-  kv: StateKV,
+  state: StateKV,
   snapshotDir: string,
   intervalMs = 86400000,
 ): ReturnType<typeof createSnapshotRecovery> {
   const recovery = createSnapshotRecovery({dir:snapshotDir, intervalMs, gitExec, isPaused:backgroundPaused, create:()=>sdk.trigger({function_id:"mem::snapshot-create",payload:{}})});
   sdk.registerFunction("mem::snapshot-create",
     async (data?: { message?: string }) => recovery.runCreate(async () => {
+      const kv = await pinGraphState(state);
       try {
         await ensureGitRepo(snapshotDir);
         const ts = new Date().toISOString();
@@ -56,6 +63,7 @@ export function registerSnapshotFunction(
         const sessions = await kv.list<Session>(KV.sessions);
         const memories = await kv.list<Memory>(KV.memories);
         const graphNodes = await kv.list<GraphNode>(KV.graphNodes);
+        const graphEdges = await kv.list<GraphEdge>(KV.graphEdges);
         const accessLogs = await kv.list<AccessLogExport>(KV.accessLog);
 
         const observations: Record<string, unknown[]> = {};
@@ -72,6 +80,7 @@ export function registerSnapshotFunction(
           sessions,
           memories,
           graphNodes,
+          graphEdges,
           observations,
           accessLogs,
         };
@@ -154,6 +163,7 @@ export function registerSnapshotFunction(
 
   sdk.registerFunction("mem::snapshot-restore", 
     async (data: { commitHash: string } | undefined) => {
+      const kv = await pinGraphState(state);
       if (!data || typeof data.commitHash !== "string" || !data.commitHash.trim()) {
         return { success: false, error: "commitHash is required" };
       }
@@ -162,73 +172,100 @@ export function registerSnapshotFunction(
       }
 
       try {
-        await gitExec(snapshotDir, [
-          "checkout",
-          data.commitHash,
-          "--",
-          "state.json",
-        ]);
-        const content = readFileSync(join(snapshotDir, "state.json"), "utf-8");
-        const state = JSON.parse(content) as {
+        const content = await gitExec(snapshotDir, ["show", `${data.commitHash}:state.json`], Infinity);
+        const archive = JSON.parse(content) as {
           sessions?: Array<{ id: string } & Record<string, unknown>>;
-          memories?: Array<{ id: string } & Record<string, unknown>>;
-          graphNodes?: Array<{ id: string } & Record<string, unknown>>;
-          observations?: Record<
-            string,
-            Array<{ id: string } & Record<string, unknown>>
-          >;
+          memories?: Memory[];
+          graphNodes?: GraphNode[];
+          graphEdges?: GraphEdge[];
+          observations?: Record<string, CompressedObservation[]>;
           accessLogs?: AccessLogExport[];
         };
-
-        if (state.sessions) {
-          for (const session of state.sessions) {
-            await withKeyedLock(`obs:${session.id}`, () =>
-              kv.set(KV.sessions, session.id, session),
-            );
-            const project = session.project;
-            const startedAt = session.startedAt;
-            if (typeof project === "string" && typeof startedAt === "string") {
-              const agentId = session.agentId;
-              await addSessionToProjectIndex(kv, project, {
-                id: session.id,
-                startedAt,
-                ...(typeof agentId === "string" ? { agentId } : {}),
-              }).catch(() => {});
+        validateGraphRecords(archive.graphNodes ?? [], archive.graphEdges ?? []);
+        const memoryIds = new Set<string>();
+        const observationSessions = new Map<string, string>();
+        let restoreError: unknown;
+        try {
+          if (archive.sessions) {
+            for (const session of archive.sessions) {
+              await withKeyedLock(`obs:${session.id}`, () =>
+                kv.set(KV.sessions, session.id, session),
+              );
+              const project = session.project;
+              const startedAt = session.startedAt;
+              if (typeof project === "string" && typeof startedAt === "string") {
+                const agentId = session.agentId;
+                await addSessionToProjectIndex(kv, project, {
+                  id: session.id,
+                  startedAt,
+                  ...(typeof agentId === "string" ? { agentId } : {}),
+                }).catch(() => {});
+              }
             }
           }
-        }
-        if (state.memories) {
-          for (const memory of state.memories) {
+          for (const memory of archive.memories ?? []) {
             await kv.set(KV.memories, memory.id, memory);
+            getSearchIndex().remove(memory.id);
+            vectorIndexRemove(memory.id);
+            memoryIds.add(memory.id);
           }
-        }
-        if (state.graphNodes) {
-          for (const node of state.graphNodes) {
-            await withKeyedLock("graph:persist", () =>
-              kv.set(KV.graphNodes, node.id, boundRecordSources(node)),
-            );
+          for (const [sessionId, observations] of Object.entries(archive.observations ?? {})) {
+            await withKeyedLock(`obs:${sessionId}`, async () => {
+              for (const observation of observations) {
+                await kv.set(KV.observations(sessionId), observation.id, observation);
+                getSearchIndex().remove(observation.id);
+                vectorIndexRemove(observation.id);
+                observationSessions.set(observation.id, sessionId);
+              }
+            });
           }
-        }
-        if (state.observations) {
-          for (const [sessionId, obs] of Object.entries(state.observations)) {
-            for (const o of obs) {
-              await kv.set(KV.observations(sessionId), o.id, o);
-            }
+          if (archive.graphNodes?.length || archive.graphEdges?.length) {
+            await persistGraphRecords(kv, archive.graphNodes ?? [], archive.graphEdges ?? [], { mode: "merge" });
           }
-        }
-        if (state.accessLogs) {
-          for (const log of state.accessLogs) {
+          for (const log of archive.accessLogs ?? []) {
             await kv.set(KV.accessLog, log.memoryId, log);
           }
+        } catch (err) {
+          restoreError = err;
         }
 
-        await gitExec(snapshotDir, ["checkout", "HEAD", "--", "state.json"]);
+        let indexError: unknown;
+        if (memoryIds.size || observationSessions.size) {
+          const revisions: SearchIndexRevision[] = [];
+          try {
+            const memories: Array<{ record: Memory; revision: SearchIndexRevision }> = [];
+            const observations: Array<{ record: CompressedObservation; revision: SearchIndexRevision }> = [];
+            for (const id of memoryIds) {
+              const revision = getSearchIndex().watchRevision(id);
+              revisions.push(revision);
+              const current = await kv.get<Memory>(KV.memories, id);
+              if (current) memories.push({ record: current, revision });
+            }
+            for (const [id, sessionId] of observationSessions) {
+              const revision = getSearchIndex().watchRevision(id);
+              revisions.push(revision);
+              const current = await kv.get<CompressedObservation>(KV.observations(sessionId), id);
+              if (current) observations.push({ record: current, revision });
+            }
+            await indexRecords(
+              observations.filter(({ revision }) => revision.isCurrent()).map(({ record }) => record),
+              memories.filter(({ revision }) => revision.isCurrent()).map(({ record }) => record),
+            );
+          } catch (err) {
+            indexError = err;
+          } finally {
+            for (const revision of revisions) revision.release();
+            await flushIndexSave();
+          }
+        }
+        if (restoreError) throw restoreError;
+        if (indexError) throw indexError;
 
         await recordAudit(kv, "import", "mem::snapshot-restore", [], {
           commitHash: data.commitHash,
-          sessions: state.sessions?.length || 0,
-          memories: state.memories?.length || 0,
-          graphNodes: state.graphNodes?.length || 0,
+          sessions: archive.sessions?.length || 0,
+          memories: archive.memories?.length || 0,
+          graphNodes: archive.graphNodes?.length || 0,
         });
 
         logger.info("Snapshot restored", {

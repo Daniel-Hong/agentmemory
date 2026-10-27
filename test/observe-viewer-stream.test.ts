@@ -1,12 +1,19 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock("../src/functions/search.js", () => ({
+  getSearchIndex: () => ({ add: vi.fn(), has: () => false }),
+  getVectorIndex: () => null,
+  scheduleIndexSave: vi.fn(),
+  prepareObservationEmbedding: async () => async () => {},
+}));
+
 import { registerObserveFunction } from "../src/functions/observe.js";
-import { STREAM } from "../src/state/schema.js";
-import { resetViewerStreamTracker } from "../src/state/viewer-stream.js";
+import { KV } from "../src/state/schema.js";
+import { onLiveEvent, type LiveEvent } from "../src/viewer/live-events.js";
 
 function mockKV() {
   const store = new Map<string, Map<string, unknown>>();
@@ -75,59 +82,43 @@ function observePayload(sessionId: string, i: number) {
   };
 }
 
-type StreamCall = {
-  function_id: string;
-  payload: { stream_name?: string; group_id?: string; item_id?: string };
-};
-
-describe("observe no longer writes per-session mem-live groups", () => {
-  beforeEach(() => {
-    resetViewerStreamTracker();
-    delete process.env.AGENTMEMORY_VIEWER_STREAM_MAX;
-  });
-
-  afterEach(() => {
-    delete process.env.AGENTMEMORY_VIEWER_STREAM_MAX;
-  });
-
-  it("never targets group_id === sessionId on any stream:: call", async () => {
+describe("observe publishes SSE without engine stream history", () => {
+  it("delivers metadata only for raw captures and strips retained sources from summaries", async () => {
     const sdk = mockSdk();
     const kv = mockKV();
     registerObserveFunction(sdk as never, kv as never);
-
-    const sessionId = "ses_no_per_session_stream";
-    await sdk.trigger({ function_id: "mem::observe", payload: observePayload(sessionId, 0) });
-    await sdk.trigger({ function_id: "mem::observe", payload: observePayload(sessionId, 1) });
-
-    const streamCalls = sdk.trigger.mock.calls
-      .map((c) => c[0] as StreamCall)
-      .filter((c) => c.function_id.startsWith("stream::"));
-
-    expect(streamCalls.length).toBeGreaterThan(0);
-    for (const call of streamCalls) {
-      expect(call.payload.group_id).not.toBe(sessionId);
-      expect(call.payload.group_id).toBe(STREAM.viewerGroup);
-    }
+    const events: LiveEvent[] = [];
+    const unsubscribe = onLiveEvent(event => events.push(event));
+    const sessionId = "ses_sse_privacy";
+    try {
+      const payload = observePayload(sessionId, 0);
+      payload.data.tool_output = "private raw fixture output";
+      const result = await sdk.trigger({ function_id: "mem::observe", payload }) as { observationId: string };
+      expect(result.observationId).toBeTruthy();
+      const raw = events.find(event => event.type === "raw_observation")!;
+      expect(raw.data.observation).toEqual({ id: result.observationId, sessionId,
+        timestamp: payload.timestamp, hookType: payload.hookType });
+      const compressed = events.find(event => event.type === "compressed_observation")!;
+      expect(compressed.data.observation).not.toHaveProperty("source");
+      expect(compressed.data.observation).not.toHaveProperty("sourceRaw");
+      expect(compressed.data.observation).not.toHaveProperty("syntheticCompression");
+      const retained = await kv.get<Record<string, unknown>>(KV.observations(sessionId), result.observationId);
+      expect(retained).not.toBeNull();
+      expect(retained!.source || retained!.sourceRaw).toBeTruthy();
+      expect(sdk.trigger.mock.calls.some(([call]) => call.function_id.startsWith("stream::"))).toBe(false);
+    } finally { unsubscribe(); }
   });
 
-  it("prunes the viewer group once enough observations accumulate past the configured cap", async () => {
-    process.env.AGENTMEMORY_VIEWER_STREAM_MAX = "200";
+  it("retains an accepted observation when a display observer throws", async () => {
     const sdk = mockSdk();
     const kv = mockKV();
     registerObserveFunction(sdk as never, kv as never);
-
-    const sessionId = "ses_prune_wiring";
-    for (let i = 0; i < 255; i++) {
-      await sdk.trigger({ function_id: "mem::observe", payload: observePayload(sessionId, i) });
-    }
-
-    const deleteCalls = sdk.trigger.mock.calls
-      .map((c) => c[0] as StreamCall)
-      .filter((c) => c.function_id === "stream::delete");
-
-    expect(deleteCalls.length).toBeGreaterThan(0);
-    for (const call of deleteCalls) {
-      expect(call.payload.group_id).toBe(STREAM.viewerGroup);
-    }
+    const unsubscribe = onLiveEvent(() => { throw new Error("fixture subscriber failed"); });
+    try {
+      const sessionId = "ses_sse_nonfatal";
+      const result = await sdk.trigger({ function_id: "mem::observe", payload: observePayload(sessionId, 1) }) as { observationId: string };
+      expect(result.observationId).toBeTruthy();
+      expect(await kv.get(KV.observations(sessionId), result.observationId)).not.toBeNull();
+    } finally { unsubscribe(); }
   });
 });

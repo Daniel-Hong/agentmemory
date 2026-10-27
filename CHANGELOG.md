@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+
 - Coordinate observation bulk chunk processing with durable certification through bounded atomic admission; retain absolute deadlines, grouped sharing, physical-tail ownership, complete validation and fsync. Small synthetic comparisons improve certificate and small-request latency; production timeout reduction remains unverified. See docs/customizations/READ-COORDINATION.md.
 
 - Add bounded anonymous classification/admission/holder and event-loop-window evidence to existing storage verification diagnostics; preserve scheduling, deadlines, expected values, freshness and fsync. See docs/customizations/READ-ADMISSION-DIAGNOSTICS.md.
@@ -20,172 +21,6 @@
 
 - Fix the capture review metadata internal SDK boundary for iii-engine's caller envelope, retaining strict HTTP filters and privacy/read-only guarantees. Add real-engine registered-path and malformed-envelope regression coverage; operating quarantine recovery remains unverified.
 
-## Capture review metadata (development only)
-
-- Add an authenticated, read-only metadata path that never queries capture inbox or canonical observation content and never returns preview, identifiers, generations, digests or raw errors. Process-local random references, explicit historical/non-atomic evidence, unavailable states and permanent retry/disk-verification false prevent false recovery claims.
-- Bound page size, query duration, accepted history rows and active lookups while retaining occupied capacity for outstanding SDK calls. The underlying metadata SDK list remains unpaged; no hard SDK-memory bound is claimed. Operating inspection, internal source checks and a single-item retry remain separate approval scopes. See docs/customizations/CAPTURE-REVIEW-METADATA.md.
-
-## Small certification admission and recovery diagnostics (development only)
-
-- Reserve a strictly bounded small-file lane beside the single regular scan; preserve full verification, fsync/signatures, independent deadlines and bounded cancellation. Validate physical limits under growth and finalize key ownership at admission. Synthetic overload comparisons retain explicit incompatible-key and publication-change failures.
-- Re-certify existing durable observations instead of semantic dedup after failed intent persistence. Separate active capture progress from retained dead letters without changing inbox capacity, retry policy or quarantine.
-- Report frozen audit coverage on full pages, keep incomplete index state unknown without false timeout attribution, and preserve old/undated spool history as informational unknown outcomes. No reset, acknowledgement, audit migration, deletion or deployment. Scope and limits: docs/customizations/CERTIFICATION-SMALL-READ-ADMISSION.md.
-
-## Release compatibility validation
-
-- Retain the explicitly supported deployed daniel.23 export version while preparing daniel.24; import validation and data shape are otherwise unchanged. Add a synthetic regression. Preserve unsupported-version rejection.
-- Compare independent experimental committed-marker results without imposing a false completion order; retain exact family, unit and count assertions. No operating data import, migration or replay.
-
-## Bound concurrent certification scans (development only)
-
-- Admit one physical namespace read at a time per durability fence so compatible requests waiting behind it can union their keys for the next scan. Keep the first scan immediate; add no fixed batching delay, result cache, timeout increase or weaker verification. Preserve per-caller cancellation, full scan/signature/fsync and final ownership checks.
-- Route direct/projection and capacity fallbacks through the same bounded admission queue. Reject excess queue entries without I/O or acknowledgement; retain dirty state and existing retry/deadline behavior. Keep a physical slot until the actual reader settles after cancellation.
-- Reproduce CPU contention with isolated 271MB synthetic namespaces; body shape affects parse cost, and eight incompatible reads can exhaust15s even with cached disk pages. Scope, measured limits and pending operational validation are in docs/customizations/CERTIFICATION-READ-ADMISSION.md. No operating deployment or quarantine replay.
-
-## Bounded certification failure correlation (development only)
-
-- Connect sanitized compression errors to an epoch-bound certificate reference and retain bounded failed-certificate timelines through existing health diagnostics. Record SDK capture completion, local revision recapture, shared physical read lifecycle, typed mismatch, signature-change stage and deadline without values, raw generations, keys, paths or session identifiers.
-- Report completed shared scans to all active consumers; distinguish per-certificate participation from physical read counters. Preserve independent cancellation, full validation, fsync and deadlines. Diagnostic callbacks cannot mutate another consumer or change storage outcomes.
-- Retain at most 32 failures for 15 minutes, with 32 events/eight namespaces per failure and explicit coverage gaps. No operational activation or performance-fix claim. Scope, costs and limitations: docs/customizations/CERTIFICATION-FAILURE-CORRELATION.md.
-
-## Isolated real-engine certification experiment (development only)
-
-- Extend the synthetic comparison harness with an explicit temporary-store SDK connection to installed iii 0.22.1. Seed and measured state mutations use the actual SDK; the engine owns file publication. Keep production code, storage layout, deadlines, inference serialization and acknowledgement behavior unchanged.
-- Bound setup readiness retries for missing/changing files. Validate every synthetic checkpoint value, key and checksum; comparison reuse requires a complete fixture. Preparation alone may fill missing synthetic rows through the SDK after all existing rows match. Record preparation separately from business outcomes.
-- The existing synthetic comparison is not operating performance evidence. Actual-engine findings, setup failures and remaining limits are recorded in docs/customizations/STORAGE-UNIT-EXPERIMENT.md. No deployment, production migration, private data copy or upstream PR.
-
-## Smaller certification-unit experiment (development only)
-
-- Add an isolated synthetic routing adapter to compare the current namespace with sixteen actual durable units through compression, source/intent certification and index/marker publication. No production routing, storage migration, timeout, inference serialization or acknowledgement behavior is changed.
-- Preserve future metadata-only observation correlation across process exit using a private atomic run-key file; distinguish absent and unsupported retry fields without exposing raw errors. The two earlier unmatched removals remain unknown.
-- Scope, acceptance criteria and engine/migration limitations are recorded in docs/customizations/STORAGE-UNIT-EXPERIMENT.md. This is an experiment, not an operating fix or deployment candidate.
-
-## Compression preparation and recovery evidence (development only)
-
-- Reuse the existing maintained observation budget and point-read the replaced source instead of materializing the entire namespace for each compression; preserve cold initialization, uncertain-state failure, all storage certification and serialized inference. Preserve endedAt on repeated completed session-end requests while allowing existing feature enqueue.
-- Add bounded authenticated body-free embedding evidence queries and process-observed publication proof, explicitly distinct from fresh disk verification. Preserve unknown historical outcomes, source/generation ownership and data. Count all completed fence outcomes independently of the recent-eight detailed history.
-- Separate timestamped recent attempt/failure observations, current pending/quarantine/unknown states and persisted historical totals in HEALTH and dashboard; retain counters and disabled-function history. No operating deployment, collector or permission change. See docs/customizations/CERTIFICATION-RECOVERY-EVIDENCE.md for validation limits and proposed combined rollout.
-
-## Observation certification outside the session critical section (development only)
-
-- Preserve observation/session mutation and intent registration order, then await readback/fsync certification outside the session lock. Success still requires certification and fresh source/intent ownership; duplicate restoration follows the same rules. Keep LLM serialization, deadlines, retry policy, original source and warning counters unchanged.
-- Detect in-flight, failed and concurrent source mutations with begin/end epochs independent of durability pruning. Reject source changes/deletion and foreign generations without overwriting them. Retain the previous locked path when file readers lack the required guard.
-- Alternating synthetic comparison with a fixed 250 ms certificate gate: session-end waits 250.57–251.46 ms before, 0.19–0.38 ms after; capture ACK still follows certification. This is a lock-contention reproduction, not production latency or warning-recovery evidence. See docs/customizations/OBSERVATION-CERTIFICATION-LOCK.md. No operating deployment, restart, collector or permission change.
-
-## Bounded session-end retry diagnostics (development only)
-
-- Add privacy-filtered legacy collector retry snapshots and slow session-end stage diagnostics. Preserve retry order, backoff, request deadlines, ACK and storage behavior; diagnostic failures cannot change delivery outcomes.
-- Bound client snapshots to eight entries/16 KiB and one write per minute; bound server pending timers to eight and emitted lines to two per minute. Never include bodies, session identifiers, raw errors or credentials.
-- Operational activation is not performed. Server logs require a server update; collector snapshots require a separately authorized exact client-script/manifest transition and worker restart. See docs/customizations/SESSION-END-RETRY-DIAGNOSTICS.md.
-
-## Same-pump independent intent certification (development only)
-
-- Request bounded key unions for at most five same-namespace embedding pump items so ready requests can share an active namespace scan without waiting for slow captures while retaining per-item verification, failures and absolute deadlines. Bound grouped SDK concurrency and retain unresolved calls in their slots. Keep inference serialized and recheck generation/canonical ownership before and after inference.
-- Add real file-fence, failure/deadline, stop/pause/restart, foreign-generation and warning-semantics regressions. Foreground capture/outbox acknowledgement and historical failure counters retain their existing meaning.
-- Alternating 253 MB synthetic four-pair certification: 8.69 s to 2.21–2.22 s; scanned bytes 1,012,018,008 to 253,004,502. No production performance or warning-recovery claim. See docs/customizations/EMBEDDING-PUMP-CERTIFICATION.md for limits and proposed server-only rollout. No deployment/restart or permission change.
-
-## Faster fully validated namespace scanning (development only)
-
-- Use native structural-token searches to skip non-structural runs in the raw JSON-prefix and compound-value scans. Retain full fatal UTF-8 decoding and JSON.parse validation for every entry, including unselected values; signature checks, cancellation, fsync, deadlines and receipt ownership rules are unchanged.
-- Reproduce the five-second compatibility collector receipt-before-post stall with synthetic 220 MB namespaces and concurrent readback. The optimized reader completes the same real file fence and durable duplicate handoff within the unchanged budget in two alternating development trials. Add malformed/chunk-boundary and real collector/receipt/file-fence preservation tests, including a separate worker process retaining pending ownership during retry backoff.
-- Validation: build, skill/docs generation and checks, 3,301 passing application tests (4 skipped), two alternating synthetic budget comparisons and independent review. Compatibility capture/manifest hashes are unchanged.
-- This is not an operating fix confirmation. No service deployment/restart, backlog replay/deletion, timeout expansion, counter reset or administrative permission change. Existing operating capture acceptance remains incomplete; synthetic SDK/transport and workload limits are documented in CAPTURE-RECEIPT-BUDGET.md.
-
-## Exact reviewed-plan operating command (prepared only)
-
-- Complete genuine AI review of the actual fixed-plan export; no important finding. Add one fixed wrapper to revalidate, record that AI review and invoke existing check/apply after separate operating approval. Bind plan/intent/count, all executable sources and the outer wrapper bytes; preserve every existing guard and different review/history.
-- Cover failure/duplicate/concurrency/source/layout/recording uncertainty and core restoration using synthetic fixtures. No actual review.json write, operating trust change, service restart or .16 retry performed; no user source-review/name-entry requirement.
-
-## Body-free prepared-plan review evidence (development only)
-
-- Add one fixed read-only export for the prepared plan/intent and 36 targets after OS permissions blocked actual AI review. Reconstruct proposed trust metadata, validate staged code archive contents and hash-bound original snapshots, and return only fixed aliases, modes and comparison facts. No private bodies, review.json write, apply, service control or retry.
-- Keep actual AI plan review and user operating approval distinct. Synthetic validation of the exporter does not claim review of the inaccessible operating plan is complete.
-
-## Fixed original-release baseline derivation (development only)
-
-- Validate the pinned .15 runtime, complete installed protected files and archive contents, then require exact equality with original registered .16/.17 baselines. Preserve the original policy validation while avoiding its incompatible runtime-discovery selector; do not admit mismatched runtimes or rewrite a baseline to pass. Bind verified receipt bytes through plan/target capture and reject archive creation races.
-- Use exact historical enrollment/runtime source fixtures for the policy epoch that prior tests missed. Cover full transition/.16/.17, corrupted archives, receipt races, historical catalog candidates and both retained failed preparation shells. Extend only the fixed preparation wrapper for this second known empty-shell state; preserve prior history and refuse partial/duplicate/changed states. No operating changes performed; separate staging/preparation authority remains necessary.
-
-## Body-free current-baseline selection diagnosis (development only)
-
-- Add a fixed read-only diagnostic separating original policy/runtime admission from catalog, activation identity, drop-in and preservation metadata mismatches. Print only bounded boolean/count/fixed-name comparisons; never private policy or receipt bodies, and never import kits or write state.
-- Reproduce intact older-release rejection under a newer-only runtime policy. Prior whole-path fixtures used the updated helper and older-matching policy, missing this deployment boundary. Actual private policy remains unconfirmed; no speculative core/trust change, root preparation, restart or deployment retry performed.
-
-## Exact empty-shell preparation refresh (development only)
-
-- Extend the existing preparation wrapper for only the diagnosed old staging and empty failed shell. Preserve old core/review bytes and shell identities in a fixed private archive; install the pinned read-only hash correction and actual AI review, then invoke only --prepare. No user source-review ceremony, operating transition, service action or deployment retry.
-- Refuse changed state, duplicate/concurrent execution and partial-refresh redispatch. Validate four failure boundaries, old review-byte compatibility and full corrected preparation with service-owned 0775 paths: 221 Python tests and 3,282 application tests passed, with four existing application skips. Actual root refresh remains unexecuted; partial failure requires inspection/manual repair.
-
-## Service-identity read-only hash correction (development only)
-
-- Fix the transition tool's mismatch with existing service-owned 0775 code directories: perform only home-file hash observations through the verified original runtime's privilege-dropping helper. Preserve strict root code/trust/write checks, no-follow traversal, expected hashes and file/directory replacement checks. No chmod or operating update performed.
-- Replace the test fixture's blanket permission normalization with explicit root/user layouts; cover full preparation, .16/.17 paths, each target-prefix rollback, UID/GID and replacement failures, and preservation/refusal of a failed preparation shell.
-- Add a metadata-only preparation diagnostic without locks, repairs, kit execution or private-body output. The actual historical failure path and root-only preparation residue remain unconfirmed. Core staging hash and review evidence will need coordinated updating before any later installation; existing wrapper pins remain unchanged and no automatic resume is introduced.
-
-## Existing-staging preparation continuation (development only)
-
-- Remove the wrapper's unnecessary human source-review prompts. Continue only the exact previous pending staging after host-root ownership/permission and frozen three-file hash verification; do not change core code or permissions.
-- Attribute the completed code review to its actual independent AI reviewer, bind review evidence to exact source hashes, and record the user's existing staging/prepare authorization separately without claiming a user code review. Preserve the prior pending record and refuse changed/approved records, concurrency or existing preparation.
-- Execute `--prepare` only; no plan approval, operating transition, service action or retry. Validate with synthetic fixtures; no operating sudo performed during development.
-
-## Fixed administrator trust transition (development only)
-
-- Prepare exact .15/.16/.17 trust lineage, new code-preservation archive, administrator binaries and enrollment policy/installation evidence under existing locks. Preserve original packages, approvals and failed-job proof. No web/sudo/unit permission expansion.
-- Journal known-state replacements and restore only before commit and before service/update advancement. Validate executable bytes before import; refuse stale enrollment policy epochs. Synthetic whole paths include .16 retry/apply and .17 compatible recovery with hold/budget/data preservation. Operating installation is not performed; see docs/customizations/ADMIN-TRUST-TRANSITION.md.
-
-## Administrator preflight retry (development only)
-
-- Add root-only, once-only retry for a proven CLIENT_PROCESS_ACTIVE failure before service stop or code change. Preserve original failure evidence and bind execution to candidate/package/baseline; recheck current guards before queueing and execution. Ordinary requests reject failed candidates and cannot redispatch administrator retries.
-- Keep web/sudo authority unchanged; fail closed on partial writes, changed bindings, unknown/partial failures and dispatch uncertainty. Synthetic tests include successful execution exactly once. No operating installation or retry performed. Pinned root-asset hashes require the separately reviewed fixed trust transition before installation. Details: docs/customizations/PREFLIGHT-RETRY.md.
-
-## Explicit two-file client transition (preparation only)
-
-- Keep default compatibility rejection; allow only administrator-reviewed before/after hashes for the retained Ubuntu capture bundle and manifest, with the other eleven files and hook commands unchanged. Use existing client tickets, user-identity atomic writes and verified code-only rollback; no privileged client-body reads, permission expansion or operating installation.
-- Prepare a same-.15-baseline primary/recovery pair preserving the new client files and v2 hold/recovery budgets. Synthetic tests cover refusal, partial failure, real client lock cooperation and stopped/duplicate recovery. Windows access and actual registration, activation or record processing remain excluded. Details: docs/customizations/TWO-FILE-CLIENT-TRANSITION.md.
-
-## Capture receipts and single-decode readback (development only)
-
-- Add authenticated body-free exact receipt verification and bounded completed-event metadata pages. Pin receipt expectations and shorten only explicitly supplied deadlines; retain originals on mismatch, timeout, deletion or unavailable proof. Preserve ordinary managed-spool ownership and existing capture backoff.
-- Keep oversized legacy payloads complete through the existing full-payload handoff and freshly verified durable receipt; do not truncate or raise spool limits. Show retained local legacy ownership separately from historical failed append attempts, using bounded cached directory metadata only.
-- Remove redundant UTF-8 decoding while preserving full validation, shared-read bounds, fsync and final signatures. Synthetic 220 MiB parser comparison improved median wall time 13.6%, with unchanged read bytes; operating performance is not established. Details, limits, validation and later rollout boundary: docs/customizations/CAPTURE-RECEIPTS-NORMALIZATION.md.
-
-## Singleton readback and HEALTH layout (development only)
-
-- Continue an oversized exclusive projection in the same scan only after atomically closing admission; retain late subset sharing within the original shared projection bound. Preserve fallback for multiple waiters or cancelled additional keys and trim cancelled pending keys. Existing certification, deadlines, fsync, signatures, cancellation and drain remain. The initial start-time admission closure was superseded after its late-subset regression was measured.
-- Reorder HEALTH into overall state, visible attention/progress and grouped actions, then collapsible technical diagnostics. Preserve pause/resume meaning, permissions, critical status, open details/focus and existing action handlers. Validate desktop/mobile with synthetic actual-browser fixtures.
-- Existing web updates can apply registered approved candidates; administrator review/enrollment remains a separate boundary. No new privileged endpoint, policy change, operational deployment, model call or external notification. Validation and limits: docs/customizations/SINGLETON-HEALTH-REFRESH.md.
-
-## Concurrent readback sharing (development only)
-
-- Coalesce compatible in-flight namespace scans with bounded pending key unions and started-scan subset joins. Keep independent expectations, dirty revisions, original deadlines, file/directory fsync and final full-signature checks; never cache completed success. Isolate request aborts and drain physical readers at shutdown.
-- Bound shared jobs/participants/keys/serialized selected projection; overflow and incompatible requests use the original reader. Count actual parser work once in aggregate metrics even when the initiating request expires. No operational changes or model calls. Design, synthetic comparison and validation: docs/customizations/DURABILITY-READBACK-SHARING.md.
-
-## Unreleased — readback cost and memory-protection recovery (development only)
-
-- Reduce obsolete readback work with optional 1MiB full-signature checkpoints and per-certification negative-only mismatch reuse. No positive cache, deadline increase, skipped fsync/final validation, LLM serialization/input-budget change or operational deployment. Preserve stream handle through final verification and cleanup on abort/error.
-- Persist fixed manual/deployment/memory/legacy/storage-error holds and bounded recovery attempts. Only memory-only holds may recover after strict headroom/stability/freshness checks through the existing storage-certified admission path; manual/unknown/other holds remain. Keep pressure sampling live through pending storage-certified pause/resume, reject out-of-order samples, and await both transitions at shutdown. No external notifications or new jobs.
-- Synthetic RED/GREEN and comparison details: docs/customizations/DURABILITY-READBACK-COST.md and PROTECTION-RECOVERY.md. Independent storage/recovery/integration reviews clear after race and test-gap fixes; final combined verification is recorded in docs/customizations/DURABILITY-PROTECTION-VERIFICATION.md; production.11/running work and original user edits preserved. Operational activation/restart remains separately approved. Long-term memory recording pending separate manual review.
-
-## Manual stopped recovery (development only)
-
-- Complete the initial v1-to-v2 failure path with an explicit administrator plan/confirm CLI on an already reviewed recovery-disabled kit. Bind failed kit/transaction, certified shutdown, selected code and latest stopped data; reuse the existing dispatch lock and verified activation without forged receipts or data rollback. No automatic enrollment, new daemon, sudoers change or operational execution.
-- Preserve holds and recovery budgets. Successful duplicates verify the real recovery result without restarting; partial failures remain stopped for explicit manual repair. Commands, evidence requirements and limits: docs/customizations/MANUAL-STOPPED-RECOVERY.md.
-
-## Recovery build preparation (development only)
-
-- Prepare a pinned clean-source v2-compatible recovery profile with automatic memory recovery compiled off; preserve holds/budget, pressure protection and storage certification. Add strict package capability declarations and explicit Viewer status. Offline builds reuse existing dependencies; no kit enrollment, activation or operational changes.
-- Refuse direct v2-to-v1 downgrade and unsafe automatic code rollback after v2 startup. Require a hash-protected, explicitly recovery-disabled v2 previous runtime; otherwise certify shutdown and leave stopped for manual inspection. Do not rewind data. The initial stock .11 failure-to-recovery activation path is provided by the later Manual stopped recovery entry; a recovery artifact alone does not authorize operational activation.
-- Synthetic verification and deployment restrictions: docs/customizations/RECOVERY-BUILD-PREPARATION.md. Long-term memory remains pending separate manual review.
-
-## Measurement preparation history (daniel.11)
-
-- Deployment preparation: user authorized measurement-only apply/restart/observation. Prepare a distinct daniel.11 package from the reviewed cd09b0e code without incorporating unrelated original Viewer/CHANGELOG edits. Current daniel.10 guard and preservation verified; pre-existing persistent pause will be preserved unless separately authorized to resume. No timeout, credentials, provider, concurrency or scheduling changes. Applied status requires later actual receipts and observation.
-
-- Follow-up: cover pre/mid-scan abort and inode replacement callback metadata; count final measurement construction/storage loss exactly once and preserve previous bounded history. Synthetic failure injection verifies original certification success/failure, dirty-key retention and subsequent recovery. Prepare operator approval/downtime/code-only rollback/GET observation steps without executing them.
-
-- Preserve certification deadlines and all storage checks while adding an in-memory history of eight publications: disjoint capture/readback/fsync/verify, cleanup and retry waiting, fixed retry reasons and existing reader byte counters. Reuse the authenticated health snapshot; no automatic logs, extra disk/network IO, provider calls or scheduler changes.
-- Bound namespace detail to eight entries and use ephemeral keyed scope tokens; never record source data, keys, paths, session IDs or arbitrary exception text. Observer/measurement failures cannot turn storage failure into success or success into failure.
-- Synthetic RED/GREEN, regression/build/generated-document checks and independent review are recorded in docs/customizations/DURABILITY-MEASUREMENT.md and its linked progress record. No operating files, settings, data or service were changed; deployment requires separate approval. Durable memory remains pending manual review.
 
 All notable changes to agentmemory will be documented in this file.
 
@@ -193,225 +28,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-- Preserve whitelisted automatic recovery verification failure stages/codes in existing checkpoints and expose unresolved aggregate categories; no deadline, retry, circuit or durability changes. Development only.
+## [0.9.31-daniel.1] — 2026-10-27
+## [0.9.31] — 2026-10-25
+### Upgrade notes
 
+- **The runtime moves to iii 0.25.0 and Worker Compose.** Stop the existing instance with its old CLI before upgrading, then restart with the same instance, port and data directory. File state, the daemon secret and Docker data volumes are preserved. The CLI no longer uses `AGENTMEMORY_USE_DOCKER`, `AGENTMEMORY_III_CONFIG` or custom `iii-config.yaml` files; Docker deployments use the shared deployment image. Follow the [upgrade guide](docs/upgrades/iii-0.25.md) for these installation changes.
+- **Viewer updates use authenticated SSE** on the REST port at `/agentmemory/viewer/events`; port 3112 is unused. `agentmemory console` now prints migration guidance and the viewer URL. The viewer remains on port 3113 by default. Status reports the configured engine pin as `service.enginePinnedVersion` instead of `engineVersion`.
+- **Narrative recall now returns structured JSON through MCP.** Read the `text` field for the narrative and the accompanying budget metadata for omitted or shortened results. See [recall guidance](docs/recall.md).
+- Full historical vector recovery requires `AGENTMEMORY_VECTOR_BACKFILL=all` on each start and processes at most `AGENTMEMORY_VECTOR_BACKFILL_MAX` missing records per start. Keyword search remains available while recovery is paused. See [vector recovery](docs/reliability/source-and-vector-recovery.md) before rebuilding an old index.
+- Re-run `agentmemory connect pi --with-mcp` or `agentmemory connect omp --with-mcp` after upgrading to refresh their bundled paths and skills. Existing DSH hook-bridge installations migrate with `agentmemory connect dsh --with-hooks --force`; the connector backs up configuration and preserves unrelated entries.
 
-- Complete opt-in capture reconciliation with verified native engine cold-start admission and authenticated ON/OFF controls; retain fail-closed writer evidence, durable setting verification and independent holds. Development-only synthetic validation; no operating activation.
+### Added
 
+- **Installable Pi package and native OMP integration.** Pi's `@agentmemory/pi` package contains the compiled extension and shared skills. Both connectors install project recall, capture, native memory tools and optional MCP, with bounded offline capture queues. The connector works before the separate Pi package's first npm publication.
+- **Native DSH capture** ships inside AgentMemory, with prompt, tool and assistant-reply capture, privacy filtering and offline recovery. No separate capture package is needed (#1609, including instruction-file setup by hejiawow).
+- **Cursor workspace resolution** maps lifecycle hooks to the correct project using validated paths and local session metadata, with detached stop/session-end delivery (#1112).
+- **Paged exports** support `collectionLimit`, `collectionOffset` and `collections` through REST and MCP. Partial exports cannot be imported with `strategy: "replace"`.
+- **Compression recovery** preserves searchable captures after optional model compression fails. `agentmemory compression` inspects failures and supports scoped retries; summary repair resumes after late capture and restart.
 
-## [0.9.30-daniel.27] — 2026-10-22
-## [0.9.30-daniel.26] — 2026-10-22
-## [0.9.30-daniel.25] — 2026-10-22
-## [0.9.30-daniel.24] — 2026-10-22
-## [0.9.30-daniel.22] — 2026-10-22
-## [0.9.30-daniel.21] — 2026-10-22
-## [0.9.30-daniel.20] — 2026-10-22
-## [0.9.30-daniel.19] — 2026-10-22
-## [0.9.30-daniel.18] — 2026-10-21
-## [0.9.30-daniel.16] — 2026-10-21
-## [0.9.30-daniel.15] — 2026-10-21
-## [0.9.30-daniel.11] — 2026-10-20
-## [0.9.30-daniel.10] — 2026-10-20
-### Persistent capture retry jobs (daniel.10)
+### Fixed
 
-- Single and all-quarantined retries now use a durable server job, one record at a time, with immutable request IDs and a start-time snapshot. Closing the browser does not stop work. Stop prevents the next item and lets the current retry reach a verified result. Manual background pause and certified shutdown are respected; restart resumes the saved job.
-- Deduplicate competing job requests permanently and retain alias/history metadata. Fence observation/review/inbox/event dependencies before terminal job progress. Never trust completed history without an actual stored observation; preserve missing-original cases as attention items.
-- Viewer locks duplicate controls, automatically polls without replaying POSTs, refreshes terminal results, shows recovered/attention/skipped/remaining counts, and restores progress on reopen. Preserve explicit same-ID retry for legacy ambiguous requests. Existing legacy synchronous API remains compatible.
-- Stage progress now uses an independently collapsible details section and preserves its open state during automatic refresh.
-- Source/preparation only; no operating batch replay or apply. Long-term memory remains pending manual review.
+- Saved-memory recall preserves project and agent scope, supports memory-only retrieval and retains recovery references when a token budget omits content. Graph retrieval uses bounded shared reads and keeps each observation's best score; optional reranking uses the model's actual paired-query scores.
+- Vector recovery retains unfinished work across checkpoints, provider failures and restarts. Redis state mutations serialize per key within a worker, and deletion keeps graph and facet indexes consistent.
+- Imports validate collection shapes and row keys before a replace operation deletes stored data. The import observation ceiling no longer changes with the ordinary capture limit.
+- Hooks capture final assistant replies and distinguish separate subagent, task and notification events. Structured redaction preserves identifiers and retained custom-event content remains searchable.
+- MCP keeps routine logs off stdout and reports when a write only reached its local fallback store. The viewer loads actions beyond the first page.
+- **JSONL import keeps real session times and no longer duplicates on re-import.** `parseJsonlText` took `startedAt`/`endedAt` from the first and last line even when it was a timestampless metadata entry (`last-prompt`, `cost-state`), so the session got the import time. It now uses only entries that carry a timestamp. Observation ids are derived from the entry `uuid` (or session id and line position when absent) instead of a random id, so importing the same transcript again overwrites the same rows, and `observationCount` counts only rows that were new. Rows imported by earlier versions keep their random ids, so the first re-import after upgrading adds one last copy.
+- **Session summaries cover the whole session again** (#745). 0.9.30 completed a session on the first per-turn Stop and ignored every later end, so summaries and graph extraction stopped at turn 1. `mem::observe` now reopens a completed session when new observations arrive, the Stop hook sends `final: false` so the session stays open, and an idle finalizer completes it once nothing has happened for `AGENTMEMORY_FINALIZE_IDLE_MS` (default 2 minutes). SessionEnd, the CLI and the OpenCode plugin send `final: true` and complete at once; a request without the flag behaves as before. The sweep summarizes a session before marking it abandoned (#737).
+- **The Devin plugin captures sessions.** A plugin install loaded `hooks/hooks.json`, whose capitalized Claude Code matchers never match Devin's tool names and whose extra events Devin rejects, so capture never fired. `plugin/hooks.json` now carries the six Devin hooks with lowercase matchers, and Devin loads it first. Verified on Devin CLI 3000.11.3: one session recorded session start, prompt, tool use and session end.
+- **Summaries are incremental.** `mem::summarize` keeps a watermark (`coveredThrough`) and summarizes only the observations captured since the last run, merging them into the stored summary with one reduce call. A session end with nothing new costs no LLM call, and the reflect, graph and skill fan-out is skipped for it.
 
+### Changed
 
-## [0.9.30-daniel.9] — 2026-10-20
-### Capture retry request ID compatibility
-
-- Reuse the viewer's existing secure getRandomValues UUID generator for capture retries so browsers without crypto.randomUUID can send them. Verify persisted request ID readback before POST. Separate secure-random, storage-quota and blocked-storage failures; never send an untracked retry or clear existing site data. The reported event remained quarantined with manualRetries0; the exact mobile exception is not yet observable.
-- Regression: actual Chromium normal/mobile/dark, missing-randomUUID and quota-denied cases. Source-only; operating daniel.8 and frozen candidates unchanged. Durable memory pending manual review.
-
-### Dashboard analysis-history control
-
-- Remove the retired Codex analysis-history button from operations details; it displayed even when no records were available. Preserve stored diagnostic records and APIs, the shutdown warning, and the separate capture quarantine/recovery history control. Source-only change; existing frozen daniel.8 candidates and operating daniel.7 are unchanged.
-- Regression: viewer operations tests cover absent control with empty history and safe rendering of any already-loaded historical result. Durable-memory recording remains pending manual review.
-
-### Candidate enrollment live installation acceptance (2026-10-20 12:26 KST)
-
-- User completed the separate fixed umask077 repair via SSH. Verified actual root-owned0755 helper SHA25600e343569903003f0af2f7e06c60b17f4549ee410c85b6c7012f4d14066c672c and the root-reported policy SHA2563049b962ad188211908e361611e096a9604034e4256de7c8f076b3ba033fe099 (code commit3d4c00a3513cb7c6fb6d75c6258d756357222a28). Prior installation/code archives remain preserved; no rollback occurred.
-- Actual UID1000 sudo-n request78731dc7-1014-4fa5-933d-7527bfde7250 reached installed policy/commit-marker and current baseline validation, then intentionally rejected an altered root runtime with ROOT_EXECUTION_POLICY_CHANGED. Root-owned0644 public receipt under0755 was readable as UID1000; same-UUID retry returned the identical result. No candidate was approved and no apply job was submitted.
-- Public catalog bytes and service MainPID stayed unchanged. Before/after API: daniel.7 healthy, final storage mutationFailures0. This verifies noninteractive invocation, policy rejection and receipt publication, not a successful real-candidate enrollment or a UID0-to1000 process transition. Those remain separate acceptance items for the next genuine release; do not create a dummy approved candidate just to complete a test.
-- Sanitized live evidence is in workspace outputs/delegated-candidate-enrollment-mode-fix-2026-10-20/live-enrollment-probe.json. Source changes here only record acceptance; fixed issued kits are unchanged. Durable-memory recording remains pending separate manual review and explicit instruction.
-
-### Candidate enrollment installation follow-up (2026-10-20, repair not applied)
-
-- The user completed the frozen v1 SSH installation: installed=true/applied=false/serviceControlled=false, root policy SHA256 e373846fa41bac9d42f5324a14b7c755fe12d4006965eb94781f077e12a97b5f. The new helper is listed NOPASSWD. Root policy/marker directories are private; unprivileged direct reads were denied and are not reported as successful asset verification.
-- Reproduced a real CLI-environment gap before actual registration: umask077 masks mkdir0755 to0700, so the helper rejected its own newly created public receipt directory. Explicitly set the intended mode only on newly created trusted directories; existing unexpected modes remain rejected. Added a real-umask registration regression, RED→GREEN.
-- Prepare a separate administrator-only exact v1 repair, preserving old root helper/policy/marker and accepting only known old/new intermediate bytes after interruption. Replace only the addon helper and matching policy/installation commit; preserve existing updater assets, issued bundles and current data. An existing root-owned public enrollment directory left0700 by v1 may be repaired to0755. Code changes require SSH root installation again; no NOPASSWD bypass.
-- Verification: Python86 passed; unit3057/four skips; build/compat/docs/skills passed; feedback39/one skip; TypeScript retains the exact24 baseline diagnostics. Independent narrow repair review found no Critical/Important issue. Reconstructed the full installed policy from public evidence and matched its exact root-reported SHA, then verified full-policy repair/reload under synthetic umask077. sudo-n invalid-UUID invocation executed the installed helper without authentication or state mutation. Final follow-up artifacts and operational repair state are tracked in workspace outputs/delegated-candidate-enrollment-mode-fix-2026-10-20/REPORT.md. No service action, apply, inference, data rollback or durable-memory save. Memory remains pending manual review.
-
-### Delegated candidate enrollment addon (2026-10-20, not installed)
-
-- Replace repeated SSH administrator enrollment with a separately reviewed fixed-policy helper, available only after the one-time SSH root installation. Accept one canonical UUID from UID/GID1000, snapshot bounded no-follow inputs and require unchanged root execution bytes. Reuse the existing bootstrap and runner transaction; retain the separate dashboard apply action and all five existing root updater assets. The product version remains daniel.7.
-- Validate package paths/file hashes, both release tables, dependency/engine contracts, thirteen unchanged clients and a current baseline selected through root drop-in/catalog/kit provenance. Source text, retry/quarantine/history, existing memories, live data and issued bundles are preserved. Metadata/doc hashes for omitted candidate documentation prove only matching tables, not those absent bytes.
-- Independently reproduced and fixed three Important review findings: activation reread TOCTOU (derive baseline from one checked snapshot and root kit), pending failed-package alias retry (check and enroll under the same dispatch lock), and interrupted installation (require the exact root installation commit before helper authorization). No change to the existing runner/normal-stop/backup/apply/rollback code.
-- Validation: Python81 passed including35 addon checks and real policy-builder/install/reload integration in synthetic FS; unit3057 passed/four skips; build/compat/docs/skills passed; feedback39 passed/one skipped. TypeScript retains exactly24 baseline diagnostics with no additions. The first sandbox attempt hit IPC/socket restrictions and was interrupted; outside-sandbox tests retained actual temporary HOME and the default fork pool. Final post-review gates and artifact hashes are recorded in workspace outputs/delegated-candidate-enrollment-2026-10-20/REPORT.md.
-- Source base e07151c036d782b218fa259ed7679e49fd844b2e; design/plan approved in this session. Read-only runtime observation is already daniel.7/healthy/background running/mutationFailures0, superseding the older .4 handoff. No production change, installer execution, service control, inference, or rollback occurred. Administrator installation, actual root-to-UID1000 access and real sudo-n enrollment remain pending. Long-term-memory storage is pending separate manual review and explicit instruction.
-
-
-## [0.9.30-daniel.8] — 2026-10-20
-### Preserved capture quarantine and selected recovery (not deployed)
-
-- Keep unprocessed dead-letter originals regardless of the old count/age pruning thresholds. Completed dedup-event retention remains unchanged. Preserve lifetime attempts, use a separate automatic-cycle budget, and retain failure/recovery history in `mem:capture:review` after inbox removal and restart. Legacy records retain their last known failure without inventing earlier detail.
-- Let the durable capture path preserve observations beyond the direct-observe session cap, retaining the original direct `mem::observe` limit. Keep per-record storage/response budgets, indexed session reads, inbox admission bounds and asynchronous embedding behavior. No operational configuration change or mass replay is performed.
-- Add an authenticated, paginated capture-quarantine/recovery dialog to Health/operations, separate from summary/compression/graph quarantine. Show bounded input previews, session/event identifiers, reason codes, timestamps, lifetime attempts and paged failure history. Retry one capture key at a time after fixing the cause. Preserve request IDs across uncertain responses and require actual stored-observation verification before marking recovery.
-- Reconcile interrupted scheduling and completion cleanup without losing originals, lowering attempt counts or overwriting an already verified recovery timestamp. Reject malformed request IDs/keys and keep same-request retries idempotent, including after inbox deletion.
-- Replace mass-retry prompts with selected-event guidance. Label spool counters as failed append attempts; repeated attempts are not a proven count of permanently lost events. Exact identity of the historic five failed appends remains unavailable from existing telemetry.
-- This server patch does not change the thirteen compatibility hooks or fix the separately diagnosed oversized host-outbox head. It does not implement delegated candidate enrollment, which is proceeding in another session. Integration/deployment and real operational recovery remain separate from isolated validation.
-- Evidence and actual validation: `docs/customizations/CAPTURE-QUARANTINE-RECOVERY.md` and the root `outputs/capture-quarantine-recovery-2026-10-20/` dossier. Long-term-memory recording remains pending separate manual review.
-
-## [0.9.30-daniel.7] — 2026-10-20
-
-### Visible update progress and certified failure recovery (not deployed)
-
-- Record the .6 operational failure: one job, verified normal stop and latest private backup, then failure before versioned installation/activation. The legacy releases parent was root-owned0755 while installation ran as UID1000. Reproduced the same failure path in isolation; the original private final error remains unread without administrator authentication. The user restarted .4; live read-only checks confirmed healthy/paused/mutationFailures0.
-- Use a separate user-owned code releases directory and prove actual installer access before pause/stop. Retain previous installation hashes, root asset modes, dependency compatibility, data and existing hooks. Add an administrator-only access check that drops to the actual service identity without controlling the service or touching operational data.
-- Show immediate request status, confirmed phases and failure/recovery guidance near the top of the update dialog. Fix nearly-white update text in the light theme. Keep one durable request ID across network uncertainty and same-ID retry authentication failures; distinguish a new request's definitive rejection. Reject new execution of a failed/interrupted candidate using its entire preserved history.
-- After a certified stop, restore only code and restart the previous service only if storage/data/guard safety is verified. Confirm the actual previous version, paused state and storage status; otherwise retain a manual inspection/restore-failed result. Never rewind data, force-kill, erase queue/history, retry indefinitely or turn failed updates into success.
-- Source verification: 3,057 unit tests passed / four existing skips; Python46, build/compat/docs/skills and feedback40 passed. TypeScript retains exactly24 baseline diagnostics. Real Chromium mobile/desktop and light/dark contrast checks passed. Independent review findings were reproduced and fixed; packaged-runtime and actual OS root/application gates remain separate.
-- Publish only sanitized matching failure metadata; keep private logs/settings/backup paths private. Preserve issued .6 bundles and prepare a separate artifact against the actual .4 baseline. Detailed checks, packaged-runtime proof, root registration and live acceptance are separate stages in the update-feedback-recovery-daniel7-2026-10-20 dossier. Long-term memory remains pending manual review.
-
-## [0.9.30-daniel.6] — 2026-10-20
-
-### Operations progress and reviewed dashboard release kits (not deployed)
-
-- Present status summaries, a six-stage progress table and folded error/provider/session details. Show remaining work, observed completions, throughput and a qualified per-stage ETA; do not sum overlapping stages into a unique-memory count or promise an overall completion time.
-- Expose existing certified capture completions and count embedding completions only after strict publication/fingerprint verification. Worker epochs reset browser samples; missing, stale, held, restarting, retrying and inflow-dominated states suppress unsupported estimates. Keep at least two samples across a five-minute poll plus request latency.
-- Remove the Health Codex-analysis launch controls and automatic analysis-history lookup. Preserve server compatibility and past results behind an explicit history read. Existing pause/resume, storage diagnostics and quarantine history remain available.
-- Prepare self-contained, explicitly reviewed release kits for the existing root-owned dashboard runner. Unapproved drafts cannot enroll themselves; browser inputs cannot select executables. Retain normal shutdown, latest private backup, strict guards, archive read-back and code-only recovery without restoring old data. Final transaction validation and administrator enrollment remain separate gates.
-- Include the un-applied daniel.5 SDK nullish-result contract fix. Compare against the actual installed baseline; identical compatibility hooks do not require another client rollout. See docs/customizations/OPERATIONS-OVERVIEW-DANIEL6.md and the separate operations-overview-daniel6-2026-10-20 dossier for validation and application status.
-- Final source checks: 3,047 unit tests passed / four existing opt-in skips; Python42 passed, build/compat/docs/skills and feedback40 passed. TypeScript retains exactly24 baseline diagnostics, no additions. Desktop/mobile/keyboard and measured-rate regressions passed; isolated packaged-runtime and root installation are separate gates.
-- Operational application and live queue recovery are not yet verified. Long-term-memory recording remains pending separate manual review.
-
-## [0.9.30-daniel.6] — 2026-10-19
-## [0.9.30-daniel.5] — 2026-10-20
-
-### Missing-value contract for verified embedding publication (not deployed)
-
-- Confirmed with read-only state::get against the running iii0.22.1 SDK: an absent key resolves to undefined. StateKV.get declared T|null but forwarded that result unchanged. Strict vector publication rejected absent retry/clear keys and deleted vector rows even after successful persistence. Existing mocks returned null and concealed the mismatch.
-- Normalize nullish SDK results to null at the shared get boundary. Preserve false, zero, empty strings, objects and rejected SDK calls. Keep publication checks, disk fences and retry records intact; no validation relaxation, data deletion, reset or timeout increase.
-- Regression first reproduced both the contract violation and VECTOR_PUBLICATION_UNVERIFIED, then related six files68 tests passed. An isolated real iii engine reproduced the original failure, verified fixed vector addition/deletion with synced=true/mutationFailures=0 and normal exit0. Production was only queried. Final source/package and deployment results are tracked in the separate vector-publication-investigation-2026-10-20 dossier.
-- Final source verification: 3,023 unit tests passed / four existing opt-in skips; build, compatibility hooks, docs, skills and feedback40 passed. TypeScript retains exactly24 baseline diagnostics, no additions.
-- Existing capture timeouts remain a separate acceptance concern; this fix does not prove all latency resolved. Preserve issued bundles and client hooks. Long-term-memory recording awaits separate manual review.
-
-## [0.9.30-daniel.4] — 2026-10-20
-
-### Storage publication follow-up (verified source, not deployed)
-
-- daniel.3 applied successfully with all 453 existing data namespaces unchanged, protected code archives verified and dashboard root assets installed. Live acceptance remains incomplete: recurring 15-second storage read-back failures and a safely rolled-back resume left background work held. The deployment result is not proof of queue recovery.
-- Group boot backfill intents by canonical source namespace, at most 50 items and five SDK operations at once, then certify every source/retry pair in one strict publication. Keep foreground capture's original per-item certification and ACK boundary. Preserve source text, retry attempts/fingerprints and backfill markers through partial failure or stop.
-- Publish accumulated dirty keys per namespace with at most 200 keys and the original 15-second budget per publication. Preserve revision checks, failed keys and failure diagnostics; rotate failed scopes so others can progress. Reuse the full durability wait once for background transitions and fail closed without a verified result. No timeout increase, reset, migration or dependency change.
-- Actual worker benchmark on one synthetic 160MiB namespace: five concurrent singleton enqueues 12,257ms / five scans per scope; the new five-item batch 2,066ms / one scan per scope. Source and existing retry hashes were unchanged. This demonstrates amplification removal, not a guarantee of live latency.
-- Verification: 3,016 unit tests passed, four existing skips; build/compat/docs/skills and feedback40 passed. TypeScript retains exactly the same24 baseline diagnostics; no additions. Independent review and six-file50-test check found no P1/P2 issue. Final packaged CLI, deployment guard and live acceptance are separate gates recorded in the release dossier.
-- Keep the existing compatibility hooks and root updater assets when their exact file sets/hashes match; no client reinstall is needed for identical files. Preserve issued daniel.3 bundles. Long-term-memory recording remains pending separate manual review.
-
-## [0.9.30-daniel.3] — 2026-10-19
-
-### Personal storage recovery and dashboard updates (verified candidate, not deployed)
-
-- Certify a file namespace with one complete validated scan, file/directory fsync and a final unchanged inode/content signature. Preserve strict read-back and dirty-generation checks while removing the duplicate full scan that repeatedly lost the publication window on a hot large namespace. Bound reads with AbortSignal; no timeout increase, data migration, forced stop or queue reset.
-- Load durable embedding retries before showing pending counts, reconcile committed rows in bounded batches, and hand selected vector backfill jobs to the existing persistent worker. Pause preserves intent; resume continues it. Retain the backfill marker and explicitly label any cap-limited remainder. Existing vectors, source text and retries remain intact.
-- Preserve past consolidation failures but distinguish a ready provider awaiting a successful retry. Replace legacy Audit deletion advice with preservation guidance. Historical failures are not marked recovered without a later success.
-- Add an authenticated update dialog, candidate/history APIs, durable UUID requests and an independent systemd runner. Accept only administrator-reviewed root-owned candidate snapshots; browser input cannot select a command, path or URL. Preserve queued retries, restart reconnection, interrupted-job inspection and safe phase history. An exit-zero deployment remains pending final acceptance.
-- Include a one-time administrator installer and root ownership/symlink/hash checks. No production candidate is automatically approved or enrolled; build/download/enrollment remain administrator operations. Client compatibility hooks are unchanged from daniel.2; server updates do not update other systems implicitly.
-- During maintenance-drain investigation, isolated HTTP reproduced a separate provider deadline defect: receiving headers cleared the timeout before JSON/text body completion. Keep one original total deadline through retries and complete non-streaming body consumption. No timeout increase. This is a verified preventive fix; it is not proof of the cause of the eleven pending live operations. Preserve the first candidate and prepare a separate revision.
-- Verification: 2,993 unit tests passed, zero failed, four existing opt-in skips; feedback40/0; Python runner/installer22/0; isolated real CLI/iii8/0 including exact raw export and normal shutdown/restart. Build, compat, docs and skills checks passed. TypeScript retains baseline diagnostics; details and final artifact hashes are in the separate post-deployment-followups-v3 dossier.
-- Operational application, actual root/systemd installation and live queue recovery remain unverified. No live data, legacy Audit file or memory was deleted/replaced. Long-term-memory recording awaits separate manual review. See docs/customizations/OPERATIONS-DASHBOARD-DANIEL3.md.
-
-## [0.9.30-daniel.2] — 2026-10-19
-
-### Personal search latency fix (prepared, not deployed)
-
-- Preserve graph search results while avoiding oversized SDK list responses on the file backend. Reuse the existing validated namespace reader with acknowledged mutation overlays and fail-closed handling. Redis is unchanged; no dependency or data migration.
-- Build adjacency once per search instead of once per matching node. Read-only evaluation against the current graph: 50,278ms to 5,021ms; this is not final live API acceptance. Independent randomized comparisons preserve results, order and graph context.
-- Recheck Ubuntu: nine deployed compatibility hooks and all protected files match daniel.1; no drift or repair needed. Windows remains unverified. Existing bundles and live data are preserved.
-- Verification and deployment status: `docs/customizations/SEARCH-LATENCY-DANIEL2.md` and the separate `outputs/search-latency-daniel2-2026-10-19/` dossier. Long-term-memory recording awaits separate manual review.
-
-## [0.9.30-daniel.1] — 2026-10-19
-
-### Personal distribution version (not deployed)
-
-- Identify this personal fork as `0.9.30-daniel.1`: upstream base `0.9.30`, personal release counter `1`. Increase `daniel.N` for subsequent releases on the same upstream base; after an upstream rebase, start the new base at `daniel.1`. Keep the upstream main branch and historical bundles unchanged.
-- Use the existing package-version/docs-sync path for CLI, health, Viewer and plugin manifests. Preserve import support for earlier exports and accept exports carrying this personal version. No dependency or engine upgrade.
-- Prepare a new v3 candidate; frozen v1/v2 artifacts retain their original hashes. Runtime rollout and long-term-memory recording remain pending; verification results are recorded with the new candidate.
-- Version validation: 2,950 unit tests passed / 4 existing skips, feedback40/0, release-tools4/0, build/compat/docs/skills passed. Isolated real CLI/iii7/0 confirms exact personal CLI/health/Viewer version, capture/replay, feedback and restart/shutdown. TypeScript retains the same24 baseline diagnostics with no additions. Production remains on the previous version.
-### Personal fork — combined capture latency response v2 (2026-10-19, not deployed)
-
-- New file-backed captures reuse compact source-budget metadata after one streaming initialization, maintained by existing successful StateKV mutations. Preserve exact UTF-8/source/frame budgets, session limits, cold-load deltas, storage-key identity and durable replay. Ambiguous writes fail closed rather than authorize captures with stale metadata. No data migration or new storage/dependency.
-- Bound the durable hook watchdog's retry-worker startup wait to100ms, retaining outbox ownership and host deadlines; add event metadata without raw input. Cover an unresponsive real HTTP context endpoint and stalled retry startup. Existing wrappers/clients require the explicit versioned client update.
-- Validation: 2,950 unit tests passed / 0 failed / 4 existing opt-in skips; feedback40/0 and release-tools4/0; build/compat/skills/docs passed; TypeScript24 unchanged baseline diagnostics, new0. Real isolated CLI/iii6/0 includes concurrent captures, exact raw export before/after restart and verified shutdown. Synthetic145MB metadata benchmark cold2.1s/warm p95~0.52ms; this is not end-to-end throughput. Independent review found no Critical/Important defects. Initial failed fixture/sandbox runs remain in evidence.
-- Combine this and PORT-01..08 in a new v2 artifact with source/installed-tree hash guards and archive read-back. Frozen v1/investigation evidence remain unchanged. Final source/candidate hashes and archive checks are recorded in the new candidate receipt and docs/customizations/CAPTURE-LATENCY-V2.md.
-- Implementation and isolated verification only; production/client code, data, settings, pause and service remain unchanged. Exact historical hook phase/live Windows/model quality remain unverified. Operational baseline reconciliation/fresh preflight still apply. Memory record awaits separate manual review.
-
-### Personal fork — durable capture replay lookup (2026-10-19, not deployed)
-
-- A stored durable observation is now looked up by ID inside the existing session lock before loading its full namespace. Preserve duplicate ACK, prompt-ledger/index recovery, original data and new-observation limits/source budgets. Failed point lookups remain failures. This removes repeated full-session reads from stored replays; new captures still have a full-read bottleneck.
-- Investigation observed intermittent API stalls, capture invocation timeouts and a ~141MB open observation namespace. A synthetic ~138MB reader scan took 2.5 seconds; the exact reported 6-second hook event/phase remains unconfirmed. This is a bounded mitigation, not proof of operational recovery.
-- Validation: 147 related tests passed, build passed; TypeScript retains exactly 24 existing diagnostics, no new ones. Initial failed test runs are retained in the investigation evidence. Full suite/live Windows hooks were not rerun. See docs/customizations/HOOK-TIMEOUT-2026-10-19.md.
-- Base source: 443951c7d1f52d2195f52e3d9de1b7f0c638bbdf. Local change only, no operational version/application time or rollback; fixed deployment candidate v1 is unchanged and does not include this patch. Memory recording awaits separate manual review. The investigation report records modified-file hashes and remaining deployment gates.
-
-### Personal fork PORT-06..08 — implementation and deployment preparation (2026-10-19)
-
-- Bounded observation/Audit readers and durable Audit copy certification replace full-namespace read-then-slice; Viewer adds actual operation progress, read-only live events and CPU capacity normalization.
-- Persistent file pause/host pressure, enrichment/graph/snapshot recovery and conservative project reflection are connected to stop/drain. Project slot ownership reaches REST/MCP/context; legacy unowned slots stay preserved. Redis boot and independent embedding readiness are retained.
-- Source-native personal feedback adds authenticated submission, manual/opt-in scheduled bounded analysis, immutable history, restricted Codex execution and receipt-verified application events. Safe report relations and latest-decision exception review preserve both originals; durable memory stays manual-review-only.
-- Regression investigation restored legacy root raw preservation, narrowed native consolidation grammar to its actual prompt, corrected single reflection registration against real iii-sdk, and repaired remote Viewer auth and candidate lookup.
-- Validation: targeted tests, Chromium desktop/mobile/keyboard and feedback flow, real isolated CLI/iii capture/dedup/analysis/shutdown/restart passed; final aggregate counts and artifact hashes are recorded in the deployment preparation receipt. Existing TypeScript diagnostics are compared to the baseline, not claimed passing.
-- Deployment: NOT applied; production/client configuration and data unchanged. Existing production guard is blocked by absent ~/.agentmemory/preferences.json; exact operating guide, real Windows events and actual model quality remain live checks. No code rollback rewinds current data. Durable-memory record pending separate manual review.
-- Source commit/candidate SHA and final checks are recorded by the matching deployment candidate receipt. Prior port entries and immutable evidence bundles remain unchanged.
-
-
-### Personal fork — PORT-05 async embedding and verified publication (not deployed)
-
-- Capture now retains synthetic/BM25 content and a recoverable embedding intent before acknowledging, without calling the embedding model. File-backed new/duplicate intents and canonical content require a disk fence; failed storage leaves the capture inbox/retry intact. Keep configured observation limits and the existing auto-compression Void dispatch.
-- Add lifecycle-managed embedding recovery after vector load/replay, with admission stop/drain, canonical text fingerprints, generation checks, exponential retry, post-publication change/deletion checks and completion-marker disk proof. Only same-origin OpenAI embeddings share chat readiness; preserve stock legacy backfill cutoff/explicit opt-in.
-- Certify vector publication by target ID and generation, retain removed bucket addresses across failed saves, keep metadata counts independent of later dirty entries, and verify legacy replacement in bounded 200-key fences plus final data/meta readback before cleanup.
-- Validation: 2,810 passed / 0 failed / 4 existing opt-in skips; build, compatibility artifacts and official checks pass; TypeScript retains 28 baseline diagnostics, no new diagnostics.
-- Independent review found three Important storage/race defects; reproduced and fixed without new dependencies or operational changes. Scope and validation: docs/customizations/PORT-05.md. Base: e4556cc. Existing sourceRaw/cursors/retry/history/memories remain preserved; long-term-memory recording awaits separate manual review.
-
-### Personal fork — PORT-04 client capture handoff and provider readiness (not deployed)
-
-- Preserve legacy Codex outbox ownership until official capture retains a validated receipt or fsynced managed spool; protect receipt-managed records against expiry and space eviction. Add nine explicit compatibility wrappers without replacing stock top-level hooks, and generate per-file SHA256 manifests with `build:codex-compat`.
-- Add opt-in native Ollama chat with current incremental-summary JSON grammar, safe truncation/offline diagnostics and lifecycle-managed metadata readiness; preserve current XML consumers and the native-disabled OpenAI path.
-- Add per-environment client README and AI PREPARE/APPLY prompt with fixed-revision/manifest verification, target-only hook merge, server-release approval gate, private backups and code-only rollback preserving latest outbox/spool.
-- Fix independent-review findings: retain managed HTTP400/401 records across all hook/CLI/server consumers, require successful protected retention, sync retry directory entries before removing originals, keep remote retry workers alive for managed pending, and reject the unsupported native+fallback combination explicitly. Full suite: 2,770 passed / 0 failed / 4 existing opt-in skips; build and official checks pass; TypeScript retains 28 baseline diagnostics, no new diagnostics. Base: d9cef86.
-- This is an intermediate source port. Async embedding ACK/publication, capture/Viewer progress, full pause/pressure wiring and real III/Ollama/Codex/Windows integration gates remain separate. No operational rollout or long-term-memory write. Verification and review results are recorded in docs/customizations/PORT-04.md.
-
-### Personal fork — Serena analysis configuration (not deployed)
-
-- Add an editor-only JavaScript project for ops modules so runtime .mjs imports/calls are discoverable without changing the product TypeScript build or enabling JS type checking. Preserve .d.mts consumer boundaries.
-- Record local Serena workspace/memory setup, fresh-process verification and the existing MCP reconnect requirement in docs/customizations/SERENA-SETUP.md. Build passed; TypeScript retains 28 existing diagnostics, no new diagnostics. Product tests were not rerun for this analysis-only setting.
-- Confirm the next capture port has separate server and per-client hook/spool artifacts. Provider connectivity belongs to the AgentMemory worker; client updates apply only to participating capture environments. No fleet rollout, production change or AgentMemory long-term-memory write.
-
-### Personal fork — storage durability and verified shutdown (not deployed)
-
-- Track file KV mutations through a disk read-back/fsync fence, retain dirty generations on failure, and verify the same namespace inode before and after synchronization. SDK acknowledgement alone does not certify persistence.
-- Close external admission, await initialization and accepted work, stop timers, drain capture/health/access writes, save the index, then freeze and verify storage before writing the worker's durable shutdown receipt. Keep raw sources, checkpoints, retries and existing history.
-- Await existing slot initialization and expose workerReady to both CLI import callers. CLI stop verifies a fresh matching-PID receipt before stopping the engine or clearing runtime metadata; an unavailable file path or unsupported backend cannot receive disk certification.
-- Review regressions cover identical-content inode replacement, access writes after response completion, and active health collection. No new dependency, storage migration, provider activation, or operational deployment.
-- Validation and the corrected test isolation procedure are recorded in docs/customizations/PORT-03.md. The initial thread-mode test run created host adapter files; those generated files were reversibly quarantined after hash verification. Final verification uses default forks plus a real temporary parent HOME. Long-term memory remains pending manual review.
-
-### Personal fork — incremental summaries (not deployed)
-
-- Summarize only unprocessed source ranges and commit completed observation IDs, source offsets, pinned legacy projections and appended summary segments. Failed output or writes leave the last checkpoint intact; restarting resumes from the committed coordinate.
-- Preserve existing raw, summary segments and quarantine metadata/history. Repeated content failures isolate the affected record while other evidence continues; retries back off and concurrent requests for a session share one inference.
-- Retain the upstream XML helper and its chunk/retry/concurrency tests. The registered summarize path now follows the approved incremental JSON contract. No new dependency or store is introduced; operational provider/control integration and disk shutdown verification remain later port stages.
-- Stop the summary timer and drain in-flight checkpoints at shutdown before index/SDK closure. This is the minimum lifecycle connection for the new worker; full operational shutdown verification remains pending.
-- See `docs/customizations/PORT-02.md` for tests, type boundary, upstream replacement criteria and pending validation. This intermediate branch is not a deployment candidate. Long-term memory recording awaits separate manual review.
-
-### Personal fork — source preservation (not deployed)
-
-- Retain complete privacy-scrubbed capture evidence in `sourceRaw` before model compression, alongside the first synthetic reference. Successful recompression preserves both; a failed model call leaves the captured evidence available.
-- Keep internal raw/reference fields out of normal search/list/timeline/team/compression/stream projections. Explicit export/import and replay retain full evidence even beyond the bounded `source` projection.
-- Preserve complete scrubbed JSONL input and existing stock raw records during recompression. Replay retention metadata follows the complete raw evidence rather than a truncated or omitted source projection.
-- Preserve raw evidence when the source projection budget is exhausted. This is the first port unit; incremental summaries, worker scheduling, bounded KV readers and operational durability are still pending. See `docs/customizations/PORT-01.md` for scope, validation and upstream replacement criteria.
-- Durable memory recording is pending separate manual review; no production deployment or runtime version change has occurred.
+- **Publishing verifies the exact gated tarballs.** The workflow checks SHA512 integrity and signed provenance against the source repository, workflow, ref and commit before accepting an existing version or completing publication. Conflicting artifacts fail instead of being skipped.
+- Shared agent skills now describe the current runtime, credential discovery, native integrations and capture limits. The README and translations link to current setup, storage and upgrade guidance.
+- The Devin plugin manifest adds a display name and logo, says it is for Devin CLI and Devin Desktop only, and runs `@agentmemory/mcp` at the release version instead of the latest one. `npm run docs:sync` moves that pin on each version bump.
+- `@agentmemory/mcp` pins the exact matching `@agentmemory/agentmemory` release instead of a `~` range, so an installed shim never resolves a newer runtime than the one it was published with.
 
 ## [0.9.30] - 2026-10-06
 
@@ -668,28 +320,8 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
-[0.9.30-daniel.27]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.26...v0.9.30-daniel.27
-[0.9.30-daniel.26]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.25...v0.9.30-daniel.26
-[0.9.30-daniel.25]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.24...v0.9.30-daniel.25
-[0.9.30-daniel.24]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.22...v0.9.30-daniel.24
-[0.9.30-daniel.22]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.21...v0.9.30-daniel.22
-[0.9.30-daniel.21]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.20...v0.9.30-daniel.21
-[0.9.30-daniel.20]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.19...v0.9.30-daniel.20
-[0.9.30-daniel.19]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.18...v0.9.30-daniel.19
-[0.9.30-daniel.18]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.16...v0.9.30-daniel.18
-[0.9.30-daniel.16]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.15...v0.9.30-daniel.16
-[0.9.30-daniel.15]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.11...v0.9.30-daniel.15
-[0.9.30-daniel.11]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.10...v0.9.30-daniel.11
-[0.9.30-daniel.10]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.9...v0.9.30-daniel.10
-[0.9.30-daniel.9]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.8...v0.9.30-daniel.9
-[0.9.30-daniel.8]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.7...v0.9.30-daniel.8
-[0.9.30-daniel.7]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.6...v0.9.30-daniel.7
-[0.9.30-daniel.6]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.5...v0.9.30-daniel.6
-[0.9.30-daniel.5]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.4...v0.9.30-daniel.5
-[0.9.30-daniel.4]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.3...v0.9.30-daniel.4
-[0.9.30-daniel.3]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.2...v0.9.30-daniel.3
-[0.9.30-daniel.2]: https://github.com/rohitg00/agentmemory/compare/v0.9.30-daniel.1...v0.9.30-daniel.2
-[0.9.30-daniel.1]: https://github.com/Daniel-Hong/agentmemory/compare/v0.9.30...v0.9.30-daniel.1
+[0.9.31-daniel.1]: https://github.com/rohitg00/agentmemory/compare/v0.9.31...v0.9.31-daniel.1
+[0.9.31]: https://github.com/rohitg00/agentmemory/compare/v0.9.30...v0.9.31
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/rohitg00/agentmemory/compare/v0.9.28...v0.9.29
 [0.9.28]: https://github.com/rohitg00/agentmemory/compare/v0.9.27...v0.9.28

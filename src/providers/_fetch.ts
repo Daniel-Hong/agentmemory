@@ -15,8 +15,20 @@ const HARD_BUDGET_CAP_MS = 170000;
 const MIN_ATTEMPT_FLOOR_MS = 100;
 const RETRY_STATUS = new Set([429, 503]);
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * Parse a Retry-After header into a delay in milliseconds. Supports both the
@@ -56,37 +68,40 @@ export async function fetchWithTimeout(
   // capped so we never approach the iii invocation timeout.
   const budgetMs = Math.min(ms, HARD_BUDGET_CAP_MS);
   const start = Date.now();
-
-  const ctl = new AbortController();
+  // Fetch resolves at headers. Keep this same signal alive through retries
+  // and the caller's response-body reads, including non-success responses.
+  const deadline = AbortSignal.timeout(Math.max(1, Math.floor(budgetMs)));
   const signal = init.signal
-    ? AbortSignal.any([init.signal, ctl.signal])
-    : ctl.signal;
-  const timer = setTimeout(() => ctl.abort(), budgetMs);
-  try {
-    let response = await fetch(url, { ...init, signal });
-    for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
-      if (!RETRY_STATUS.has(response.status)) break;
+    ? AbortSignal.any([init.signal, deadline])
+    : deadline;
+  signal.throwIfAborted();
 
-      const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
-      const backoff = 500 * 2 ** (attempt - 1);
-      const delay = Math.min(retryAfter ?? backoff, MAX_RETRY_DELAY_MS);
-      const remaining = budgetMs - (Date.now() - start);
-      if (delay + MIN_ATTEMPT_FLOOR_MS > remaining) break;
+  let response = await fetch(url, { ...init, signal });
+  for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
+    if (!RETRY_STATUS.has(response.status)) return response;
 
-      // Release discarded responses without waiting for their body to finish.
-      await response.body?.cancel().catch(() => {});
-      await sleep(delay);
-      response = await fetch(url, { ...init, signal });
+    const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
+    // Exponential backoff fallback when no Retry-After: 500ms, 1000ms, ...
+    const backoff = 500 * 2 ** (attempt - 1);
+    const delay = Math.min(retryAfter ?? backoff, MAX_RETRY_DELAY_MS);
+
+    // Stop retrying if the sleep plus a minimal attempt would overrun the total
+    // budget — a hostile Retry-After that alone exceeds the remaining budget
+    // returns the last response instead of stalling the caller.
+    const elapsed = Date.now() - start;
+    const remaining = budgetMs - elapsed;
+    if (delay + MIN_ATTEMPT_FLOOR_MS > remaining) return response;
+
+    // This response is being discarded for a retry; release its body so the
+    // underlying connection is returned to the pool instead of leaking.
+    await response.body?.cancel().catch(() => {});
+    await sleep(delay, signal);
+
+    signal.throwIfAborted();
+    if (Date.now() - start >= budgetMs) {
+      throw new DOMException("Provider request timed out", "TimeoutError");
     }
-
-    // Every caller consumes non-streaming JSON/text; headers alone are not completion.
-    const body = response.body === null ? null : await response.arrayBuffer();
-    return new Response(body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  } finally {
-    clearTimeout(timer);
+    response = await fetch(url, { ...init, signal });
   }
+  return response;
 }

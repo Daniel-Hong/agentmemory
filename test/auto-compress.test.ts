@@ -85,11 +85,23 @@ describe("mem::observe auto-compress gate", () => {
     delete process.env["AGENTMEMORY_AUTO_COMPRESS"];
   });
 
-  it("publishes immediate sanitized synthetic content to the same-origin Viewer stream",async()=>{
-    const {registerObserveFunction}=await import("../src/functions/observe.js");
-    const {subscribeViewerEvents}=await import("../src/state/viewer-stream.js");
-    const messages:string[]=[];const off=subscribeViewerEvents(message=>{if(message)messages.push(message);});
-    try{const sdk=mockSdk(),kv=mockKV();registerObserveFunction(sdk as never,kv as never);await sdk.trigger("mem::observe",validPayload());const content=messages.map(s=>JSON.parse(s)).find(m=>m.event?.event?.type==="compressed_observation");expect(content).toBeTruthy();expect(JSON.stringify(content)).toContain("Read");expect(JSON.stringify(content)).not.toContain("sourceRaw");}finally{off();}
+  it("publishes immediate sanitized synthetic content to the Viewer SSE feed", async () => {
+    const { registerObserveFunction } = await import("../src/functions/observe.js");
+    const { onLiveEvent } = await import("../src/viewer/live-events.js");
+    const messages: Array<{ type: string; data: Record<string, unknown> }> = [];
+    const off = onLiveEvent(message => messages.push(message));
+    try {
+      const sdk = mockSdk(), kv = mockKV();
+      registerObserveFunction(sdk as never, kv as never);
+      const result = await sdk.trigger("mem::observe", validPayload()) as { observationId: string };
+      const content = messages.find(message => message.type === "compressed_observation");
+      expect(content).toBeTruthy();
+      expect(content!.data.observation).toMatchObject({ id: result.observationId, title: "Read", confidence: 0.3 });
+      expect(content!.data.observation).not.toHaveProperty("source");
+      expect(content!.data.observation).not.toHaveProperty("sourceRaw");
+      expect(content!.data.observation).not.toHaveProperty("syntheticCompression");
+      expect(sdk.triggered.filter(call => call.id === "mem::compress")).toHaveLength(0);
+    } finally { off(); }
   });
 
   it("default (AGENTMEMORY_AUTO_COMPRESS unset): does NOT fire mem::compress", async () => {
@@ -280,6 +292,36 @@ describe("buildSyntheticCompression", () => {
     expect(synth.narrative.length).toBeLessThanOrEqual(400);
   });
 
+  it("puts the assistant reply of a stop observation into the narrative", async () => {
+    const { buildSyntheticCompression } = await import(
+      "../src/functions/compress-synthetic.js"
+    );
+    const synth = buildSyntheticCompression({
+      id: "obs_5",
+      sessionId: "ses_1",
+      timestamp: new Date().toISOString(),
+      hookType: "stop",
+      assistantResponse: "We decided to use bge-m3 for Spanish embeddings.",
+      raw: {},
+    });
+    expect(synth.narrative).toBe("We decided to use bge-m3 for Spanish embeddings.");
+  });
+
+  it("keeps the opening and the end of a long reply without splitting a character", async () => {
+    const { buildSyntheticCompression } = await import(
+      "../src/functions/compress-synthetic.js"
+    );
+    const synth = buildSyntheticCompression({
+      id: "obs_6",
+      sessionId: "ses_1",
+      timestamp: new Date().toISOString(),
+      hookType: "stop",
+      assistantResponse: "a".repeat(199) + "😀" + "b".repeat(3000) + "😀" + "c".repeat(198),
+      raw: {},
+    });
+    expect(synth.narrative).toBe("a".repeat(199) + "…" + "c".repeat(198));
+  });
+
   it("maps post_tool_failure to the error type even with no tool name", async () => {
     const { buildSyntheticCompression } = await import(
       "../src/functions/compress-synthetic.js"
@@ -292,5 +334,17 @@ describe("buildSyntheticCompression", () => {
       raw: {},
     });
     expect(synth.type).toBe("error");
+  });
+});
+
+describe("buildCompressionPrompt", () => {
+  it("gives the model the assistant reply of a stop observation", async () => {
+    const { buildCompressionPrompt } = await import("../src/prompts/compression.js");
+    const prompt = buildCompressionPrompt({
+      hookType: "stop",
+      assistantResponse: "We decided to use bge-m3 for Spanish embeddings.",
+      timestamp: "2026-10-03T15:23:24.000Z",
+    });
+    expect(prompt).toContain("Assistant response:\nWe decided to use bge-m3 for Spanish embeddings.");
   });
 });

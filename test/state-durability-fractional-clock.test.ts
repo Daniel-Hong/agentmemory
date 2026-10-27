@@ -1,0 +1,9 @@
+import {afterEach,expect,it,vi}from'vitest';
+import{mkdtemp,writeFile,rm}from'node:fs/promises';import{tmpdir}from'node:os';import{join}from'node:path';
+import{createStateDurabilityFence}from'../src/ops/state-durability.mjs';
+const cleanups:Array<()=>Promise<unknown>>=[];afterEach(async()=>{for(const cleanup of cleanups.splice(0).reverse())await cleanup();});
+async function fixture(clock:()=>number){const dir=await mkdtemp(join(tmpdir(),'am-fractional-fence-'));await writeFile(join(dir,'synthetic.bin'),'{"one":1}');const fence=createStateDurabilityFence({storePath:dir,timeoutMs:100,pollIntervalMs:2,clock});cleanups.push(async()=>{await fence.drain();await rm(dir,{recursive:true,force:true});});return{fence,kv:{get:vi.fn(async()=>1)},keys:[{scope:'synthetic',key:'one'}]};}
+it('normalizes internally generated fractional admission without bypassing disk verification',async()=>{const f=await fixture(()=>Math.floor(performance.now())+0.5);expect(await f.fence.waitForKeys(f.kv,f.keys)).toMatchObject({synced:true});expect(f.kv.get).toHaveBeenCalled();});
+it('normalizes the shared group deadline for a fractional monotonic clock',async()=>{const f=await fixture(()=>Math.floor(performance.now())+0.5);expect(await f.fence.waitForKeyGroups(f.kv,[f.keys])).toMatchObject([{status:'fulfilled',value:{synced:true}}]);});
+it('keeps rejecting a fractional externally supplied deadline',async()=>{const f=await fixture(()=>0);await expect(f.fence.waitForKeys(f.kv,f.keys,{deadline:100.5})).rejects.toThrow('state_durability_deadline_invalid');expect(f.kv.get).not.toHaveBeenCalled();});
+it('does not shift the external deadline while sampling the start clock',async()=>{let calls=0,now=1;const f=await fixture(()=>calls++===0?0:now);f.kv.get.mockImplementation(async()=>{now=100;return 1;});await expect(f.fence.waitForKeys(f.kv,f.keys,{deadline:100})).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT'});});

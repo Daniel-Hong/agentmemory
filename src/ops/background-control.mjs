@@ -153,7 +153,7 @@ export function createBackgroundControl({clock=Date.now}={}){
  };
 }
 
-const INFERENCE_FUNCTIONS=new Set(['mem::summarize','mem::compress','mem::graph-extract','mem::consolidate','mem::consolidate-pipeline','mem::reflect','mem::slot-reflect','mem::flow-compress','mem::crystallize','mem::skill-extract','mem::enrich-window','mem::temporal-graph-extract','mem::compress-file','mem::expand-query','mem::snapshot-create']);
+const INFERENCE_FUNCTIONS=new Set(['mem::session-finalize','mem::summary-recover','mem::summary-repair','mem::compression-retry','mem::summarize','mem::compress','mem::graph-extract','mem::consolidate','mem::consolidate-pipeline','mem::reflect','mem::slot-reflect','mem::flow-compress','mem::crystallize','mem::skill-extract','mem::enrich-window','mem::temporal-graph-extract','mem::compress-file','mem::expand-query','mem::snapshot-create']);
 export function controlBackgroundFunctions(sdk){
  const register=sdk.registerFunction.bind(sdk);
  sdk.registerFunction=(id,handler,...rest)=>register(id,INFERENCE_FUNCTIONS.has(id)?backgroundTask(handler):handler,...rest);

@@ -1,12 +1,12 @@
-import { publishViewerEvent } from "../state/viewer-stream.js";
+import { withKeyedLock } from "../state/keyed-mutex.js";
+import { addSessionToProjectIndex } from "../state/session-index.js";
 import { operationalState } from "../ops/context.js";
 import { finishLongSession } from "../ops/long-session.mjs";
 import { TriggerAction, type IIIClient } from "iii-sdk";
 import type { CompressedObservation, HookPayload, Memory, Session } from "../types.js";
-import { KV, STREAM } from "../state/schema.js";
+import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
-import { addSessionToProjectIndex } from "../state/session-index.js";
-import { withKeyedLock } from "../state/keyed-mutex.js";
+import { emitLiveEvent } from "../viewer/live-events.js";
 import { isReflectEnabled } from "../functions/slots.js";
 import {
   detectLlmProviderKind,
@@ -110,20 +110,10 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
       return { session, context: contextResult.context };
     },
   );
-  sdk.registerTrigger({
-    type: "durable:subscriber",
-    function_id: "event::session::started",
-    config: { topic: "agentmemory.session.started" },
-  });
 
   sdk.registerFunction("event::observation", async (data: HookPayload) =>
     sdk.trigger({ function_id: "mem::observe", payload: data }),
   );
-  sdk.registerTrigger({
-    type: "durable:subscriber",
-    function_id: "event::observation",
-    config: { topic: "agentmemory.observation" },
-  });
 
   sdk.registerFunction("event::session::stopped", async (data: { sessionId: string; skipConsolidation?: boolean }) => {
     if(operationalState.featureLifecycle){
@@ -131,7 +121,8 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
       if(found)await operationalState.featureLifecycle.enqueue(data.sessionId);
       return {success:true,queued:found};
     }
-    const summary = await sdk.trigger({ function_id: "mem::summarize", payload: data });
+    const summary = await sdk.trigger<typeof data, { unchanged?: boolean } | undefined>({ function_id: "mem::summarize", payload: data });
+    if (summary?.unchanged === true) return summary;
     const fireVoid = (function_id: string, payload: unknown) =>
       sdk
         .trigger({ function_id, payload, action: TriggerAction.Void() })
@@ -186,11 +177,6 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
     }
     return summary;
   });
-  sdk.registerTrigger({
-    type: "durable:subscriber",
-    function_id: "event::session::stopped",
-    config: { topic: "agentmemory.session.stopped" },
-  });
 
   sdk.registerFunction(
     "event::session::ended",
@@ -220,11 +206,6 @@ export function registerEventTriggers(sdk: IIIClient, kv: StateKV): void {
       return { success: true, ended: true };
     },
   );
-  sdk.registerTrigger({
-    type: "durable:subscriber",
-    function_id: "event::session::ended",
-    config: { topic: "agentmemory.session.ended" },
-  });
 
   // React to observation count changes and emit a lightweight live event for dashboards/viewer.
   sdk.registerFunction(
@@ -322,15 +303,10 @@ export function isOutOfAgentScope(record: { agentId?: string } | undefined): boo
 }
 
 export async function sendViewerEvent(
-  sdk: IIIClient,
+  _sdk: IIIClient,
   id: string,
   type: string,
   data: Record<string, unknown>,
 ): Promise<void> {
-  await sdk.trigger({
-    function_id: "stream::send",
-    payload: { stream_name: STREAM.name, group_id: STREAM.viewerGroup, id, type, data },
-    action: TriggerAction.Void(),
-  });
-  publishViewerEvent(type, data);
+  emitLiveEvent({ id, type, data });
 }

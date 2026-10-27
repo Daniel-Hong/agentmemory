@@ -1,42 +1,96 @@
+import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { Socket } from "node:net";
-import { afterEach, describe, expect, it } from 'vitest';
-import { once } from 'node:events';
-import type { Server } from 'node:http';
-import { readFileSync } from 'node:fs';
-import WebSocket from 'ws';
-import { startViewerServer } from '../src/viewer/server.js';
-import { publishViewerEvent, subscribeViewerEvents } from '../src/state/viewer-stream.js';
-import { sendViewerEvent } from '../src/triggers/events.js';
-let server: Server; const clients: WebSocket[] = []; const rawSockets: Socket[] = [];
-afterEach(async () => { for (const c of rawSockets.splice(0)) c.destroy(); for (const c of clients.splice(0)) c.terminate(); if (server?.listening) await new Promise<void>(r => server.close(() => r())); delete process.env.VIEWER_ALLOWED_HOSTS; delete process.env.AGENTMEMORY_VIEWER_HOST; });
-async function start() { server = startViewerServer(0, null, null, 'fixture-secret', 49991); await once(server, 'listening'); const port = (server.address() as {port:number}).port; return {origin:`http://127.0.0.1:${port}`, url:`ws://127.0.0.1:${port}/agentmemory/viewer/stream`}; }
-async function open(url:string,origin:string) { const c = new WebSocket(url,{origin,handshakeTimeout:1000}); clients.push(c); await once(c,'open'); return c; }
-async function rejected(url:string,origin:string,headers?:Record<string,string>) { return await new Promise<number>((resolve,reject)=>{const c=new WebSocket(url,{origin,headers,handshakeTimeout:1000});clients.push(c);c.on('unexpected-response',(_q,r)=>{r.resume();resolve(r.statusCode!);});c.on('open',()=>reject(Error('unexpected open')));c.on('error',reject);}); }
-describe('same-origin read-only Viewer WebSocket', () => {
- it('receives new existing Viewer events without engine history',async()=>{const a=await start();const c=await open(a.url,a.origin);const result=once(c,'message');await sendViewerEvent({trigger:async()=>({})} as never,'fixture','health.changed',{report:{status:'ok'}});expect(JSON.parse(String((await result)[0]))).toEqual({type:'stream',event:{type:'event',event:{type:'health.changed',data:{report:{status:'ok'}}}}});});
- it('rejects hostile and absent origins',async()=>{const a=await start();expect(await rejected(a.url,'https://attacker.invalid')).toBe(403);expect(await rejected(a.url,'')).toBe(403);});
- it('rejects rebound Host',async()=>{const a=await start();expect(await rejected(a.url,'http://attacker.invalid',{Host:'attacker.invalid'})).toBe(403);});
- it('accepts explicitly trusted reverse proxy origin',async()=>{process.env.VIEWER_ALLOWED_HOSTS='viewer.fixture';const a=await start();const c=new WebSocket(a.url,{origin:'https://viewer.fixture',headers:{Host:'viewer.fixture'}});clients.push(c);await once(c,'open');expect(c.readyState).toBe(WebSocket.OPEN);});
- it('rejects other paths and query subscriptions',async()=>{const a=await start();expect(await rejected(a.url+'?group=private',a.origin)).toBe(404);expect(await rejected(a.url.replace('/agentmemory/viewer/stream','/'),a.origin)).toBe(404);});
- it('requires inbound bearer for non-loopback binds',async()=>{process.env.AGENTMEMORY_VIEWER_HOST='0.0.0.0';process.env.VIEWER_ALLOWED_HOSTS='viewer.fixture';const a=await start();expect(await rejected(a.url,'https://viewer.fixture',{Host:'viewer.fixture'})).toBe(401);});
- it('cannot send writes or alternate stream subscriptions',async()=>{const a=await start();const c=await open(a.url,a.origin);const ended=once(c,'close');c.send(JSON.stringify({type:'join',data:{streamName:'private'}}));expect((await ended)[0]).toBe(1008);});
- it('bounds oversized events without failing the publisher',async()=>{const a=await start();const c=await open(a.url,a.origin);const ended=once(c,'close');expect(()=>publishViewerEvent('fixture',{value:'x'.repeat(1024*1024)})).not.toThrow();expect((await ended)[0]).toBe(1009);});
- it('isolates broken subscribers from stream persistence',async()=>{const off=subscribeViewerEvents(()=>{throw Error('fixture');});try{await expect(sendViewerEvent({trigger:async()=>({})} as never,'fixture','health.changed',{})).resolves.toBeUndefined();}finally{off();}});
- it('closes active sockets when the Viewer stops',async()=>{const a=await start();const c=await open(a.url,a.origin);const closed=once(c,'close');await new Promise<void>(r=>server.close(()=>r()));await closed;expect(c.readyState).toBe(WebSocket.CLOSED);});
- it('routes compressed observations into the existing fresh-observation update',()=>{
-   const html=readFileSync('src/viewer/index.html','utf8');const start=html.indexOf('    function handleStreamEvent(');const end=html.indexOf('\n    function ',start+15);
-   const routed:unknown[]=[];const other:unknown[]=[];
-   const handle=runInNewContext('('+html.slice(start,end)+')',{looksLikeObservation:()=>true,routeWsMessage:(v:unknown)=>routed.push(v),handleLiveEvent:(...v:unknown[])=>other.push(v)});
-   const observation={id:'fixture',sessionId:'fixture-session'};
-   handle({event:{type:'event',event:{type:'compressed_observation',data:{observation}}}});
-   expect(routed).toEqual([{observation,fresh:true}]);expect(other).toEqual([]);
- });
- it('destroys rejected Upgrade sockets even when the peer keeps its write side open',async()=>{
-   const a=await start();const c=new Socket({allowHalfOpen:true});rawSockets.push(c);c.connect(Number(new URL(a.url).port),'127.0.0.1');await once(c,'connect');c.resume();
-   c.write('GET /agentmemory/viewer/stream HTTP/1.1\r\nHost: attacker.invalid\r\nOrigin: http://attacker.invalid\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n');
-   await once(c,'end');await new Promise(r=>setImmediate(r));
-   expect(await new Promise<number>((r,j)=>server.getConnections((e,n)=>e?j(e):r(n)))).toBe(0);
- });
- it('uses Viewer origin without livez internal-port override',()=>{const html=readFileSync('src/viewer/index.html','utf8');expect(html.includes("WS_URL = REST.replace(/^http/, 'ws') + '/agentmemory/viewer/stream'")).toBe(true);expect(html.includes("window.location.hostname + ':' + live.streamsPort")).toBe(false);});
+import { describe, expect, it } from "vitest";
+import { LiveEventsHub, onLiveEvent, type LiveEventWriter } from "../src/viewer/live-events.js";
+import { sendViewerEvent } from "../src/triggers/events.js";
+
+// Transport coverage moved to viewer-sse (auth, framing), viewer-sse-proxy
+// (disconnect/backpressure), viewer-security/viewer-host (Host/origin/bearer),
+// and live-events (heartbeat, slow readers, 32 subscribers). These preserve the
+// former custom publisher's nonfatal delivery and oversized-frame guarantees.
+class Writer extends EventEmitter {
+  writableLength = 0;
+  destroyed = false;
+  frames: string[] = [];
+  write(frame: string) { this.frames.push(frame); return true; }
+  destroy() { this.destroyed = true; this.emit("close"); return this; }
+}
+
+describe("Viewer SSE semantic guarantees after replacing WebSocket", () => {
+  it("receives new Viewer events without accessing engine history", async () => {
+    const events: unknown[] = [];
+    let engineCalls = 0;
+    const unsubscribe = onLiveEvent(event => events.push(event));
+    try {
+      await sendViewerEvent({ trigger: async () => { engineCalls++; } } as never,
+        "fixture", "health.changed", { report: { status: "ok" } });
+      expect(events).toEqual([{ id: "fixture", type: "health.changed", data: { report: { status: "ok" } } }]);
+      expect(engineCalls).toBe(0);
+    } finally { unsubscribe(); }
+  });
+
+  it("isolates broken event observers from accepted state changes", async () => {
+    const unsubscribe = onLiveEvent(() => { throw new Error("fixture observer failure"); });
+    try {
+      await expect(sendViewerEvent({} as never, "fixture", "health.changed", {})).resolves.toBeUndefined();
+    } finally { unsubscribe(); }
+  });
+
+  it("drops an oversized event before sending its first frame without failing the publisher", () => {
+    const hub = new LiveEventsHub();
+    const writer = new Writer();
+    const unsubscribe = hub.subscribe(writer as unknown as LiveEventWriter);
+    try {
+      expect(() => hub.emit({ id: "large", type: "fixture", data: { value: "x".repeat(1024 * 1024) } })).not.toThrow();
+      expect(writer.frames.length).toBe(0);
+      expect(writer.destroyed).toBe(true);
+      expect(hub.stats()).toMatchObject({ subscribers: 0, dropped: 1, eventsSent: 0 });
+    } finally { unsubscribe(); }
+  });
+
+  it("keeps unserializable display notifications nonfatal", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    await expect(sendViewerEvent({} as never, "cyclic", "fixture", circular)).resolves.toBeUndefined();
+  });
+
+  it("isolates a failed writer and delivers the event to healthy readers", () => {
+    const hub = new LiveEventsHub();
+    const broken = new Writer();
+    broken.write = () => { throw new Error("fixture writer failure"); };
+    const healthy = new Writer();
+    const cleanup = [hub.subscribe(broken as unknown as LiveEventWriter), hub.subscribe(healthy as unknown as LiveEventWriter)];
+    try {
+      expect(() => hub.emit({ id: "healthy", type: "health.changed", data: {} })).not.toThrow();
+      expect(broken.destroyed).toBe(true);
+      expect(healthy.frames).toHaveLength(1);
+      expect(hub.stats()).toMatchObject({ subscribers: 1, dropped: 1, eventsSent: 1 });
+    } finally { cleanup.forEach(unsubscribe => unsubscribe()); }
+  });
+
+  it("routes compressed SSE observations into the fresh-observation update", async () => {
+    const html = readFileSync("src/viewer/index.html", "utf8");
+    const start = html.indexOf("    function parseSseFrame(");
+    const end = html.indexOf("    var resyncing = null;", start);
+    const routed: unknown[] = [];
+    const controller = new AbortController();
+    const observation = { id: "fixture", sessionId: "fixture-session" };
+    const bytes = new TextEncoder().encode("event: compressed_observation\ndata: " + JSON.stringify({ data: { observation } }) + "\n\n");
+    let read = false;
+    const connect = runInNewContext(html.slice(start, end) + "\nconnectWs;", {
+      autoRefresh: { enabled: true }, wsReconnectTimer: null, conn: {}, liveAbortController: null,
+      AbortController: function () { return controller; }, LIVE_EVENTS_URL: "http://fixture/agentmemory/viewer/events",
+      getViewerToken: () => "", fetch: async () => ({ ok: true, body: { getReader: () => ({ read: async () => {
+        if (!read) { read = true; return { done: false, value: bytes }; }
+        controller.abort(); return { done: true };
+      } }) } }),
+      hideViewerAuthPrompt() {}, wsRetries: 0, wsHasConnected: false, wsOpenedAt: null,
+      setConnection() {}, updateFooter() {}, resyncAfterConnect: async () => {},
+      TextDecoder, store: {}, looksLikeObservation: () => true,
+      routeWsMessage: (event: unknown) => routed.push(event), handleLiveEvent() {}, console,
+    });
+    await connect();
+    expect(routed).toEqual([{ observation, fresh: true }]);
+  });
 });

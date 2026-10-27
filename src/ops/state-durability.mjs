@@ -61,7 +61,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     if(!Array.isArray(groups)||groups.length<1||groups.length>5||groups.some(group=>!Array.isArray(group)||!group.length||group.some(item=>typeof item.scope!=='string'||typeof item.key!=='string'))||groups.reduce((n,group)=>n+group.length,0)>200)throw Error('state_durability_groups_invalid');
     if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
     const selections=groups.map(group=>group.map(({scope,key})=>({scope,key})));
-    const batch={deadline:Math.min(deadline??Infinity,clock()+timeoutMs),closed:false};
+    const batch={deadline:Math.floor(Math.min(deadline??Infinity,clock()+timeoutMs)),closed:false};
     function close(){batch.closed=true;for(let i=groupedQueue.length-1;i>=0;i--)if(groupedQueue[i].batch===batch)groupedQueue.splice(i,1)[0].reject(captureTimeout());}
     const limited={get:(scope,key)=>new Promise((resolve,reject)=>{groupedQueue.push({kv,scope,key,resolve,reject,batch});pumpGets();})};
     const sharedSelection=new Map();
@@ -74,8 +74,9 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
     if(expectedValues!==undefined&&(!Array.isArray(expectedValues)||expectedValues.length!==selected.length))throw Error('state_durability_expectations_invalid');
     const pinned=expectedValues===undefined?undefined:structuredClone(expectedValues);
-    const budgetMs=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.max(0,deadline-clock()));
-    const began=clock(),expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
+    const began=clock();
+    const budgetMs=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.max(0,deadline-began));
+    const expected=new Map(),unchangedMismatches=new Map(),selectedRevisions=selected.map(item=>({...item,revision:item.revision??touched.get(item.scope)?.get(item.key)?.revision}));
     let stage='capture',capturedKeyCount=0,lastCode='STATE_NOT_COMMITTED',captureClosed=false;
     const details=()=>({category:'state_durability',errorCode:lastCode,stage,keyCount:selected.length,scopeCount:expected.size,capturedKeyCount,elapsedMs:Math.max(0,clock()-began),...(measurement?.certificateRef?{certificateRef:measurement.certificateRef}:{}),...(measurement?.readbackEvidence?.()?{reader:measurement.readbackEvidence()}:{})});
     const failed=()=>{const diagnostics=details();if(diagnostics.elapsedMs>=budgetMs)measurement?.event('deadline',undefined,{stage});lastVerification={status:'failed',at:clock(),...diagnostics,errorCode:'STATE_DURABILITY_TIMEOUT',causeCode:lastCode};return Object.assign(Error('state_durability_timeout'),{code:'STATE_DURABILITY_TIMEOUT',diagnostics});};
@@ -172,7 +173,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,budgetMs-(clock()-began)))));
     }
     throw failed();
-    },{deadline:began+budgetMs});
+    },{deadline:Math.floor(began+budgetMs)});
     }catch(error){
       if(typeof error?.code==='string'&&error.code.startsWith('STATE_READ_COORDINATION_')){outcome='failed';stage='admission';lastCode=error.code;measurement?.retry(lastCode,stage);throw failed();}
       throw error;

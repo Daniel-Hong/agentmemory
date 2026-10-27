@@ -1,10 +1,9 @@
-import WebSocket, { WebSocketServer } from "ws";
-import { subscribeViewerEvents } from "../state/viewer-stream.js";
 import {
   createServer,
   type Server,
   type IncomingMessage,
   type ServerResponse,
+  request as httpRequest,
 } from "node:http";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -344,48 +343,6 @@ export function startViewerServer(
     }
   });
 
-  // This endpoint cannot select an engine stream or send writes upstream.
-  const live = new WebSocketServer({ noServer: true, maxPayload: 1024 });
-  server.on("upgrade", (req, socket, head) => {
-    socket.on("error", () => {});
-    const reject = (status: number) => socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
-    const addr = server.address();
-    const actualPort = addr && typeof addr === "object" ? addr.port : port;
-    const hosts = allowedHosts ?? buildAllowedHosts(ALLOWED_ORIGINS, actualPort, host);
-    if (!isHostAllowed(req.headers.host, hosts)) { reject(403); return; }
-    const origin = req.headers.origin;
-    if (!origin || (origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}` &&
-        !(allowedOrigins ?? buildAllowedOrigins(actualPort, resolvedRestPort)).has(origin))) { reject(403); return; }
-    if (inboundSecret !== null && !requireInboundBearer(req.headers.authorization, inboundSecret)) { reject(401); return; }
-    if (req.method !== "GET" || req.url !== "/agentmemory/viewer/stream") { reject(404); return; }
-    if (live.clients.size >= 32) { reject(503); return; }
-    live.handleUpgrade(req, socket, head, client => {
-      live.emit("connection", client, req);
-      const unsubscribe = subscribeViewerEvents(message => {
-        if (client.readyState !== WebSocket.OPEN) return;
-        if (message === null || client.bufferedAmount > 1024 * 1024) { client.close(1009, "resync required"); return; }
-        client.send(message, error => { if (error) client.terminate(); });
-      });
-      let alive = true;
-      client.on("pong", () => { alive = true; });
-      client.on("message", () => client.close(1008, "read only"));
-      client.on("error", () => client.terminate());
-      const heartbeat = setInterval(() => {
-        if (!alive) { client.terminate(); return; }
-        alive = false; client.ping();
-      }, 30000);
-      heartbeat.unref();
-      client.once("close", () => { clearInterval(heartbeat); unsubscribe(); });
-    });
-  });
-  // HTTP close waits for upgraded sockets, so release them before closing the listener.
-  const closeHttp = server.close.bind(server);
-  server.close = (callback) => {
-    for (const client of live.clients) client.terminate();
-    live.close();
-    return closeHttp(callback);
-  };
-
   let attempt = 0;
   let currentPort = requestedPort;
 
@@ -491,6 +448,44 @@ async function proxyToRestApi(
     headers[marker] = "1";
   }
 
+  const cors = corsHeaders(req);
+  if (pathname === "/agentmemory/viewer/events") {
+    const headers: Record<string, string> = {};
+    if (secret) headers["Authorization"] = `Bearer ${secret}`;
+    const client = httpRequest(upstreamUrl, { method, headers });
+    const abortUpstream = () => client.destroy();
+    req.once("aborted", abortUpstream);
+    res.once("close", abortUpstream);
+    client.once("response", (upstream) => {
+      const responseHeaders: Record<string, string> = {
+        ...cors,
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+      };
+      const contentType = upstream.headers["content-type"];
+      if (contentType) responseHeaders["Content-Type"] = Array.isArray(contentType) ? contentType.join(", ") : contentType;
+      res.writeHead(upstream.statusCode ?? 502, responseHeaders);
+      upstream.on("data", (chunk: Buffer) => {
+        if (!res.write(chunk)) upstream.pause();
+      });
+      res.on("drain", () => upstream.resume());
+      upstream.once("end", () => { if (!res.destroyed) res.end(); });
+      upstream.once("error", () => { if (!res.destroyed) res.destroy(); });
+    });
+    client.once("error", (err) => {
+      if (!res.headersSent && !res.destroyed) json(res, 502, { error: "upstream error" }, req);
+      else if (!res.destroyed) res.destroy(err);
+    });
+    client.end();
+    await new Promise<void>((resolve) => {
+      res.once("close", resolve);
+      res.once("finish", resolve);
+    });
+    req.off("aborted", abortUpstream);
+    res.off("close", abortUpstream);
+    return;
+  }
+
   let body: string | undefined;
   if (method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") {
     body = await readBody(req);
@@ -517,16 +512,10 @@ async function proxyToRestApi(
   } finally {
     clearTimeout(fetchTimeout);
   }
-
-  const cors = corsHeaders(req);
-  const responseHeaders: Record<string, string> = {
-    ...cors,
-  };
+  const responseHeaders: Record<string, string> = { ...cors };
   const upstreamCt = upstream.headers.get("content-type");
-  if (upstreamCt) {
-    responseHeaders["Content-Type"] = upstreamCt;
-  }
-
+  if (upstreamCt) responseHeaders["Content-Type"] = upstreamCt;
   res.writeHead(upstream.status, responseHeaders);
   res.end(responseBody);
+  return;
 }

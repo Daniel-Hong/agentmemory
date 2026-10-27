@@ -4,7 +4,7 @@ import {readNamespaceEntries} from './namespace-reader.mjs';
 
 export function createGraphFileList({storePath}) {
   const pending=new Map(),uncertain=new Set();
-  const accepts=scope=>scope==='mem:graph:nodes'||scope==='mem:graph:edges';
+  const accepts=scope=>/^mem:graph:(?:nodes|edges)(?::generation:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(scope);
   function record(scope,key,value) {
     if(!accepts(scope)||value===undefined)return;
     if(!pending.has(scope))pending.set(scope,new Map());

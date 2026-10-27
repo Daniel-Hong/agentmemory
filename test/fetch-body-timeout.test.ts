@@ -24,7 +24,7 @@ it.each(['json', 'text'] as const)('bounds a %s body that never finishes after s
   const rescue = new AbortController();
   timers.push(setTimeout(() => rescue.abort(), 600));
   const began = Date.now();
-  await expect(fetchWithTimeout(url, { signal: rescue.signal }, 100).then(response => response[method]())).rejects.toMatchObject({ name: 'AbortError' });
+  await expect(fetchWithTimeout(url, { signal: rescue.signal }, 100).then(response => response[method]())).rejects.toMatchObject({ name: 'TimeoutError' });
   expect(Date.now() - began).toBeLessThan(450);
 });
 
@@ -36,7 +36,7 @@ it('uses one total deadline even while body chunks keep arriving', async () => {
   });
   const rescue = new AbortController(); timers.push(setTimeout(() => rescue.abort(), 600));
   const began = Date.now();
-  await expect(fetchWithTimeout(url, { signal: rescue.signal }, 100).then(response => response.text())).rejects.toMatchObject({ name: 'AbortError' });
+  await expect(fetchWithTimeout(url, { signal: rescue.signal }, 100).then(response => response.text())).rejects.toMatchObject({ name: 'TimeoutError' });
   expect(Date.now() - began).toBeLessThan(450);
 });
 
@@ -69,6 +69,6 @@ it('cancels an unfinished retry response and bounds the final body by the origin
   });
   const rescue = new AbortController(); timers.push(setTimeout(() => rescue.abort(), 800));
   const began = Date.now();
-  await expect(fetchWithTimeout(url, { signal: rescue.signal }, 250).then(response => response.json())).rejects.toMatchObject({ name: 'AbortError' });
+  await expect(fetchWithTimeout(url, { signal: rescue.signal }, 250).then(response => response.json())).rejects.toMatchObject({ name: 'TimeoutError' });
   expect(calls).toBe(2); expect(Date.now() - began).toBeLessThan(650);
 });

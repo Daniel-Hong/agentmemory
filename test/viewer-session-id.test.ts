@@ -140,8 +140,8 @@ function loadViewerSandbox() {
         removeItem: (key: string) => values.delete(key),
       };
     })(),
-    fetch: async () => ({ ok: true, json: async () => ({}) }),
-    WebSocket: function WebSocket() {},
+    fetch: async () => ({ ok: false, status: 404, body: null, json: async () => ({}) }),
+    TextDecoder: class TextDecoder { decode() { return ""; } },
     navigator: { userAgent: "vitest" },
     Element: function Element() {},
     alert: () => {},
@@ -151,30 +151,54 @@ function loadViewerSandbox() {
     clearTimeout: () => {},
     URLSearchParams,
     AbortController,
+    AbortSignal: { timeout: () => ({}) },
     Date,
     Math,
     Promise,
     JSON,
     Array,
     Object,
+    Map,
+    Set,
     String,
     Number,
     parseInt,
     encodeURIComponent,
+    queueMicrotask,
+    performance: { now: () => 0 },
   };
 
-  const scriptWithoutAutoStart = scriptMatch[1].replace(
-    /\n\s*loadTab\('dashboard'\);\n\s*connectWs\(\);\n\s*startDashboardAutoRefresh\(\);\s*$/,
-    "\n",
-  );
+  const scriptWithoutAutoStart = scriptMatch[1];
 
   vm.createContext(sandbox);
-  vm.runInContext(scriptWithoutAutoStart, sandbox);
+  try { vm.runInContext(scriptWithoutAutoStart, sandbox); } catch (err) { console.error("sandbox script failure", (err as Error).message, (err as Error).stack, scriptWithoutAutoStart.length, scriptWithoutAutoStart.slice(-700)); throw err; }
 
   return { sandbox, getElement };
 }
 
 describe("viewer session rendering", () => {
+  it("aborts live SSE and does not reconnect when automatic refresh is off", async () => {
+    const { sandbox } = loadViewerSandbox();
+    const controller = new AbortController();
+    let requests = 0;
+    sandbox.liveAbortController = controller;
+    sandbox.renderOperations = () => {};
+    sandbox.fetch = async () => {
+      requests++;
+      return { ok: false, status: 404, body: null };
+    };
+
+    sandbox.setAutoRefresh(false, 30);
+    await sandbox.connectWs();
+    sandbox.scheduleReconnect();
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(sandbox.liveAbortController).toBeNull();
+    expect(sandbox.wsReconnectTimer).toBeNull();
+    expect(requests).toBe(0);
+    expect(sandbox.conn.state).toBe("paused");
+  });
+
   it("attaches the saved viewer bearer to API calls", async () => {
     const { sandbox } = loadViewerSandbox();
     const requests: Array<{ url: string; opts: { headers?: Record<string, string> } }> = [];
