@@ -75,3 +75,8 @@ it('bounds a real hinted union over 4 MiB and falls back to each pair own select
  expect(results.map(x=>[...x.values.keys()])).toEqual([['a'],['b']]);expect(selections).toEqual([['a','b'],['a'],['b']]);
  expect(reader.snapshot()).toMatchObject({projectionFallbacks:2,startedReads:3,activeReads:0,activeWaiters:0});
 });
+it('keeps distinct chunk admission callbacks out of shared jobs',async()=>{
+ const path=await fixture('{"key":1}'),reader=createSharedNamespaceReader();let a=0,b=0;
+ await Promise.all([reader.read(path,{keys:new Set(['key']),withReadChunk:async(work:any)=>{a++;return work();}}),reader.read(path,{keys:new Set(['key']),withReadChunk:async(work:any)=>{b++;return work();}})]);
+ expect(a).toBe(1);expect(b).toBe(1);await reader.drain();expect(reader.snapshot().sharedRequests).toBe(0);
+});

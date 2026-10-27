@@ -7,8 +7,9 @@ const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctime
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,withReadChunk,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
+  if(withReadChunk!==undefined&&typeof withReadChunk!=='function')throw fail('state_namespace_chunk_coordinator_invalid');
   if(!Number.isSafeInteger(checkIntervalBytes)||checkIntervalBytes<0)throw fail('state_namespace_check_interval_invalid');
   if(maxSelectedBytes!==Infinity&&(!Number.isSafeInteger(maxSelectedBytes)||maxSelectedBytes<0))throw fail('state_namespace_projection_limit_invalid');
   if(maxFileBytes!==Infinity&&(!Number.isSafeInteger(maxFileBytes)||maxFileBytes<1))throw fail('state_namespace_file_limit_invalid');
@@ -83,7 +84,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
     signal?.throwIfAborted();
     stream=handle.createReadStream({autoClose:false,autoDestroy:false,highWaterMark:chunkSize,signal,...(maxFileBytes===Infinity?{}:{end:maxFileBytes-1})});
     progress('stream');
-    for await(const chunk of stream.iterator({destroyOnReturn:false})){
+    const processChunk=async chunk=>{
       progress('processing',{bytesRead});
       if(bytesRead+chunk.length>maxFileBytes)throw fail('state_namespace_file_limit');
       if(checkIntervalBytes&&bytesRead-lastSignatureCheck>=checkIntervalBytes){
@@ -112,8 +113,13 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       const prefix=chunk.subarray(0,end);bytesRead+=prefix.length;
       let text;try{text=utf8.decode(prefix,{stream:!prefixComplete});}catch{throw fail('state_namespace_utf8');}
       await consume(text);
-      if(prefixComplete)break;
+      if(prefixComplete)return true;
       progress('stream',{bytesRead});
+      return false;
+    };
+    for await(const chunk of stream.iterator({destroyOnReturn:false})){
+      const complete=withReadChunk?await withReadChunk(()=>processChunk(chunk),{signal}):await processChunk(chunk);
+      if(complete)break;
     }
     progress('stat',{bytesRead});
     const after=signature(await handle.stat({bigint:true}));

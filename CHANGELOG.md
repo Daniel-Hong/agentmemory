@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Coordinate observation bulk chunk processing with durable certification through bounded atomic admission; retain absolute deadlines, grouped sharing, physical-tail ownership, complete validation and fsync. Small synthetic comparisons improve certificate and small-request latency; production timeout reduction remains unverified. See docs/customizations/READ-COORDINATION.md.
+
 - Add bounded anonymous classification/admission/holder and event-loop-window evidence to existing storage verification diagnostics; preserve scheduling, deadlines, expected values, freshness and fsync. See docs/customizations/READ-ADMISSION-DIAGNOSTICS.md.
 
 - Refill the existing four SDK capture slots as lookups complete, instead of waiting at each four-request barrier. Preserve deadlines, expected-value checks and disk certification. This reduces synthetic mixed-latency capture cost but does not establish an operating readback fix. Development only; see docs/customizations/SDK-CAPTURE-WINDOW.md.

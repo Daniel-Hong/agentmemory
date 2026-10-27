@@ -5,8 +5,8 @@ import {readAdmissionEvidence} from './read-admission-evidence.mjs';
 import {readerEvidence} from './read-progress.mjs';
 import {stat} from 'node:fs/promises';
 
-export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64,maxSmallParallelReads=0,smallReadMaxBytes=1024*1024}={}){
-  if(!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1||!Number.isSafeInteger(maxSmallParallelReads)||maxSmallParallelReads<0||maxSmallParallelReads>1||!Number.isSafeInteger(smallReadMaxBytes)||smallReadMaxBytes<1)throw Error('state_namespace_admission_options');
+export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64,maxSmallParallelReads=0,smallReadMaxBytes=1024*1024,trackRead=work=>work()}={}){
+  if(typeof trackRead!=='function'||!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1||!Number.isSafeInteger(maxSmallParallelReads)||maxSmallParallelReads<0||maxSmallParallelReads>1||!Number.isSafeInteger(smallReadMaxBytes)||smallReadMaxBytes<1)throw Error('state_namespace_admission_options');
   const jobs=new Set(),reads=new Set(),pendingRequests=new Set(),admissions=new Set(),jobWork=new Set(),waiting=[];
   let admitted=0,admittedSmall=0,peakQueued=0,admissionRejected=0;
   const holders=new Set(),lastHolders=new Map();let loopHistogram,loopWindowStart;
@@ -61,7 +61,8 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   const metadata=info=>{const result={};try{for(const key of ['fileBytes','bytesRead'])if(Number.isSafeInteger(info?.[key])&&info[key]>=0)result[key]=info[key];if(typeof info?.complete==='boolean')result.complete=info.complete;}catch{}return result;};
   const diagnose=(options,event)=>notify(()=>options.onDiagnostic?.({...event}));
   function status(job){const value={};try{Object.assign(value,{started:job.started===true,...job.openedInfo,...readerEvidence(job.progress),admission:admission(job)});if(job.cpuStart&&job.progress){const cpu=process.cpuUsage(job.cpuStart),loop=performance.eventLoopUtilization(job.loopStart);value.processCpuMs=(cpu.user+cpu.system)/1000;value.eventLoopActiveMs=Math.max(0,loop.active);value.eventLoopIdleMs=Math.max(0,loop.idle);}const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);}catch{}return value;}
-  async function actual(path,options,job={readId:nextId()}){
+  function actual(path,options,job={readId:nextId()}){return trackRead(()=>classifiedRead(path,options,job));}
+  async function classifiedRead(path,options,job){
     options.signal?.throwIfAborted();
     diagnosticSafe(()=>{job.classificationStartedAt=now();job.admissionPhase='classifying';job.classificationPerformed=Boolean(maxSmallParallelReads);job.requestCpuStart=process.cpuUsage();job.requestLoopStart=performance.eventLoopUtilization();boundary(job,options,'classifying');});
     let small=false;
@@ -124,7 +125,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     const {joinKeys,...readOptions}=options;options=readOptions;
     const keys=new Set(options.keys??[]),requestedKeys=new Set([...keys,...(joinKeys??[])]);
     const hinted=requestedKeys.size>keys.size;
-    if(options.onEntry||options.maxSelectedBytes!==undefined||options.allowProjectionOverflow!==undefined){counts.directFallbacks++;return baseline(path,options);}
+    if(options.onEntry||options.withReadChunk!==undefined||options.maxSelectedBytes!==undefined||options.allowProjectionOverflow!==undefined){counts.directFallbacks++;return baseline(path,options);}
     let job=[...jobs].find(j=>j.joinable&&j.path===path&&j.waiters.size<maxWaiters&&
       (j.options.checkIntervalBytes??0)===(options.checkIntervalBytes??0)&&
       (j.options.chunkSize??64*1024)===(options.chunkSize??64*1024)&&

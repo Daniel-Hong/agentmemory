@@ -33,6 +33,7 @@ export function sessionStats(rows){
 export function createObservationReader({storePath,kv}){
  if(!isAbsolute(storePath))throw fail('absolute_state_store_path_required');
  const activeMutations=new Map();
+ const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function revision(scope){
@@ -61,7 +62,7 @@ export function createObservationReader({storePath,kv}){
      for(let attempt=0;;attempt++){
       initial.clear();
       try{
-       await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{onEntry:(key,value)=>{
+       await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{withReadChunk:bulkRead,onEntry:(key,value)=>{
         if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
         if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
         initial.set(key,observationBudgetEntry(value));
@@ -119,7 +120,7 @@ export function createObservationReader({storePath,kv}){
   // Internal callers need complete rows; stream the file rather than amplify it into one SDK request per row.
   for(let attempt=0;;attempt++){
    rows.clear();
-   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{onEntry:(key,value)=>{
+   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{withReadChunk:bulkRead,onEntry:(key,value)=>{
     if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
     if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
     rows.set(key,value);

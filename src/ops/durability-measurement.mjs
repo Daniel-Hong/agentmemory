@@ -8,6 +8,7 @@ const EVENTS=new Set(['read_classification_failed','read_classifying','read_clas
 const safe=(work,fallback)=>{try{return work();}catch{return fallback;}};
 const number=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?Math.min(value,Number.MAX_SAFE_INTEGER):null;
 const REASONS=new Map(Object.entries({
+  STATE_READ_COORDINATION_TIMEOUT:'coordination_timeout',STATE_READ_COORDINATION_LIMIT:'coordination_limit',STATE_READ_COORDINATION_REENTRANT:'coordination_reentrant',
   state_namespace_changed:'namespace_changed',state_namespace_not_committed:'not_committed',
   STATE_READBACK_TIMEOUT:'readback_timeout',STATE_CAPTURE_TIMEOUT:'capture_timeout',
   STATE_DURABILITY_TIMEOUT:'deadline',state_namespace_corrupt:'invalid_namespace',
@@ -43,7 +44,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
     increment(totals,'completed');
     increment(totals,outcome==='verified'?'verified':outcome==='failed'?'failed':'unknown');
     if(outcome==='failed'){
-      const safeStage=['capture','readback','fsync','verify','cleanup','retryWait'].includes(stage)?stage:'other';
+      const safeStage=['admission','capture','readback','fsync','verify','cleanup','retryWait'].includes(stage)?stage:'other';
       increment(totals.failedStages,safeStage);
       increment(totals.failureReasons,stage==='capture'?captureReason(code):reason(code));
     }
@@ -58,7 +59,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
     const began=clock();
     if(number(began)===null)return null;
     let mark=began,phase='capture',closed=false,valid=true,checkAttempts=0,retryCount=0,failedStage=null,lastFailureReason=null;
-    const phases={captureMs:0,readbackMs:0,fsyncMs:0,verifyMs:0,cleanupMs:0,retryWaitMs:0};
+    const phases={admissionMs:0,captureMs:0,readbackMs:0,fsyncMs:0,verifyMs:0,cleanupMs:0,retryWaitMs:0};
     const retryReasons={},namespaces=new Map();
     let namespaceCount=0,scans=0,scanBytes=0,unchangedMismatchSkips=0,sharedReads=0;
     for(const scope of scopes){
@@ -94,7 +95,7 @@ export function createDurabilityMeasurements({clock=()=>performance.now(),wallCl
         for(const key of ['readId','bytesRead','fileBytes','ageMs','capturedKeyCount']){const value=number(info[key]);if(value!==null&&(key!=='readId'||Number.isSafeInteger(value)))entry[key]=value;}
         for(const key of ['shared','started','complete','valueChanged','generationChanged'])if(typeof info[key]==='boolean')entry[key]=info[key];
         if(['missing','retry_generation','value'].includes(info.mismatch))entry.mismatch=info.mismatch;
-        if(['capture','readback','fsync','verify'].includes(info.stage))entry.stage=info.stage;
+        if(['admission','capture','readback','fsync','verify'].includes(info.stage))entry.stage=info.stage;
         if(timeline.length<EVENT_LIMIT)timeline.push(entry);else{timeline[EVENT_LIMIT-1]=entry;omittedEvents++;}
       });},
       enter(next){observe(()=>advance(next));},

@@ -2,6 +2,7 @@ import {open,stat} from 'node:fs/promises';
 import {isAbsolute,join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {createSharedNamespaceReader} from './shared-namespace-reader.mjs';
+import {createReadCoordinator} from './read-coordinator.mjs';
 import {createDurabilityMeasurements} from './durability-measurement.mjs';
 const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');
 
@@ -26,7 +27,8 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),touched=new Map(),pruneAttempts=new Map();
   const measurements=createDurabilityMeasurements();
-  const readSharing=createSharedNamespaceReader({maxParallelReads:1,maxSmallParallelReads:1});
+  const readCoordinator=createReadCoordinator({clock});
+  const readSharing=createSharedNamespaceReader({maxParallelReads:1,maxSmallParallelReads:1,trackRead:work=>readCoordinator.trackPhysical(work)});
   function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
@@ -40,7 +42,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     remember(scope,key);const promise=Promise.resolve().then(fn);active.add(promise);
     promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
   }
-  async function drain(){while(active.size)await Promise.allSettled([...active]);await readSharing.drain();}
+  async function drain(){while(active.size)await Promise.allSettled([...active]);await readSharing.drain();await readCoordinator.drain();}
   // Slots belong to this fence, so timed-out SDK calls still occupy capacity.
   let groupedGets=0;const groupedQueue=[];
   const captureTimeout=()=>Object.assign(Error('state_capture_timeout'),{code:'STATE_DURABILITY_TIMEOUT'});
@@ -87,6 +89,9 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const measurement=measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began});
     let outcome='failed';
     try{
+    stage='admission';measurement?.enter('admission');
+    return await readCoordinator.run('critical',async()=>{
+    stage='capture';measurement?.enter('capture');
     let captureFailed=false,captureError,nextCapture=0;
     async function captureNext(){
       while(!captureClosed&&nextCapture<selected.length){
@@ -167,6 +172,10 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,budgetMs-(clock()-began)))));
     }
     throw failed();
+    },{deadline:began+budgetMs});
+    }catch(error){
+      if(typeof error?.code==='string'&&error.code.startsWith('STATE_READ_COORDINATION_')){outcome='failed';stage='admission';lastCode=error.code;measurement?.retry(lastCode,stage);throw failed();}
+      throw error;
     }finally{measurement?.finish(outcome,lastCode,stage);measurements.complete(outcome,stage,lastCode);}
   }
   async function publishScopes(kv,selected){
@@ -195,5 +204,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot(),readSharing:readSharing.snapshot()})};
+  return {withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot(),readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
 }
