@@ -6,11 +6,11 @@ it('wraps both raw bulk paths and releases their leases before overlay SDK reads
  const kv={durability:{withBulkRead:async(work:any)=>{bulk++;held=true;try{return await work();}finally{held=false;}}},get:async()=>{expect(held).toBe(false);gets++;return next;}};
  const reader=createObservationReader({storePath:dir,kv});reader.record(scope,'k',next);expect((await reader.list(scope))[0]).toEqual(next);await reader.captureSummary(scope);expect(bulk).toBe(2);expect(gets).toBe(1);
 });
-it('atomically keeps simultaneous full list work behind a held certificate capture',async()=>{
- const{dir,scope,value}=await fixture();const fence=createStateDurabilityFence({storePath:dir});let release:any,gets=0,listFinished=false;
+it('does not hold physical exclusion during SDK capture and still verifies the captured value',async()=>{
+ const{dir,scope,value}=await fixture();const fence=createStateDurabilityFence({storePath:dir});let release:any,gets=0,proofFinished=false;
  const kv={durability:fence,get:async()=>{gets++;return new Promise(resolve=>release=()=>resolve(value));}};const reader=createObservationReader({storePath:dir,kv});
- const list=reader.list(scope).then((v:any)=>{listFinished=true;return v;});const proof=fence.waitForKeys(kv,[{scope,key:'k'}]);await vi.waitFor(()=>expect(gets).toBe(1));
- try{expect(listFinished).toBe(false);expect(fence.snapshot().readCoordination).toMatchObject({activeCritical:1,activeBulk:false,queuedBulk:1});}
- finally{release();await proof;await list;await fence.drain();}
- expect(listFinished).toBe(true);expect(fence.snapshot().measurements.totals.failed).toBe(0);
+ const list=reader.list(scope);const proof=fence.waitForKeys(kv,[{scope,key:'k'}]).then((v:any)=>{proofFinished=true;return v;});await vi.waitFor(()=>expect(gets).toBe(1));
+ try{expect(await list).toEqual([value]);expect(proofFinished).toBe(false);expect(fence.snapshot().readCoordination).toMatchObject({activeCritical:0,activeBulk:false,queuedBulk:0});}
+ finally{release();expect(await proof).toMatchObject({synced:true});await fence.drain();}
+ expect(proofFinished).toBe(true);expect(fence.snapshot().measurements.totals.failed).toBe(0);
 });

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Admit owned physical namespace jobs rather than whole certificates, allowing compatible late callers to join before new-read arbitration. Preserve caller deadlines, strict proof checks, non-sliding job lifetime, logical certificate drain and bulk fairness. Development only; see docs/customizations/PHYSICAL-READ-ADMISSION.md.
+
 - Align capture receipt payload normalization with the unchanged structured observe privacy contract. Preserve collision-suffixed keys, field boundaries, legacy source digests, fail-closed receipt verification, pending originals and recovery budgets. Development only; see docs/customizations/UPSTREAM-0.9.31-INTEGRATION.md.
 
 

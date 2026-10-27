@@ -1,10 +1,12 @@
 import {open,stat} from 'node:fs/promises';
+import {AsyncLocalStorage} from 'node:async_hooks';
 import {isAbsolute,join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import {createSharedNamespaceReader} from './shared-namespace-reader.mjs';
 import {createReadCoordinator} from './read-coordinator.mjs';
 import {createDurabilityMeasurements} from './durability-measurement.mjs';
 const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');
+const MAX_SHARED_READ_MS=15_000;
 
 export function namespaceJson(buffer){
   // iii file_based namespaces archive a JSON String followed by rkyv metadata.
@@ -26,9 +28,10 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||!Number.isSafeInteger(pollIntervalMs)||pollIntervalMs<1)throw Error('state_durability_interval_invalid');
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),touched=new Map(),pruneAttempts=new Map();
+  const certificates=new Set(),certificateContext=new AsyncLocalStorage();
   const measurements=createDurabilityMeasurements();
   const readCoordinator=createReadCoordinator({clock});
-  const readSharing=createSharedNamespaceReader({maxParallelReads:1,maxSmallParallelReads:1,trackRead:work=>readCoordinator.trackPhysical(work)});
+  const readSharing=createSharedNamespaceReader({maxParallelReads:1,maxSmallParallelReads:1,maxJobMs:MAX_SHARED_READ_MS,trackRead:(work,options)=>readCoordinator.run('critical',work,options)});
   function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
@@ -42,7 +45,14 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     remember(scope,key);const promise=Promise.resolve().then(fn);active.add(promise);
     promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
   }
-  async function drain(){while(active.size)await Promise.allSettled([...active]);await readSharing.drain();await readCoordinator.drain();}
+  async function drain(){
+    if(certificateContext.getStore()?.active)throw Object.assign(Error('state_read_coordination_reentrant'),{code:'STATE_READ_COORDINATION_REENTRANT'});
+    await readCoordinator.drain();
+    do{
+      while(active.size||certificates.size)await Promise.allSettled([...active,...certificates]);
+      await readSharing.drain();await readCoordinator.drain();
+    }while(active.size||certificates.size);
+  }
   // Slots belong to this fence, so timed-out SDK calls still occupy capacity.
   let groupedGets=0;const groupedQueue=[];
   const captureTimeout=()=>Object.assign(Error('state_capture_timeout'),{code:'STATE_DURABILITY_TIMEOUT'});
@@ -70,7 +80,14 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     try{return await Promise.allSettled(selections.map(selected=>waitForKeys(limited,selected,{deadline:batch.deadline},sharedSelection)));}
     finally{clearTimeout(timer);close();}
   }
-  async function waitForKeys(kv,selected,{deadline,expectedValues}={},sharedSelection){
+  function waitForKeys(...args){
+    if(certificateContext.getStore()?.active)return Promise.reject(Object.assign(Error('state_read_coordination_reentrant'),{code:'STATE_READ_COORDINATION_REENTRANT'}));
+    const token={active:true},pending=certificateContext.run(token,()=>verifyKeys(...args));
+    certificates.add(pending);
+    const settled=()=>{token.active=false;certificates.delete(pending);};pending.then(settled,settled);
+    return pending;
+  }
+  async function verifyKeys(kv,selected,{deadline,expectedValues}={},sharedSelection){
     if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
     if(expectedValues!==undefined&&(!Array.isArray(expectedValues)||expectedValues.length!==selected.length))throw Error('state_durability_expectations_invalid');
     const pinned=expectedValues===undefined?undefined:structuredClone(expectedValues);
@@ -90,8 +107,6 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     const measurement=measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began});
     let outcome='failed';
     try{
-    stage='admission';measurement?.enter('admission');
-    return await readCoordinator.run('critical',async()=>{
     stage='capture';measurement?.enter('capture');
     let captureFailed=false,captureError,nextCapture=0;
     async function captureNext(){
@@ -173,7 +188,6 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       await new Promise(resolve=>setTimeout(resolve,Math.min(pollIntervalMs,Math.max(1,budgetMs-(clock()-began)))));
     }
     throw failed();
-    },{deadline:Math.floor(began+budgetMs)});
     }catch(error){
       if(typeof error?.code==='string'&&error.code.startsWith('STATE_READ_COORDINATION_')){outcome='failed';stage='admission';lastCode=error.code;measurement?.retry(lastCode,stage);throw failed();}
       throw error;

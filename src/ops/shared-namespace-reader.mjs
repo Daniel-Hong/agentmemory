@@ -5,8 +5,8 @@ import {readAdmissionEvidence} from './read-admission-evidence.mjs';
 import {readerEvidence} from './read-progress.mjs';
 import {stat} from 'node:fs/promises';
 
-export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64,maxSmallParallelReads=0,smallReadMaxBytes=1024*1024,trackRead=work=>work()}={}){
-  if(typeof trackRead!=='function'||!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1||!Number.isSafeInteger(maxSmallParallelReads)||maxSmallParallelReads<0||maxSmallParallelReads>1||!Number.isSafeInteger(smallReadMaxBytes)||smallReadMaxBytes<1)throw Error('state_namespace_admission_options');
+export function createSharedNamespaceReader({read=readNamespaceEntries,maxActiveReads=8,maxWaiters=8,maxKeys=200,maxSelectedBytes=4*1024*1024,maxParallelReads=8,maxQueuedReads=64,maxSmallParallelReads=0,smallReadMaxBytes=1024*1024,maxJobMs=Infinity,trackRead=work=>work()}={}){
+  if(typeof trackRead!=='function'||!Number.isSafeInteger(maxParallelReads)||maxParallelReads<1||!Number.isSafeInteger(maxQueuedReads)||maxQueuedReads<1||!Number.isSafeInteger(maxSmallParallelReads)||maxSmallParallelReads<0||maxSmallParallelReads>1||!Number.isSafeInteger(smallReadMaxBytes)||smallReadMaxBytes<1||(maxJobMs!==Infinity&&(!Number.isSafeInteger(maxJobMs)||maxJobMs<1)))throw Error('state_namespace_admission_options');
   const jobs=new Set(),reads=new Set(),pendingRequests=new Set(),admissions=new Set(),jobWork=new Set(),waiting=[];
   let admitted=0,admittedSmall=0,peakQueued=0,admissionRejected=0;
   const holders=new Set(),lastHolders=new Map();let loopHistogram,loopWindowStart;
@@ -61,7 +61,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
   const metadata=info=>{const result={};try{for(const key of ['fileBytes','bytesRead'])if(Number.isSafeInteger(info?.[key])&&info[key]>=0)result[key]=info[key];if(typeof info?.complete==='boolean')result.complete=info.complete;}catch{}return result;};
   const diagnose=(options,event)=>notify(()=>options.onDiagnostic?.({...event}));
   function status(job){const value={};try{Object.assign(value,{started:job.started===true,...job.openedInfo,...readerEvidence(job.progress),admission:admission(job)});if(job.cpuStart&&job.progress){const cpu=process.cpuUsage(job.cpuStart),loop=performance.eventLoopUtilization(job.loopStart);value.processCpuMs=(cpu.user+cpu.system)/1000;value.eventLoopActiveMs=Math.max(0,loop.active);value.eventLoopIdleMs=Math.max(0,loop.idle);}const current=now();if(current!==null&&job.startedAt!==null&&job.startedAt!==undefined)value.ageMs=Math.max(0,current-job.startedAt);}catch{}return value;}
-  function actual(path,options,job={readId:nextId()}){return trackRead(()=>classifiedRead(path,options,job));}
+  function actual(path,options,job={readId:nextId()}){return trackRead(()=>classifiedRead(path,options,job),{signal:options.signal});}
   async function classifiedRead(path,options,job){
     options.signal?.throwIfAborted();
     diagnosticSafe(()=>{job.classificationStartedAt=now();job.admissionPhase='classifying';job.classificationPerformed=Boolean(maxSmallParallelReads);job.requestCpuStart=process.cpuUsage();job.requestLoopStart=performance.eventLoopUtilization();boundary(job,options,'classifying');});
@@ -119,7 +119,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
       job.joinable=false;
       for(const waiter of [...job.waiters])waiter.finish(error?.code==='state_namespace_projection_limit'?null:error,
         error?.code==='state_namespace_projection_limit'?{fallback:true}:undefined);
-    }finally{job.joinable=false;jobs.delete(job);}
+    }finally{clearTimeout(job.timer);job.joinable=false;jobs.delete(job);}
   }
   async function shared(path,options){
     const {joinKeys,...readOptions}=options;options=readOptions;
@@ -137,6 +137,7 @@ export function createSharedNamespaceReader({read=readNamespaceEntries,maxActive
     const joined=Boolean(job);
     if(!job){
       job={path,options,keys:new Set(requestedKeys),hinted,started:false,startedAt:null,openedInfo:null,readId:nextId(),joinable:true,controller:new AbortController(),waiters:new Set()};
+      if(maxJobMs!==Infinity)job.timer=setTimeout(()=>{job.joinable=false;job.controller.abort(Object.assign(Error('state_namespace_job_timeout'),{code:'state_namespace_job_timeout'}));},maxJobMs);
       jobs.add(job);counts.peakSharedJobs=Math.max(counts.peakSharedJobs,jobs.size);
       queueMicrotask(()=>{const work=start(job);jobWork.add(work);void work.finally(()=>jobWork.delete(work));});
     }else if(!job.started){for(const key of requestedKeys)job.keys.add(key);job.hinted||=hinted;}

@@ -1,5 +1,7 @@
 # Atomic scan coordination
 
+The whole-certificate lease described below is the historical .32 design and experiment. The development successor moves admission to physical jobs while preserving logical certificate drain; see [PHYSICAL-READ-ADMISSION.md](PHYSICAL-READ-ADMISSION.md). This note retains the earlier measurements and limitations rather than presenting them as results for the new boundary.
+
 The actual list/fence3MiB comparison showed certificate234–249ms overlapping a full list versus88–112ms when the certificate ran first, with similar total work time. This demonstrates contention, not a proven fix for the operating293MiB failure.
 
 A per-fence read coordinator grants shared critical certificate leases and exclusive bulk chunk-processing leases. The two independent observation bulk scan paths use the same coordinator through `withBulkRead`. Admission is atomic and bounded to64queued requests. Up to five consecutive critical grants are permitted while bulk waits, then new critical grants close until current holders and their physical tails settle and one bulk runs. Grouped sibling certificates retain shared admission and existing SDK/read concurrency. An already-running bulk scan yields only at its existing chunk boundary; no forced abort or process preemption. Native stream I/O may overlap; chunk parsing and callbacks do not overlap critical leases. The same file handle/signatures validate the entire scan after any pause.
