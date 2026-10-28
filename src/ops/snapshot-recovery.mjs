@@ -2,6 +2,35 @@ import {mkdir,chmod,lstat,open,rename,unlink,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 
+async function* bufferedSnapshotChunks(content,signal){
+ const capacity=64*1024,encoder=new TextEncoder();
+ let buffer=Buffer.allocUnsafe(capacity),used=0;
+ for await(const chunk of content){
+  signal?.throwIfAborted();
+  if(typeof chunk==='string'){
+   let offset=0;
+   while(offset<chunk.length){
+    signal?.throwIfAborted();
+    const {read,written}=encoder.encodeInto(chunk.slice(offset),buffer.subarray(used));
+    offset+=read;used+=written;
+    if(used===capacity||read===0){yield buffer.subarray(0,used);buffer=Buffer.allocUnsafe(capacity);used=0;}
+   }
+  }else{
+   if(!ArrayBuffer.isView(chunk))throw new TypeError('snapshot chunk must be a string or buffer view');
+   const bytes=Buffer.from(chunk.buffer,chunk.byteOffset,chunk.byteLength);
+   let offset=0;
+   while(offset<bytes.length){
+    signal?.throwIfAborted();
+    const count=Math.min(capacity-used,bytes.length-offset);
+    bytes.copy(buffer,used,offset,offset+count);offset+=count;used+=count;
+    if(used===capacity){yield buffer;buffer=Buffer.allocUnsafe(capacity);used=0;}
+   }
+  }
+ }
+ signal?.throwIfAborted();
+ if(used)yield buffer.subarray(0,used);
+}
+
 export async function ensurePrivateSnapshotDir(dir){
  await mkdir(dir,{recursive:true,mode:0o700});
  if(!(await lstat(dir)).isDirectory())throw Object.assign(Error('invalid_snapshot_directory'),{code:'SNAPSHOT_DIRECTORY'});
@@ -15,7 +44,8 @@ export async function publishSnapshotFile(dir,name,content,{signal}={}){
  let file;
  try{
   file=await open(temp,'wx',0o600);
-  await file.writeFile(content,{encoding:'utf8',signal});signal?.throwIfAborted();await file.sync();await file.close();file=null;
+  const output=typeof content==='string'||ArrayBuffer.isView(content)?content:bufferedSnapshotChunks(content,signal);
+  await file.writeFile(output,{encoding:'utf8',signal});signal?.throwIfAborted();await file.sync();await file.close();file=null;
   signal?.throwIfAborted();
   await rename(temp,path);
   const directory=await open(dir,'r');try{await directory.sync();}finally{await directory.close();}

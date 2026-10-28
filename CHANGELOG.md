@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — bounded snapshot output buffering
+
+- Coalesce iterable snapshot fragments into at most 64KiB output buffers without assembling the archive string. Preserve UTF-8/binary bytes, sequential backpressure, cancellation and existing fsync/atomic-publication/cleanup boundaries. Development only; running .36 remains unchanged. See docs/customizations/SNAPSHOT-BUFFERED-PUBLICATION.md.
+
 ## Unreleased — snapshot streaming JSON
 
 - Serialize snapshot records directly into the existing private temp-file/fsync/atomic-rename publication, and parse committed Git stdout by record before any restore write; keep the same JSON schema and pretty representation. No whole-archive string is required on either path.
