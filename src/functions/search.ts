@@ -470,6 +470,23 @@ export async function findUnindexedObservations(
   return { sessions: sessions.length, missing }
 }
 
+export async function countUnindexedObservations(kv: StateKV): Promise<{ sessions: number; missing: number }> {
+  const idx = getSearchIndex()
+  const sessions = await kv.list<Session>(KV.sessions)
+  const indexed = idx.observationCountsBySession()
+  let missing = 0
+  for (const session of sessions) {
+    const known = session.observationCount ?? 0
+    if (known > 0 && known <= (indexed.get(session.id) ?? 0)) continue
+    const scope = KV.observations(session.id)
+    const candidates = typeof kv.observationReader?.indexCandidates === 'function'
+      ? await kv.observationReader.indexCandidates(scope)
+      : (await kv.list<CompressedObservation>(scope)).map(row => ({ id: row.id, eligible: Boolean(row.title && row.narrative) }))
+    for (const row of candidates) if (row.eligible && !idx.has(row.id as string)) missing++
+  }
+  return { sessions: sessions.length, missing }
+}
+
 export async function reconcileIndex(kv: StateKV): Promise<number> {
   const idx = getSearchIndex()
   const { missing } = await findUnindexedObservations(kv)

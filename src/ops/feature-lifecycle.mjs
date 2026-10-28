@@ -88,9 +88,10 @@ export function createFeatureLifecycle({kv,KV,withKeyedLock,provider,readiness=n
   note('feature_lock_wait');await ready;
   return withKeyedLock(`feature-queue:${sessionId}`,async()=>{
    note('feature_session_read');const session=await kv.get(KV.sessions,sessionId);if(!session?.project)return{success:false,error:'session_project_required'};
-   note('feature_observations_read');const rows=await kv.list(KV.observations(sessionId));
+   note('feature_observations_read');const scope=KV.observations(sessionId);
+   const ids=typeof kv.observationReader?.ids==='function'?await kv.observationReader.ids(scope):(await kv.list(scope)).map(r=>r.id);
    const turnAt=Math.max(Date.parse(session.lastTurnEndedAt||'')||0,Date.parse(session.endedAt||'')||0);
-   const fingerprint=hash(rows.map(r=>r.id).sort());
+   const fingerprint=hash(ids.sort());
    note('feature_state_read');const old=await kv.get(FEATURE_NAMESPACE,sessionId);
    if(old?.fingerprint===fingerprint){note('feature_state_write');if(turnAt>old.turnAt||!old.turnAt)await kv.set(FEATURE_NAMESPACE,sessionId,{...old,turnAt});return{success:true,queued:old.status!=='completed',unchanged:true};}
    const now=clock();

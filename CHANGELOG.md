@@ -2,8 +2,9 @@
 
 ## Unreleased — Viewer initial snapshot recovery
 
-- Show a failed initial snapshot query explicitly in Overview/Health while retaining independently queried operations metadata. Retry missing/failed snapshots on the existing refresh timer even with live SSE, respect refresh OFF, and share overlapping snapshot requests. No operating deployment or backend/storage behavior change. See docs/customizations/VIEWER-INITIAL-SNAPSHOT-RECOVERY.md.
-- Coalesce overlapping ordinary observation lists for the same file and SDK mutation revision while preserving independent mutable results, pending overlays and current-path/opened-generation separation. No completed cache or change to SDK/disk completion contracts. The parsed result is shared only during the read; independent caller results still require memory per consumer. Operating performance and the originating SDK mutation failure remain unverified.
+- Show a failed initial snapshot query explicitly in Overview/Health while retaining independently queried operations metadata. Retry missing/failed snapshots on the existing refresh timer even with live SSE, respect refresh OFF, and share overlapping snapshot requests. No operating deployment; storage/receipt and wire contracts are unchanged. See docs/customizations/VIEWER-INITIAL-SNAPSHOT-RECOVERY.md.
+- Route sessions with existing incremental checkpoints before observation admission scans, so duplicates join the existing incremental job before loading full sources. Keep the owner's source read and publication checks, unknown-session routing, provider handling and retry policy. Ordinary list cloning/sharing remains an isolated experiment because peak memory may regress; it is excluded from this candidate.
+- Stream exact IDs for feature-queue fingerprints and index eligibility for health counts instead of retaining full observation bodies. Preserve current-path checks, one change retry, pending SDK overlays, duplicate/legacy ID semantics and full-source reconciliation. Health cache retains counts only; no new raw cache, timeout extension or disk-commit claim.
 
 ## Unreleased — snapshot outcome and compression diagnostics
 
@@ -70,6 +71,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.39] — 2026-10-28
 ## [0.9.31-daniel.38] — 2026-10-28
 ## [0.9.31-daniel.37] — 2026-10-28
 ## [0.9.31-daniel.36] — 2026-10-28
@@ -368,6 +370,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.39]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.38...v0.9.31-daniel.39
 [0.9.31-daniel.38]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.37...v0.9.31-daniel.38
 [0.9.31-daniel.37]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.36...v0.9.31-daniel.37
 [0.9.31-daniel.36]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.35...v0.9.31-daniel.36

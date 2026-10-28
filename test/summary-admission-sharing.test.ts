@@ -1,0 +1,13 @@
+import {expect,it,vi} from 'vitest';
+import {registerSummarizeFunction} from '../src/functions/summarize.js';
+import {KV} from '../src/state/schema.js';
+const checkpoints=[['session progress',{summaryProgress:{status:'queued'}},null],['revision',{}, {revision:'long-session-v1'}],['processed IDs',{}, {processedObservationIds:[]}],['offsets',{}, {sourceOffsets:{}}],['source pins',{}, {sourceProjectionSnapshots:{}}]] as const;
+it.each(checkpoints)('admits known incremental %s before reading observations so duplicate requests join existing work',async(_label,sessionMarker,summaryMarker)=>{
+ const values=new Map<string,any>(),handlers=new Map<string,any>();let release!:()=>void,entered!:()=>void;const ready=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r);const id='synthetic-admission';
+ const kv={get:async(s:string,k:string)=>structuredClone(values.get(s+'|'+k)??null),set:async(s:string,k:string,v:any)=>{values.set(s+'|'+k,structuredClone(v));return v;},list:vi.fn(async(s:string)=>structuredClone([...values].filter(([k])=>k.startsWith(s+'|')).map(([,v])=>v))),update:async(s:string,k:string,ops:any[])=>{const row=values.get(s+'|'+k);for(const op of ops)row[op.path]=op.value;}};
+ const source={id:'one',sessionId:id,timestamp:'2026-01-01',type:'decision',title:'Synthetic observation',narrative:'Source preserved',sourceRaw:{hookType:'post_tool_use',toolOutput:'Synthetic source'}};
+ await kv.set(KV.sessions,id,{id,project:'fixture',startedAt:'2026-01-01',status:'completed',observationCount:1,...sessionMarker});await kv.set(KV.observations(id),'one',source);if(summaryMarker)await kv.set(KV.summaries,id,{sessionId:id,...summaryMarker});
+ const summarize=vi.fn(async()=>{entered();await gate;return JSON.stringify({title:'Synthetic',narrative:'Verified synthetic source.',keyDecisions:[],filesModified:[],concepts:[]});});const sdk={registerFunction:(key:string,fn:any)=>handlers.set(key,fn),trigger:async(r:any)=>handlers.get(r.function_id)?.(r.payload)};
+ const handle=registerSummarizeFunction(sdk as never,kv as never,{name:'synthetic',summarize,compress:async()=>''}as never,undefined,{schedule:false});const work=Array.from({length:6},()=>handlers.get('mem::summarize')({sessionId:id}));
+ try{await ready;expect(kv.list.mock.calls.filter(([scope])=>scope===KV.observations(id))).toHaveLength(1);expect(summarize).toHaveBeenCalledTimes(1);release();const results=await Promise.all(work);expect(results.filter(r=>r.reason==='already_running')).toHaveLength(5);expect(results.filter(r=>r.success&&!r.queued)).toHaveLength(1);expect(await kv.get(KV.observations(id),'one')).toEqual(source);}finally{release();await Promise.allSettled(work);await handle.stop();}
+});

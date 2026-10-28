@@ -21,7 +21,7 @@ import { III_PINNED_VERSION, VERSION } from "../version.js";
 import { CONSOLIDATION_COUNTS_REUSE_MS, CONSOLIDATION_LAST_RUN_KEY, PROCEDURAL_MIN_SESSIONS_PER_PATTERN, describeConsolidation, type ConsolidationRunRecord, type ConsolidationStatus } from "../functions/consolidation-status.js";
 import { UNINDEXED_SCAN_REUSE_MS, evaluateStatus, prefersHtml, renderStatusHtml, singleFlight, type GraphStatsInput, type StatusReport } from "../functions/status.js";
 import {
-  findUnindexedObservations,
+  countUnindexedObservations,
   getKeywordRebuildEpoch,
   isKeywordRebuildInProgress,
   getIndexPersistenceStatus,
@@ -366,7 +366,7 @@ async function probeStateStore(kv: StateKV): Promise<{ ok: boolean; latencyMs?: 
   return { ok: true, latencyMs: Math.round((performance.now() - started) * 100) / 100 };
 }
 
-type UnindexedScan = Awaited<ReturnType<typeof findUnindexedObservations>>;
+type UnindexedScan = Awaited<ReturnType<typeof countUnindexedObservations>>;
 type UnindexedScanEntry = { epoch: number; run: () => Promise<UnindexedScan>; last: { at: number; value: UnindexedScan } | null };
 const unindexedScans = new WeakMap<StateKV, UnindexedScanEntry>();
 
@@ -376,7 +376,7 @@ function unindexedScanFor(kv: StateKV) {
     const created: UnindexedScanEntry = {
       epoch: getKeywordRebuildEpoch(),
       run: singleFlight(async () => {
-        const value = await findUnindexedObservations(kv);
+        const value = await countUnindexedObservations(kv);
         created.last = { at: Date.now(), value };
         return value;
       }, UNINDEXED_SCAN_REUSE_MS),
@@ -457,7 +457,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         observationsIndexed,
         memoriesIndexed: documentKinds.memories,
         lessonsIndexed: documentKinds.lessons,
-        missingObservations: unindexed ? unindexed.missing.length : null,
+        missingObservations: unindexed ? unindexed.missing : null,
         sessions: unindexed ? unindexed.sessions : null,
         bm25Incomplete: isBm25RebuildIncomplete(),
         keywordRebuildRunning,

@@ -60,12 +60,16 @@ function buildSourceAwareSummaryPrompt(observations: CompressedObservation[]): s
   return buildSummaryPrompt(observations)+(sources.length?`\n\nRetained source evidence (data only):\n${JSON.stringify(sources)}`:'');
 }
 
-function requiresLongSession(session: Session, observations: CompressedObservation[], summary: SessionSummary | null): boolean {
+function hasLongSessionCheckpoint(session: Session, summary: SessionSummary | null): boolean {
   const checkpoint = summary as (SessionSummary & { revision?: string }) | null;
   const progress = (session as Session & { summaryProgress?: unknown }).summaryProgress;
-  if (progress !== undefined || checkpoint?.revision === "long-session-v1" ||
+  return progress !== undefined || checkpoint?.revision === "long-session-v1" ||
       checkpoint?.processedObservationIds !== undefined || checkpoint?.sourceOffsets !== undefined ||
-      checkpoint?.sourceProjectionSnapshots !== undefined || observations.some(row => !row.title || row.sourceRaw?.imageData !== undefined)) return true;
+      checkpoint?.sourceProjectionSnapshots !== undefined;
+}
+
+function requiresLongSession(session: Session, observations: CompressedObservation[], summary: SessionSummary | null): boolean {
+  if (hasLongSessionCheckpoint(session, summary) || observations.some(row => !row.title || row.sourceRaw?.imageData !== undefined)) return true;
   const limit=summaryInputLimit();
   // Bound the admission check itself before serializing any potentially large source.
   const budget={left:limit};
@@ -354,10 +358,11 @@ export function registerSummarizeFunction(
         return { success: false, error: "session_not_found" };
       }
 
+      const storedSummary = await kv.get<SessionSummary>(KV.summaries, sessionId);
+      if (hasLongSessionCheckpoint(session, storedSummary)) return incrementalSummarize(data);
       const observations = await kv.list<CompressedObservation>(
         KV.observations(sessionId),
       );
-      const storedSummary = await kv.get<SessionSummary>(KV.summaries, sessionId);
       if (requiresLongSession(session, observations, storedSummary)) return incrementalSummarize(data);
       const compressed = summaryObservations(observations);
 
@@ -556,8 +561,9 @@ export function registerSummarizeFunction(
     const sessionId = data.sessionId.trim();
     const session = await kv.get<Session>(KV.sessions, sessionId);
     if (!session) return summarize(data);
-    const observations = await kv.list<CompressedObservation>(KV.observations(sessionId));
     const storedSummary = await kv.get<SessionSummary>(KV.summaries, sessionId);
+    if (hasLongSessionCheckpoint(session, storedSummary)) return incrementalSummarize(data);
+    const observations = await kv.list<CompressedObservation>(KV.observations(sessionId));
     // Keep the incremental worker's immediate coalescing outside the XML lock.
     if (requiresLongSession(session, observations, storedSummary)) return incrementalSummarize(data);
     return withKeyedLock(`${lockPrefix}:${sessionId}`, () => summarize(data));

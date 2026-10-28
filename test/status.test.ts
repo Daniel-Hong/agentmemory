@@ -516,7 +516,7 @@ describe("status wiring", () => {
     expect(reporter.match(/valueWithin\(/g)?.length).toBe(7);
     expect(reporter).toContain("valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS)");
     expect(reporter).toMatch(/valueWithin\(scan\.run\(\), STATUS_CHECK_TIMEOUT_MS\)/);
-    expect(api).toMatch(/run: singleFlight\(async \(\) => \{\s*const value = await findUnindexedObservations\(kv\);/);
+    expect(api).toMatch(/run: singleFlight\(async \(\) => \{\s*const value = await countUnindexedObservations\(kv\);/);
     const handler = api.slice(api.indexOf('registerFunction("api::status"'), api.indexOf('function_id: "api::status"'));
     expect(reporter).toMatch(/valueWithin\(\s*kv\.get<AuditMigrationState>\(KV\.auditMonths, AUDIT_MIGRATION_STATE_KEY\),\s*STATUS_CHECK_TIMEOUT_MS,\s*\)/);
     expect(handler).toContain("const report = await statusReport();");
