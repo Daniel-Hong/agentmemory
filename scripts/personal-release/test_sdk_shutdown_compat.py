@@ -62,12 +62,14 @@ class ShutdownTests(unittest.TestCase):
         self.assertIs(self.tx.stop_receipt['verified'], False)
         self.assertIs(self.tx.stop_receipt['durability']['synced'], False)
 
-    def test_default_and_pre_candidate_stop_reject_sdk(self):
-        for kit, started in (({}, True), ({'shutdownCompletion': 'sdk-v1'}, False)):
-            with self.subTest(kit=kit, started=started):
-                self.tx.kit, self.tx.start_attempted = kit, started
-                self.tx.system.stopped = False
-                with self.assertRaisesRegex(RuntimeError, 'SHUTDOWN_NOT_VERIFIED'): self.tx.stop()
+    def test_default_stop_rejects_sdk(self):
+        self.tx.kit = {}
+        with self.assertRaisesRegex(RuntimeError, 'SHUTDOWN_NOT_VERIFIED'): self.tx.stop()
+
+    def test_unverified_pre_candidate_stop_refuses_before_service_control(self):
+        self.tx.start_attempted = False
+        with self.assertRaisesRegex(RuntimeError, 'PREDECESSOR_CONTRACT_UNVERIFIED'): self.tx.stop()
+        self.assertFalse(self.tx.system.stopped)
 
     def test_sdk_requires_both_completion_flags_no_error_and_no_mutation_failures(self):
         for field, value in (('completed', False), ('verified', True), ('errorCode', 'ENGINE_LOST')):

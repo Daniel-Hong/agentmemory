@@ -205,6 +205,23 @@ class System:
         except FileNotFoundError:
             return False
 
+    def service_commands(self):
+        result = {}
+        for field in ('ExecStart', 'ExecStop', 'ExecStartPre'):
+            raw = subprocess.check_output(['/usr/bin/systemctl', 'show', 'agentmemory.service', '-p', field, '--value'], text=True, timeout=15, env=ENV)
+            match = re.search(r'argv\[\]=([^;]+) ; ignore_errors=no ;', raw)
+            require(raw.count('argv[]=') == 1 and match is not None, 'SERVICE_COMMAND_UNVERIFIED')
+            result[field] = match.group(1)
+        return result
+
+    def process_identity(self, pid):
+        value = Path('/proc/' + str(pid) + '/stat').read_text()
+        fields = value[value.rindex(')') + 2:].split()
+        require(fields[0] != 'Z' and int(fields[19]) > 0, 'CURRENT_PROCESS_UNVERIFIED')
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        require(re.fullmatch('[a-f0-9-]{36}', boot) is not None, 'CURRENT_PROCESS_UNVERIFIED')
+        return (pid, int(fields[19]), boot)
+
     def reload(self):
         subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True, timeout=30, env=ENV, stdin=subprocess.DEVNULL)
 
@@ -274,6 +291,7 @@ class Runtime:
         self.previous_recovery_compatible = False
         self.previous_recovery_files = {}
         self.previous_recovery_directory = None
+        self.predecessor_contract = None
 
     def record(self, phase, **extra):
         self.phase = phase
@@ -582,6 +600,7 @@ class Runtime:
         require(health.get('storageDurability', {}).get('mutationFailures') == 0, 'STORAGE_FAILURE_PRESENT')
         self.previous_version = health.get('version')
         require(isinstance(self.previous_version, str) and bool(self.previous_version), 'CURRENT_VERSION_REQUIRED')
+        self.predecessor_contract = self.predecessor_shutdown_contract(health)
         guides = [row for row in self.api('memories?latest=true').get('memories', []) if row.get('title') == 'AgentMemory 운영 및 유지보수 가이드']
         require(len(guides) == 1, 'LATEST_GUIDE_NOT_UNIQUE')
         control = self.api('background/control')['control']
@@ -595,14 +614,98 @@ class Runtime:
         require(control.get('pausedRequested') is True and control.get('status') in ('pausing', 'paused', 'error') and safe_error, 'DURABLE_PAUSE_REQUIRED')
         self.record('preflight_verified')
 
+    def predecessor_shutdown_contract(self, health):
+        code = 'SDK_PREDECESSOR_CONTRACT_UNVERIFIED'
+        durability = health.get('storageDurability', {})
+        if durability.get('completion') in (None, 'disk'):
+            return {'completion': None, 'version': health.get('version')}
+        try:
+            require(durability.get('completion') == 'sdk' and type(durability.get('mutationFailures')) is int and durability['mutationFailures'] == 0, code)
+            require(self.kit.get('shutdownCompletion') == 'sdk-v1', code)
+            protected = self.baseline['protectedFiles']
+            def bound(path, limit=16 * 1024 * 1024):
+                path = Path(path)
+                require(str(path) in protected and not path.is_symlink() and not any(p.is_symlink() for p in path.parents), code)
+                with path.open('rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    require(stat.S_ISREG(info.st_mode) and info.st_size <= limit, code)
+                    raw = stream.read(limit + 1)
+                require(len(raw) <= limit and hashlib.sha256(raw).hexdigest() == protected[str(path)], code)
+                return raw
+            dropin = bound(self.paths['dropin']).decode()
+            guards = [line for line in dropin.splitlines() if line.startswith('ExecStartPre=') and line != 'ExecStartPre=']
+            require(len(guards) == 1, code)
+            match = re.fullmatch(r'ExecStartPre=/usr/bin/python3 -I -B (/.+)/kit-runtime\.py --guard', guards[0])
+            require(match is not None, code)
+            path = str(Path(match[1]) / 'kit.json')
+            require(Path(path).parent.parent == self.paths['public'], code)
+            trusted(Path(path), self.owner, self.anchor)
+            prior = json.loads(bound(path))
+            guard = Path(path).with_name('kit-runtime.py')
+            trusted(guard, self.owner, self.anchor)
+            bound(guard)
+            require(prior['files']['kit-runtime.py'] == protected[str(guard)], code)
+            identity = self.baseline['receiptIdentity']
+            receipt = read_json(self.baseline['receiptPath'])
+            require(all(receipt.get(key) == value for key, value in identity.items()) and receipt.get('applied') is True, code)
+            require(prior.get('shutdownCompletion') == 'sdk-v1' and prior.get('executionClosureReviewed') is True and bool(prior.get('reviewedBy')), code)
+            require(prior.get('version') == health.get('version') == self.previous_version == receipt.get('version') and prior.get('sourceCommit') == identity['sourceCommit'] and prior.get('packageSha256') == identity['candidateHash'], code)
+            release_path = Path(path).with_name('release.json')
+            trusted(release_path, self.owner, self.anchor)
+            release = json.loads(bound(release_path))
+            require(prior['files']['release.json'] == protected[str(release_path)] and prior['files']['package.tgz'] == prior['packageSha256'] == protected[str(Path(path).with_name('package.tgz'))], code)
+            require(release.get('sourceCommit') == prior['sourceCommit'] and release.get('packageVersion') == prior['version'], code)
+            directory = self.paths['releases'] / (prior['version'] + '-' + prior['sourceCommit'][:8])
+            manifest = directory / 'package.json'
+            value = json.loads(bound(manifest, 65536))
+            require(identity['installedFileHashes'][str(manifest)] == release['packageFiles']['package.json'] == protected[str(manifest)], code)
+            for name, digest in release['packageFiles'].items():
+                relative = Path(name)
+                require(not relative.is_absolute() and '..' not in relative.parts, code)
+                installed = directory / relative
+                require(identity['installedFileHashes'][str(installed)] == protected[str(installed)] == digest, code)
+                bound(installed)
+            require(all(name in release['packageFiles'] for name in ('package.json', 'dist/cli.mjs', 'dist/index.mjs')), code)
+            profile = value.get('agentmemoryCompatibility')
+            proposed = self.candidate_manifest().get('agentmemoryCompatibility')
+            require(value.get('version') == prior['version'] and isinstance(profile, dict) and profile.get('storageCompletion') == 'sdk-v1' and profile == proposed, code)
+            native = ' --native-compat' if profile.get('nativeEngineCompatibility') == '0.22.1' else ''
+            starts = [line for line in dropin.splitlines() if line.startswith('ExecStart=') and line != 'ExecStart=']
+            require(starts == ['ExecStart=/usr/bin/node ' + str(directory / 'dist/cli.mjs') + ' --data-dir ' + str(self.paths['data']) + native], code)
+            stops = [line for line in dropin.splitlines() if line.startswith('ExecStop=') and line != 'ExecStop=']
+            require(stops == ['ExecStop=/usr/bin/node ' + str(directory / 'dist/cli.mjs') + ' stop' + native + (' --data-dir ' + str(self.paths['data']) if native else '')], code)
+            expected_commands = {field: rows[0].split('=', 1)[1] for field, rows in (('ExecStart', starts), ('ExecStop', stops), ('ExecStartPre', guards))}
+            require(self.system.service_commands() == expected_commands, code)
+            worker = int((self.paths['runtime'] / 'worker.pid').read_text())
+            engine = int((self.paths['runtime'] / 'iii.pid').read_text())
+            main = self.system.main_pid()
+            require(min(worker, engine, main) > 0 and worker != engine and all(self.system.alive(pid) for pid in (worker, engine, main)), code)
+            processes = {role: self.system.process_identity(pid) for role, pid in (('worker', worker), ('engine', engine), ('main', main))}
+            return {'completion': 'sdk-v1', 'version': prior['version'], 'kitHash': protected[path], 'manifestHash': protected[str(manifest)], 'dropinHash': protected[str(self.paths['dropin'])], 'processes': processes}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+            raise RuntimeError(code) from None
+
     def stop(self):
         self.system.verify_identity()
-        self.stop_requested = True
+        completion = self.kit.get('shutdownCompletion')
+        fresh = None
+        if not self.start_attempted:
+            require(getattr(self, 'predecessor_contract', None) is not None, 'PREDECESSOR_CONTRACT_UNVERIFIED')
+            fresh = self.predecessor_shutdown_contract(self.api('health'))
+            require(fresh == self.predecessor_contract, 'PREDECESSOR_CONTRACT_CHANGED')
+            completion = fresh['completion']
         self.certified_stopped = False
         worker = int((self.paths['runtime'] / 'worker.pid').read_text())
         engine = int((self.paths['runtime'] / 'iii.pid').read_text())
         main = self.system.main_pid()
         require(min(worker, engine, main) > 0 and worker != engine and self.system.alive(worker) and self.system.alive(engine), 'CURRENT_PROCESSES_REQUIRED')
+        if fresh is not None and fresh['completion'] == 'sdk-v1':
+            proven = fresh['processes']
+            pids = tuple(proven[role][0] for role in ('worker', 'engine', 'main'))
+            require((worker, engine, main) == pids, 'PREDECESSOR_CONTRACT_CHANGED')
+            require(all(self.system.process_identity(pid) == proven[role] for role, pid in zip(('worker', 'engine', 'main'), pids)), 'PREDECESSOR_CONTRACT_CHANGED')
+            worker, engine, main = pids
+        self.stop_requested = True
         self.record('normal_shutdown_requested')
         started = time.time()
         self.system.service('stop')
@@ -610,7 +713,7 @@ class Runtime:
         receipt = read_json(self.paths['runtime'] / 'shutdown-receipt.json')
         timestamp = datetime.datetime.fromisoformat(receipt['at'].replace('Z', '+00:00')).timestamp()
         require(math.isfinite(timestamp) and started <= timestamp <= ended, 'SHUTDOWN_RECEIPT_STALE')
-        require_shutdown_receipt(receipt, worker, self.kit.get('shutdownCompletion') if self.start_attempted else None)
+        require_shutdown_receipt(receipt, worker, completion)
         require(all(not self.system.alive(pid) for pid in {worker, engine, main}), 'SHUTDOWN_PROCESS_REMAINS')
         self.stop_receipt = receipt
         self.certified_stopped = True
@@ -1147,7 +1250,7 @@ class Runtime:
                     recovery = 'restored'
                 except BaseException:
                     recovery = 'restore_failed'
-            safe_errors = {'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED', 'BACKGROUND_CONTROL_PROFILE_INVALID', 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED', 'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'SDK_BUNDLE_CLOSURE_REQUIRED', 'SDK_BUNDLE_UNVERIFIED', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
+            safe_errors = {'PREDECESSOR_CONTRACT_UNVERIFIED', 'PREDECESSOR_CONTRACT_CHANGED', 'SDK_PREDECESSOR_CONTRACT_UNVERIFIED', 'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED', 'BACKGROUND_CONTROL_PROFILE_INVALID', 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED', 'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'SDK_BUNDLE_CLOSURE_REQUIRED', 'SDK_BUNDLE_UNVERIFIED', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
             code = str(error) if str(error) in safe_errors else 'UPDATE_FAILED'
             self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, rollbackErrorCode=rollback_error, shutdownCertified=self.certified_stopped, shutdownReceiptSha256=sha(self.paths['runtime'] / 'shutdown-receipt.json') if self.certified_stopped else None, inspectionRequired=recovery not in ('not_needed', 'restored'))
             raise

@@ -6,7 +6,7 @@ TDD reproduces loss for source changes and serialization RangeError without larg
 
 The operating Node22.23.3 x64 string limit is 536870888 UTF-16 code units. Namespace file bytes are not final pretty JSON string code units: selected session membership, binary trailers, omitted keys, included graph edges, whitespace and UTF-8 encoding differ. File metadata alone cannot prove a string-limit exception.
 
-Deployment is not authorized by preparation. Current .33 is paused, automatic recovery OFF, quarantine114/legacy1 preserved. Existing release Runtime.stop accepts SDK shutdown only after start_attempted; therefore applying from an already-SDK .33 baseline currently fails its strict pre-candidate disk guard after stopping the old service. Do not apply or force verified/synced flags. SDK-to-SDK release compatibility requires a separately reviewed scope; it is not included in this diagnostic product change.
+Deployment is not authorized by preparation. Current .33 is paused, automatic recovery OFF, quarantine114/legacy1 preserved. Existing release Runtime.stop accepts SDK shutdown only after start_attempted; therefore applying from an already-SDK .33 baseline currently fails its strict pre-candidate disk guard after stopping the old service. Do not apply or force verified/synced flags. The follow-up development guard now addresses SDK-to-SDK predecessor compatibility in the separately reviewed scope documented in SDK-PREDECESSOR-SHUTDOWN.md. The installed .33 guard is unchanged.
 
 Upstream replacement criterion: remove this correction when upstream safely retains equivalent phase/code/class evidence while keeping the same no-content logging and preservation tests.
 

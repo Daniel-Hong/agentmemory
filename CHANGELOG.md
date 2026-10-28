@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind SDK predecessor shutdown to both reviewed SDK contracts, protected installed code and effective service commands, with fresh pinned process identities retained through receipt/exit checks. Keep disk predecessors strict, false disk claims rejected and stopped-only post-start recovery unchanged. Development guard copy only; see docs/customizations/SDK-PREDECESSOR-SHUTDOWN.md.
+
 - Preserve bounded snapshot failure phase, known reader codes and Error/TypeError/RangeError classification without recording messages, paths or contents. Publication, fsync, Git and retry policy remain unchanged. Development diagnostic candidate only; production root cause remains unconfirmed. See docs/customizations/SNAPSHOT-FAILURE-DIAGNOSTICS.md.
 
 - Prepare an explicit native engine0.22.1 lifecycle without Compose/download fallback, bundle the SDK0.25 server dependency closure, and distinguish SDK completion from disk verification in the development release/rollback kit. Preserve SDK originals and stop code-only downgrades before any incompatible old writer starts. Repair child HOME isolation in hook tests. No operating installation or guard change.
