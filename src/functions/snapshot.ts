@@ -1,3 +1,4 @@
+import {snapshotJsonChunks,readGitSnapshot,validateSnapshotArchive} from "../ops/snapshot-json.mjs";
 import { pinGraphState } from "../state/graph-generation.js";
 import {createSnapshotRecovery, ensurePrivateSnapshotDir, publishSnapshotFile} from "../ops/snapshot-recovery.mjs";
 import {backgroundPaused} from "../ops/background-control.mjs";
@@ -94,7 +95,9 @@ export function registerSnapshotFunction(
         };
 
         phase = "serialize";
-        const content = JSON.stringify(exportState, null, 2);
+        validateSnapshotArchive(exportState);
+        validateGraphRecords(graphNodes, graphEdges);
+        const content = snapshotJsonChunks(exportState);
         phase = "publish";
         await publishSnapshotFile(snapshotDir, "state.json", content);
         phase = "git_add";
@@ -144,6 +147,7 @@ export function registerSnapshotFunction(
         return { success: true, snapshot: meta };
       } catch (err) {
         const failure = err as { code?: unknown; message?: unknown };
+        if ((failure as {snapshotPhase?:unknown})?.snapshotPhase === "serialize") phase = "serialize";
         const code = failure?.code ?? (failure?.message === "graph_mutation_uncertain" ? "graph_mutation_uncertain" : undefined);
         const knownReadCodes = new Set(["state_namespace_changed", "state_namespace_corrupt", "state_namespace_incomplete", "state_namespace_shape", "state_namespace_duplicate", "state_namespace_utf8", "observation_exceeds_page_budget", "invalid_observation_record", "graph_mutation_uncertain"]);
         const errorCode = typeof code === "string" && /^[A-Z0-9_]{1,80}$/.test(code) ? code
@@ -194,8 +198,7 @@ export function registerSnapshotFunction(
       }
 
       try {
-        const content = await gitExec(snapshotDir, ["show", `${data.commitHash}:state.json`], Infinity);
-        const archive = JSON.parse(content) as {
+        const archive = await readGitSnapshot(snapshotDir, data.commitHash) as {
           sessions?: Array<{ id: string } & Record<string, unknown>>;
           memories?: Memory[];
           graphNodes?: GraphNode[];
@@ -203,6 +206,7 @@ export function registerSnapshotFunction(
           observations?: Record<string, CompressedObservation[]>;
           accessLogs?: AccessLogExport[];
         };
+        validateSnapshotArchive(archive);
         validateGraphRecords(archive.graphNodes ?? [], archive.graphEdges ?? []);
         const memoryIds = new Set<string>();
         const observationSessions = new Map<string, string>();

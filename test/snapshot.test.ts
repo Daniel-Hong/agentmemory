@@ -13,7 +13,7 @@ vi.mock("node:fs/promises", async () => ({
   mkdir: vi.fn(async () => {}), chmod: vi.fn(async () => {}),
   lstat: vi.fn(async () => ({ isDirectory: () => true })),
   readFile: vi.fn(async () => { throw Object.assign(Error("missing fixture"), { code: "ENOENT" }); }),
-  open: vi.fn(async () => ({ writeFile: vi.fn(async () => {}), sync: vi.fn(async () => {}), close: vi.fn(async () => {}) })),
+  open: vi.fn(async () => ({ writeFile: vi.fn(async (content) => { if (content && typeof content !== "string") for await (const _ of content) {} }), sync: vi.fn(async () => {}), close: vi.fn(async () => {}) })),
   rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}),
 }));
 
@@ -24,6 +24,9 @@ vi.mock("node:fs", () => ({
   writeFileSync: vi.fn(),
 }));
 
+vi.mock("../src/ops/snapshot-json.mjs",async original=>{
+ const m=await original<any>();return {...m,readGitSnapshot:()=>m.readSnapshotJson((async function*(){yield Buffer.from(snapshotContent());})())};
+});
 import { readFileSync } from "node:fs";
 import { logger } from "../src/logger.js";
 import { lstat } from "node:fs/promises";
@@ -143,7 +146,7 @@ describe("Snapshot Functions", () => {
   });
 
   it("identifies a serialization RangeError without allocating a large fixture or logging its message", async () => {
-    await kv.set(KV.memories, "range", { toJSON() { throw new RangeError("private serialization detail"); } });
+    await kv.set(KV.memories, "range", { id:"range", toJSON() { throw new RangeError("private serialization detail"); } });
     expect(await sdk.trigger("mem::snapshot-create", {})).toMatchObject({ success: false, errorCode: "SNAPSHOT_FAILED" });
     expect(logger.error).toHaveBeenCalledWith("Snapshot failed", { error: "SNAPSHOT_FAILED", phase: "serialize", errorClass: "RangeError" });
     expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("private serialization detail");
@@ -384,5 +387,31 @@ describe("snapshot-restore bounds graph provenance", () => {
     expect((await sdk.trigger("mem::snapshot-create", {})).success).toBe(true);
     expect(calls.find(call => call.scope === KV.observations("ses_1"))?.options).toEqual({observationConsistency:"opened-generation"});
     expect(calls.filter(call => !call.scope.startsWith("mem:obs:")).every(call => call.options === undefined)).toBe(true);
+  });
+  it("creates a snapshot without stringifying the complete archive", async () => {
+    const kv = mockKV(), sdk = mockSdk();
+    await kv.set(KV.sessions,"synthetic-session",{id:"synthetic-session"});
+    registerSnapshotFunction(sdk as never,kv as never,"/tmp/agentmemory-snapshots");
+    const stringify = JSON.stringify.bind(JSON);
+    const spy = vi.spyOn(JSON,"stringify").mockImplementation(((value: any,...rest: any[]) => {
+      if(value && Object.hasOwn(value,"observations") && Object.hasOwn(value,"sessions")) throw new RangeError("synthetic whole archive string cap");
+      return stringify(value,...rest as []);
+    }) as typeof JSON.stringify);
+    try {expect((await sdk.trigger("mem::snapshot-create",{})).success).toBe(true);} finally {spy.mockRestore();}
+  });
+  it("restores complete records without parsing one complete archive string", async () => {
+    const kv = mockKV(), sdk = mockSdk();
+    const sessions = Array.from({length:24},(_,n)=>({id:"synthetic-"+n,note:"x".repeat(2048)}));
+    snapshotContent.mockReturnValue(JSON.stringify({version:"0.4.0",sessions,memories:[],graphNodes:[],graphEdges:[],observations:{},accessLogs:[]}));
+    registerSnapshotFunction(sdk as never,kv as never,"/tmp/agentmemory-snapshots");
+    const parse = JSON.parse.bind(JSON);
+    const spy = vi.spyOn(JSON,"parse").mockImplementation(((text: string,...rest: any[]) => {
+      if(text.length>16384) throw new RangeError("synthetic complete archive parse cap");
+      return parse(text,...rest as []);
+    }) as typeof JSON.parse);
+    try {
+      expect((await sdk.trigger("mem::snapshot-restore",{commitHash:"a".repeat(40)})).success).toBe(true);
+      for(const row of sessions) expect(await kv.get(KV.sessions,row.id)).toEqual(row);
+    } finally {spy.mockRestore();}
   });
 });

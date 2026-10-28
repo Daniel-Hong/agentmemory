@@ -8,7 +8,7 @@ import { registerSnapshotFunction } from "../src/functions/snapshot.js";
 import { KV } from "../src/state/schema.js";
 
 vi.mock("../src/logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
-const fault = vi.hoisted(() => ({ phase: null as "write" | "sync" | "rename" | null }));
+const fault = vi.hoisted(() => ({ phase: null as "write" | "sync" | "rename" | "close" | null }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -25,7 +25,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           if (fault.phase === "sync") throw Object.assign(Error("fixture sync failure"), { code: "EIO" });
           return file.sync();
         },
-        close: () => file.close(),
+        close: async () => {await file.close();if(fault.phase === "close")throw Object.assign(Error("synthetic close failure"),{code:"EIO"});},
       };
     },
     rename: async (from: any, to: any) => {
@@ -137,4 +137,17 @@ describe("snapshot publication on real temporary files", () => {
     expect(await f.create()).toMatchObject({ success: true, message: "No changes to snapshot", commitHash: original.snapshot.commitHash });
     expect(f.recovery.snapshot()).toMatchObject({ status: "current", failures: 0, lastCommitHash: original.snapshot.commitHash });
   });
+});
+
+it("does not publish an archive whose record shape cannot be restored",async()=>{
+ const f=await fixture();await writeFile(join(f.dir,"state.json"),"previous snapshot");await f.kv.set(KV.memories,"invalid",{});
+ expect(await f.create()).toMatchObject({success:false,errorCode:"SNAPSHOT_RECORD_INVALID"});
+ expect(await readFile(join(f.dir,"state.json"),"utf8")).toBe("previous snapshot");
+});
+
+it("retains previous snapshot and unlinks temp even when close reports failure",async()=>{
+ const f=await fixture();await writeFile(join(f.dir,"state.json"),"previous snapshot");fault.phase="close";
+ expect(await f.create()).toMatchObject({success:false,errorCode:"EIO"});
+ expect(await readFile(join(f.dir,"state.json"),"utf8")).toBe("previous snapshot");
+ expect((await readdir(f.dir)).filter(name=>name.startsWith("state.json.")&&name.endsWith(".tmp"))).toEqual([]);
 });

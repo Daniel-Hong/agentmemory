@@ -1,5 +1,5 @@
 export function ensurePrivateSnapshotDir(dir: any): Promise<void>;
-export function publishSnapshotFile(dir: any, name: any, content: any): Promise<void>;
+export function publishSnapshotFile(dir: any, name: any, content: any, options?:{signal?:AbortSignal}): Promise<void>;
 export function createSnapshotRecovery({ dir, intervalMs, gitExec, create, isPaused, now, setTimer, clearTimer }: {
     dir: any;
     intervalMs: any;

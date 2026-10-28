@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — snapshot streaming JSON
+
+- Serialize snapshot records directly into the existing private temp-file/fsync/atomic-rename publication, and parse committed Git stdout by record before any restore write; keep the same JSON schema and pretty representation. No whole-archive string is required on either path.
+- Validate known archive shape before creating or restoring, preserve native JSON key/duplicate/BOM/Unicode semantics, and retain source data on pre-publication failure/cancel. Temp cleanup is attempted after close errors. Git close is awaited without force kill or timeout weakening. Heap, per-record capacity and partial restore after write failure remain explicit limits. Operating .35 stays paused/OFF; no deployment yet.
+
+
 ## Unreleased — snapshot observation generation read
 
 - Snapshot observation exports can finish a complete opened namespace generation after normal atomic replacement; default lists and durability certificates retain current-path verification. In-place changes, corrupt/incomplete input, cancellation and pending overlay/deletion checks remain enforced. No write/receipt/guard/timeout changes.
@@ -50,6 +56,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.36] — 2026-10-28
 ## [0.9.31-daniel.35] — 2026-10-28
 ## [0.9.31-daniel.34] — 2026-10-28
 ## [0.9.31-daniel.33] — 2026-10-27
@@ -345,6 +352,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.36]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.35...v0.9.31-daniel.36
 [0.9.31-daniel.35]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.34...v0.9.31-daniel.35
 [0.9.31-daniel.34]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.33...v0.9.31-daniel.34
 [0.9.31-daniel.33]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.1...v0.9.31-daniel.33

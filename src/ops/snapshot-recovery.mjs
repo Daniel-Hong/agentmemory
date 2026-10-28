@@ -8,16 +8,18 @@ export async function ensurePrivateSnapshotDir(dir){
  await chmod(dir,0o700);
 }
 
-export async function publishSnapshotFile(dir,name,content){
+export async function publishSnapshotFile(dir,name,content,{signal}={}){
+ signal?.throwIfAborted();
  await ensurePrivateSnapshotDir(dir);
  const path=join(dir,name),temp=path+'.'+randomUUID()+'.tmp';
  let file;
  try{
   file=await open(temp,'wx',0o600);
-  await file.writeFile(content,'utf8');await file.sync();await file.close();file=null;
+  await file.writeFile(content,{encoding:'utf8',signal});signal?.throwIfAborted();await file.sync();await file.close();file=null;
+  signal?.throwIfAborted();
   await rename(temp,path);
   const directory=await open(dir,'r');try{await directory.sync();}finally{await directory.close();}
- }finally{if(file)await file.close();await unlink(temp).catch(e=>{if(e.code!=='ENOENT')throw e;});}
+ }finally{try{if(file)await file.close();}finally{await unlink(temp).catch(e=>{if(e.code!=='ENOENT')throw e;});}}
 }
 
 // This is a partial application export; Lessons, source cursors and retries are not restored by the legacy format.
