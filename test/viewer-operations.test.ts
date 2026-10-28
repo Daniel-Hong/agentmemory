@@ -180,12 +180,16 @@ describe("manual operations commands", () => {
     expect(c.operations.submitError).toContain('30초');
   });
   it("stops live and metadata timers when refresh is disabled and persists the selection", () => {
-    const close = vi.fn(); const storage = {setItem:vi.fn()};
-    const c = context(['setAutoRefresh'], {autoRefresh:{enabled:true,seconds:30}, operations:{refreshTimer:7}, state:{ws:{close}}, wsReconnectTimer:8,pendingLiveRender:9,clearTimeout:vi.fn(),localStorage:storage,updateRefreshControls:vi.fn(),setConnection:vi.fn(),connectWs:vi.fn(),scheduleOperationsRefresh:vi.fn(),renderOperations:vi.fn()});
+    const controller = new AbortController(), abort = vi.spyOn(controller, 'abort'); const storage = {setItem:vi.fn()};
+    const c = context(['setAutoRefresh'], {autoRefresh:{enabled:true,seconds:30}, operations:{refreshTimer:7,generation:0}, liveAbortController:controller, wsReconnectTimer:8,pendingLiveRender:9,clearTimeout:vi.fn(),localStorage:storage,updateRefreshControls:vi.fn(),setConnection:vi.fn(),connectWs:vi.fn(),scheduleOperationsRefresh:vi.fn(),renderOperations:vi.fn()});
     c.setAutoRefresh(false,60);
-    expect(close).toHaveBeenCalledOnce(); expect(c.state.ws).toBeNull();
+    expect(abort).toHaveBeenCalledOnce(); expect(controller.signal.aborted).toBe(true); expect(c.liveAbortController).toBeNull();
+    expect(c.operations.refreshTimer).toBeNull();expect(c.operations.generation).toBe(1);
+    expect(c.wsReconnectTimer).toBeNull();expect(c.pendingLiveRender).toBeNull();
+    expect(c.clearTimeout.mock.calls.map((args:any[])=>args[0])).toEqual([8,9,7]);
     expect(storage.setItem).toHaveBeenCalledWith('agentmemory-refresh',JSON.stringify({enabled:false,seconds:60}));
     expect(c.connectWs).not.toHaveBeenCalled();
+    expect(c.scheduleOperationsRefresh).not.toHaveBeenCalled();
   });
   it("bounds read API body parsing and distinguishes consolidation request failure", async () => {
     const c = context(['runConsolidation'], {state:{health:{consolidating:false,error:null},activeTab:'health'},markDirty:()=>{},renderTab:()=>{},apiPost:async()=> null});
@@ -236,8 +240,18 @@ describe('HTTP snapshot fallback when the stream is unavailable', () => {
 
 it('invalidates the HTTP badge, footer and health view together when a snapshot query fails',async()=> {
   const updateFooter=vi.fn(),renderTab=vi.fn();
-  const c=context(['loadSnapshot'],{apiGet:async()=>null,store:{snapshotAt:Date.now()},state:{activeTab:'health'},renderConnection:vi.fn(),updateFooter,markDirty:vi.fn(),renderTab});
+  const c=context(['loadSnapshot'],{apiGet:async()=>null,store:{snapshotAt:Date.now()},state:{activeTab:'health',graph:{resetSeq:0}},renderConnection:vi.fn(),updateFooter,markDirty:vi.fn(),renderTab});
   expect(await c.loadSnapshot()).toBe(false);expect(c.store.snapshotError).toBe(true);expect(updateFooter).toHaveBeenCalledOnce();expect(renderTab).toHaveBeenCalledWith('health');
+});
+
+it('loads recent observation session metadata without requesting summary bodies',async()=>{
+  const apiGet=vi.fn().mockResolvedValueOnce({sessions:[{id:'synthetic-session'}]}).mockResolvedValueOnce({observations:[{id:'synthetic-observation'}]});
+  const mergeSessionRows=vi.fn(),routeWsMessage=vi.fn();
+  const c=context(['loadRecentObservations'],{apiGet,ACTIVITY_SESSIONS:10,LIVE_BUFFER_MAX:200,sortByTimeDesc:(rows:unknown[])=>rows,sessionId:(row:{id:string})=>row.id,mergeSessionRows,routeWsMessage});
+  await c.loadRecentObservations();
+  expect(apiGet.mock.calls.map(args=>args[0])).toEqual(['sessions?limit=10&includeSummary=false','observations?sessionId=synthetic-session&limit=100']);
+  expect(mergeSessionRows).toHaveBeenCalledWith([{id:'synthetic-session'}]);
+  expect(routeWsMessage).toHaveBeenCalledWith({observation:{id:'synthetic-observation'}});
 });
 
 it('shows memory protection hold separately from current normal pressure and manual recovery constraints',()=>{

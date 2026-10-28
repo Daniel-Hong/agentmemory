@@ -1,3 +1,4 @@
+import {sendCapture,restoreSdkOriginal} from "../capture/delivery.js";
 import { createHash } from "node:crypto";
 import { capturePayloadDigest } from "../capture/receipt-digest.js";
 import { spawn } from "node:child_process";
@@ -18,6 +19,7 @@ import {
   type DrainResult,
 } from "../capture/spool.js";
 
+export {restoreSdkSourcePayload} from "../capture/delivery.js";
 export { stripPrivateData } from "../functions/privacy.js";
 
 export const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
@@ -28,7 +30,7 @@ const DRAIN_DEADLINE_MS = 20_000;
 const DRAIN_REQUEST_TIMEOUT_MS = 5000;
 
 export type CaptureOutcome = "delivered" | "duplicate" | "rejected" | "spooled" | "dropped";
-export type CaptureHandoffOutcome = CaptureOutcome | "pending";
+export type CaptureHandoffOutcome = CaptureOutcome | "pending" | "held";
 
 interface CaptureTarget {
   url: string;
@@ -78,21 +80,16 @@ async function post(body: Record<string, unknown>, timeoutMs: number, target?: C
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const text = await res.text().catch(() => "");
-  const outcome = classify(res.status);
-  if (outcome !== "delivered" && outcome !== "duplicate") return { outcome, mark: null };
-  try {
-    const result = JSON.parse(text) as Record<string, unknown> | null;
-    return { outcome, mark: parseSentMark(result), acknowledged: Boolean(result && typeof result.observationId === "string" && result.observationId && result.success !== false && !result.error) };
-  } catch {
-    return { outcome, mark: null };
-  }
+  const result = await res.json().catch(() => null);
+  return classifyReply(res.status, result);
 }
 
-function keepUntilDurable(eventId: string, body: Record<string, unknown>, mark: SentMark, target?: CaptureTarget): { requeued: number; retained: boolean } {
-  const url = target?.url ?? REST_URL;
-  const { requeued } = reconcileSent(url, mark.bootId, { dir: target?.dir });
-  return { requeued, retained: retainSent(url, eventId, body, mark, { dir: target?.dir }) };
+function classifyReply(status: number, result: unknown): { outcome: SendOutcome; mark: SentMark | null; acknowledged?: boolean } {
+  const value = result && typeof result === 'object' ? result as Record<string, unknown> : null;
+  const outcome = classify(status);
+  if (status === 503 && value?.reason === 'SDK_COMPLETION_ONLY') return { outcome: 'held', mark: null };
+  if (outcome !== 'delivered' && outcome !== 'duplicate') return { outcome, mark: null };
+  return { outcome, mark: parseSentMark(value), acknowledged: Boolean(value && typeof value.observationId === 'string' && value.observationId && value.success !== false && !value.error) };
 }
 
 async function durableReceipt(body: ObserveBody, target: CaptureTarget, deadline: number): Promise<boolean> {
@@ -109,7 +106,7 @@ async function durableReceipt(body: ObserveBody, target: CaptureTarget, deadline
 }
 
 // Legacy ownership requires a fsynced managed copy or a freshly verified durable receipt.
-export async function handoffObservation(body: ObserveBody, timeoutMs: number, target: CaptureTarget): Promise<CaptureHandoffOutcome> {
+export async function handoffObservation(body: ObserveBody, timeoutMs: number, target: CaptureTarget, initialReply?: { status: number; body: unknown }): Promise<CaptureHandoffOutcome> {
   const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
   const payload = { ...body, eventId } as unknown as Record<string, unknown>;
   const deadline=Date.now()+timeoutMs;
@@ -119,7 +116,7 @@ export async function handoffObservation(body: ObserveBody, timeoutMs: number, t
   let reason = "server-error";
   try {
     if(!remaining())return "pending";
-    const { outcome, mark, acknowledged } = await post(payload, remaining(), target);
+    const { outcome, mark, acknowledged } = initialReply ? classifyReply(initialReply.status, initialReply.body) : await post(payload, remaining(), target);
     if (outcome === "delivered" || outcome === "duplicate") {
       if(oversized)return await durableReceipt({...body,eventId},target,deadline)?outcome:'pending';
       if (!mark || !acknowledged) return "pending";
@@ -128,6 +125,7 @@ export async function handoffObservation(body: ObserveBody, timeoutMs: number, t
       if (requeued > 0 && target.url === REST_URL) startDrainChild();
       return outcome;
     }
+    if(outcome==="held")return "held";
     if (outcome === "rejected") return "rejected";
   } catch (err) {
     const name = err instanceof Error ? err.name : "";
@@ -156,23 +154,29 @@ function startDrainChild(): void {
 
 export async function captureObservation(body: ObserveBody, timeoutMs: number): Promise<CaptureOutcome> {
   const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
-  const payload = { ...body, eventId } as unknown as Record<string, unknown>;
-  let reason: string;
+  const payload = { ...body, eventId, captureCompletion: 'sdk-v1' } as Record<string, unknown>;
+  let reason = 'delivery-pending';
   try {
-    const { outcome, mark } = await post(payload, timeoutMs);
-    if (outcome !== "retry") {
-      const kept = mark ? keepUntilDurable(eventId, payload, mark) : { requeued: 0, retained: true };
-      if (kept.requeued > 0 || spoolHasRecords(REST_URL)) startDrainChild();
-      if (kept.retained) return outcome;
-      reason = "sent-retention-failed";
-    } else {
-      reason = "server-error";
+    const outcome = await sendCapture({ eventId, body: payload }, value => postRaw(value, timeoutMs), REST_URL, { fresh: true });
+    if (outcome === 'delivered' || outcome === 'duplicate' || outcome === 'rejected') {
+      if (spoolHasRecords(REST_URL)) startDrainChild();
+      return outcome;
     }
-  } catch (err) {
-    const name = err instanceof Error ? err.name : "";
-    reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
+    reason = outcome === 'held' ? 'sdk-completion-held' : 'server-error';
+  } catch (error) {
+    const name = error instanceof Error ? error.name : '';
+    reason = name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable';
   }
-  return appendSpool(REST_URL, eventId, payload, reason).spooled ? "spooled" : "dropped";
+  return appendSpool(REST_URL, eventId, payload, reason, { preserveImages: true }).spooled ? 'spooled' : 'dropped';
+}
+
+async function postRaw(body:Record<string,unknown>,timeoutMs:number,path="/observe"):Promise<{status:number;body:unknown}>{
+ const response=await fetch(`${REST_URL}/agentmemory${path}`,{method:'POST',headers:authHeaders(),body:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)});
+ return {status:response.status,body:await response.json().catch(()=>({}))};
+}
+
+export async function restoreObservationOriginal(eventId:string,timeoutMs=5000){
+ return restoreSdkOriginal(REST_URL,eventId,body=>postRaw(body,timeoutMs,'/capture/restore-sdk'));
 }
 
 export function isDrainChild(): boolean {
@@ -182,12 +186,7 @@ export function isDrainChild(): boolean {
 export async function runDrainChild(): Promise<DrainResult> {
   return drainSpool(
     REST_URL,
-    async (record: SpoolRecord) => {
-      const { outcome, mark, acknowledged } = await post({ ...record.body, eventId: record.eventId }, DRAIN_REQUEST_TIMEOUT_MS);
-      if (record.requireReceipt && (outcome === "delivered" || outcome === "duplicate") && (!mark || !acknowledged)) return "retry";
-      if (mark && !retainSent(REST_URL, record.eventId, record.body, mark, { requireReceipt: record.requireReceipt, preserveImages: record.requireReceipt })) return "retry";
-      return outcome;
-    },
+    (record: SpoolRecord) => sendCapture(record,b=>postRaw(b,DRAIN_REQUEST_TIMEOUT_MS),REST_URL),
     { maxRecords: DRAIN_MAX_RECORDS, deadlineMs: DRAIN_DEADLINE_MS },
   ).then(result => result.skipped === "locked" ? { ...result, remaining: Math.max(1, result.remaining) } : result).catch(() => ({ claimed: 0, delivered: 0, duplicates: 0, rejected: 0, expired: 0, corrupt: 0, remaining: 1, error: "capture_drain_failed" }));
 }

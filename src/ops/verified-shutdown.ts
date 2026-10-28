@@ -1,6 +1,7 @@
+import {isStorageWorkCompleted} from './storage-completion.mjs';
 import { writeShutdownReceipt } from "./background-lifecycle.mjs";
 
-const SHUTDOWN_STAGES = ['work', 'boot_gate', 'lifecycle', 'ingress', 'control', 'index_save', 'durability_drain', 'disk_fence', 'restart_guard', 'freeze', 'final_disk_fence', 'worker_stop', 'worker_drain'] as const;
+const SHUTDOWN_STAGES = ['work', 'boot_gate', 'lifecycle', 'ingress', 'control', 'index_save', 'durability_drain', 'disk_fence', 'sdk_completion', 'restart_guard', 'freeze', 'final_disk_fence', 'final_sdk_completion', 'worker_stop', 'worker_drain'] as const;
 export type ShutdownProgress = {
   stage: (typeof SHUTDOWN_STAGES)[number];
   event?: 'start' | 'done' | 'failed';
@@ -79,18 +80,19 @@ export async function verifiedShutdown({ work, engineAlive, receiptDir, onProgre
     collecting = false;
     clearTimeout(timer); clearInterval(poll);
   }
-  let verified = !errorCode && !!durability
+  let verified = !errorCode && isStorageWorkCompleted(durability) && !!durability
     && (durability as { synced?: boolean }).synced === true
     && (durability as { mutationFailures?: number }).mutationFailures === 0;
-  if (!verified && !errorCode) errorCode = "SHUTDOWN_NOT_VERIFIED";
+  let completed = !errorCode && isStorageWorkCompleted(durability);
+  if (!completed && !errorCode) errorCode = "SHUTDOWN_NOT_VERIFIED";
   const diagnostics = { lastStage, pendingWorkers: [...pending.values()], timeline };
-  const receipt = { pid: process.pid, at: new Date().toISOString(), verified, durability, errorCode, ...diagnostics };
+  const receipt = { pid: process.pid, at: new Date().toISOString(), completed, verified, durability, errorCode, ...diagnostics };
   try {
     await writeShutdownReceipt(receipt, receiptDir);
   } catch {
-    verified = false; errorCode = "SHUTDOWN_RECEIPT_FAILED";
+    verified = false; completed = false; errorCode = "SHUTDOWN_RECEIPT_FAILED";
     // A post-rename sync failure may have published a success receipt.
-    await writeShutdownReceipt({ ...receipt, verified, errorCode }, receiptDir).catch(() => {});
+    await writeShutdownReceipt({ ...receipt, completed, verified, errorCode }, receiptDir).catch(() => {});
   }
-  return { verified, durability, errorCode, ...diagnostics };
+  return { completed, verified, durability, errorCode, ...diagnostics };
 }

@@ -34,7 +34,8 @@ async function setup(extraData:Record<string,unknown>={}){
  for(const name of ['_capture.mjs','long-session-hook-client.mjs']){const source=await readFile(new URL('../plugin/scripts/codex-compat/'+name,import.meta.url),'utf8');await writeFile(join(clientDir,name),source.replace(/^\/\/# sourceMappingURL=.*$/gm,''));}
  const {HookClient}=await import(pathToFileURL(join(clientDir,'long-session-hook-client.mjs')).href);
  const outbox=join(dir,'outbox'),client=()=>new HookClient({dir:outbox,url:'http://127.0.0.1:45679',timeoutMs:1000,secret:'synthetic-secret'});
- await client().enqueue('/agentmemory/observe',body);
+ const historicalFile=await client().enqueue('/agentmemory/observe',body);
+ const historical=JSON.parse(await readFile(historicalFile,'utf8'));delete historical.completionPolicy;await writeFile(historicalFile,JSON.stringify(historical));
  const pending=async()=>{const files=(await readdir(outbox)).filter(x=>x.endsWith('.json'));return Promise.all(files.map(async name=>JSON.parse(await readFile(join(outbox,name),'utf8'))));};
  return {body,key,done,obs,kv,fence,eventFile,obsFile,client,pending,outbox,clientDir,get posts(){return posts;},reject:()=>{postStatus=413;}};
 }

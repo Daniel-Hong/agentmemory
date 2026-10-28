@@ -58,9 +58,19 @@ afterEach(async () => { await new Promise<void>(r => server.close(() => r())); v
 function records(directory: string, match: (name: string) => boolean) {
   try { return readdirSync(directory).filter(match).flatMap(name => readFileSync(join(directory, name), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line))); } catch { return []; }
 }
-async function client(directory = "plugin/scripts") {
+async function client(directory = "plugin/scripts", historical = true) {
   const module = await import(pathToFileURL(join(sandbox, directory, "codex-compat/long-session-hook-client.mjs")).href);
-  return new module.HookClient({ url, dir: join(home, "legacy"), secret: "synthetic-secret" });
+  const instance = new module.HookClient({ url, dir: join(home, "legacy"), secret: "synthetic-secret" });
+  if (!historical) return instance;
+  const enqueueCurrent = instance.enqueue.bind(instance);
+  instance.enqueue = async (path: string, body: unknown) => {
+    const file = await enqueueCurrent(path, body);
+    const historical = JSON.parse(readFileSync(file, 'utf8'));
+    delete historical.completionPolicy;
+    writeFileSync(file, JSON.stringify(historical));
+    return file;
+  };
+  return instance;
 }
 async function hook(name: string, input: unknown) {
   return await new Promise<{ code: number | null; output: string }>((resolveResult, reject) => {
@@ -88,6 +98,21 @@ describe("explicit custom compatibility build artifacts", () => {
       expect(manifest.canonicalSha256).toBe("c73b82fe13910bb8106516c6af402235285a0d3dc6411f4c326d6e619ec91d42");
       for (const [name, digest] of Object.entries(manifest.files)) expect(sha(readFileSync(join(sandbox, directory, "codex-compat", name)))).toBe(digest);
     }
+  });
+  it("uses the first old-server reply once for new SDK-tagged capture and preserves both originals", async () => {
+    const instance = await client('plugin/scripts', false);
+    const file = await instance.enqueue('/agentmemory/observe', event);
+    const original = readFileSync(file, 'utf8');
+    expect(JSON.parse(original).completionPolicy).toBe('sdk-v1');
+    expect(await instance.flush()).toBe(true);
+    expect(requests.filter(row => row.path === '/agentmemory/observe')).toHaveLength(1);
+    expect(requests[0].body.captureCompletion).toBe('sdk-v1');
+    const archived = records(join(home, 'legacy', 'accepted-originals'), name => name.endsWith('.json'));
+    expect(archived).toEqual([JSON.parse(original)]);
+    const retained = records(join(home, 'spool'), name => name.includes('.sent-'));
+    expect(retained).toHaveLength(1);
+    expect(retained[0]).toMatchObject({body: JSON.parse(original).body, requireReceipt: true});
+    expect(records(join(home, 'legacy'), name => name.endsWith('.json'))).toEqual([]);
   });
   it.each(["plugin/scripts", "dist/hooks"])("hands old outbox ownership off once to retained official capture in %s", async directory => {
     const instance = await client(directory);

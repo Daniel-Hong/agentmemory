@@ -18,7 +18,7 @@ describe("OMP capture recovery", () => {
     expect(readFileSync(offline.status().path, "utf8")).toContain(body.eventId);
     const send = vi.fn(async () => ({ status: 202, body: { status: "accepted" } }));
     const online = createCapture(url, send); await online.flush(); online.stop();
-    expect(send).toHaveBeenCalledWith(body);
+    expect(send).toHaveBeenCalledWith({ ...body, captureCompletion: 'sdk-v1' });
     expect(online.status().records).toBe(0);
   });
   it.each([400, 401, 403])("does not endlessly retry a rejected capture (%i)", async status => {

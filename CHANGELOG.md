@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve repeated capture envelopes without overwriting originals, restore background drain admission for reboot-requeued originals, reuse old-server responses without duplicate POST, and include safe session projections in Viewer recent-observation lookup. Final isolated full regression: 5,332 passed, 13 existing opt-in cases excluded; operating installation remains separate.
+
+- Add explicit selected SDK-source restoration through existing verified writer ownership and per-record gates. Keep local originals on every outcome, refuse legacy/history/tombstone conflicts, share inbox admission, preserve session lifecycle and old recovery budgets, and track interrupted work through drain. No automatic replay or operating activation.
+
+- Return ordinary storage completion to explicit SDK acknowledgement, with no disk-commit claim. Preserve original capture payloads locally and in the server inbox, introduce opt-in SDK capture handoff, and park old proof-required records without resetting recovery budgets. Disk-proof recovery, legacy migrations and audit retention remain held. Development candidate only; see docs/customizations/SDK-COMPLETION-RETURN.md.
+
 - Admit owned physical namespace jobs rather than whole certificates, allowing compatible late callers to join before new-read arbitration. Preserve caller deadlines, strict proof checks, non-sliding job lifetime, logical certificate drain and bulk fairness. Development only; see docs/customizations/PHYSICAL-READ-ADMISSION.md.
 
 - Align capture receipt payload normalization with the unchanged structured observe privacy contract. Preserve collision-suffixed keys, field boundaries, legacy source digests, fail-closed receipt verification, pending originals and recovery budgets. Development only; see docs/customizations/UPSTREAM-0.9.31-INTEGRATION.md.
@@ -32,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.33] — 2026-10-27
 ## [0.9.31-daniel.1] — 2026-10-27
 ## [0.9.31] — 2026-10-25
 ### Upgrade notes
@@ -324,6 +331,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.33]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.1...v0.9.31-daniel.33
 [0.9.31-daniel.1]: https://github.com/rohitg00/agentmemory/compare/v0.9.31...v0.9.31-daniel.1
 [0.9.31]: https://github.com/rohitg00/agentmemory/compare/v0.9.30...v0.9.31
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30

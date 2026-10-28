@@ -1,3 +1,5 @@
+import {recordAudit} from "./audit.js";
+import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim} from "../capture/sdk-source-restore.js";
 import {createCaptureAutoRecovery,type CaptureAutoRecoveryOptions} from "../capture/auto-recovery.js";
 import {getSearchIndex,getVectorIndex} from "./search.js";
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
@@ -24,9 +26,9 @@ import {
 import { captureReviewPage, recordCaptureFailure, resolveCaptureReview, reviewHistory } from "../capture/review.js";
 import { createCaptureRetryJobs } from "../capture/retry-jobs.js";
 import { backgroundTask, backgroundPaused } from "../ops/background-control.mjs";
-import { restoreIndexEntries } from "./observe.js";
+import { restoreIndexEntries,extractImage } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
-import { scrubRecord } from "./privacy.js";
+import { scrubRecord,normalizeCaptureData } from "./privacy.js";
 import { runtimeConfigPath } from "../cli/engine-launch.js";
 import { captureDurableAfterMs, engineStateConfigPaths } from "../cli/engine-config.js";
 import {
@@ -46,6 +48,10 @@ import {
 export type InboxState = "pending" | "retrying" | "dead";
 
 export interface InboxRecord {
+  storageCompletion?: "sdk";
+  sdkRestoreRequestId?:string;
+  sdkRestoreAttempts?:number;
+  sdkRestoreState?:"pending"|"completed";
   key: string;
   eventId: string;
   eventSource: "client" | "server";
@@ -69,9 +75,9 @@ export type { CompletedEvent } from "../capture/event-record.js";
 export { captureEventShard } from "../capture/event-record.js";
 
 export type CaptureResult =
-  | { status: "accepted"; state: "completed"; eventId: string; observationId: string; attempts: number }
+  | { status: "accepted"; state: "completed" | "sdk_completed"; eventId: string; observationId: string; attempts: number }
   | { status: "accepted"; state: "retrying"; eventId: string; observationId: string; attempts: number; nextAttemptAt: string; error: string }
-  | { status: "duplicate"; state: "completed" | InboxState; eventId: string; observationId?: string; deduplicated: true }
+  | { status: "duplicate"; state: "completed" | "sdk_completed" | InboxState; eventId: string; observationId?: string; deduplicated: true }
   | { status: "rejected"; eventId: string; error: string; retryable: boolean; observationId?: string };
 
 export interface CapturePolicy {
@@ -100,6 +106,8 @@ export interface CaptureStatus {
   policy: CapturePolicy;
   inbox: {
     pending: number;
+    sdkCompleted?: number;
+    sdkRestorePending?:number;
     retrying: number;
     dead: number;
     oldestAcceptedAt: string | null;
@@ -204,13 +212,14 @@ export function getCaptureController(): CaptureController | null {
 }
 
 export interface CaptureController {
+  completion: "sdk" | "disk";
   sweep(): Promise<{ processed: number; recovered: number; deadLettered: number }>;
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
   status(): Promise<CaptureStatus>;
   setAutomaticRecoveryEnabled(value:boolean):ReturnType<ReturnType<typeof createCaptureAutoRecovery>["setEnabled"]>;
   progress(): CaptureProgress;
-  durability(): SentMark;
+  durability(): SentMark | null;
   start(): void;
   stop(): void;
   drain(): Promise<void>;
@@ -221,6 +230,7 @@ export function registerCaptureFunctions(
   kv: StateKV,
   options: { restPort?: number; durableAfterMs?: number;autoRecovery?:Omit<CaptureAutoRecoveryOptions,"indexReady"> } = {},
 ): CaptureController {
+  const sdkCompletion=kv.durability?.completion==='sdk';
   const automaticRecovery=createCaptureAutoRecovery(kv,{enabled:false,writerOwned:()=>false,...options.autoRecovery,admitted:()=>!stopped&&(options.autoRecovery?.admitted()??false),indexReady:obs=>getSearchIndex().sessionOf(obs.id)===obs.sessionId&&getVectorIndex()?.get(obs.id)?.sessionId===obs.sessionId});
   registerCaptureReceipts(sdk,kv);
   const reviewMetadata=createCaptureReviewMetadata(kv);
@@ -274,7 +284,7 @@ export function registerCaptureFunctions(
 
   function refreshInbox(records: InboxRecord[]): void {
     inboxSize = records.length;
-    activeInboxKeys = new Set(records.filter((rec) => rec && rec.status !== "dead").map((rec) => rec.key));
+    activeInboxKeys = new Set(records.filter((rec) => rec && rec.status !== "dead" && rec.storageCompletion !== "sdk").map((rec) => rec.key));
     updatePendingSince();
   }
 
@@ -290,6 +300,10 @@ export function registerCaptureFunctions(
   }
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
+    if(sdkCompletion){
+      await kv.set(KV.captureInbox,rec.key,{...rec,observationId,storageCompletion:'sdk',updatedAt:new Date().toISOString()});
+      updateActiveInbox(rec.key,false);return;
+    }
     await resolveCaptureReview(kv,rec,observationId);
     const done: CompletedEvent = {
       key: rec.key,
@@ -348,7 +362,7 @@ export function registerCaptureFunctions(
     if (!failure && result && typeof result.observationId === "string") {
       if (rec.attempts > 1) counters.recovered++;
       await complete(rec, result.observationId);
-      return { status: "accepted", state: "completed", eventId: rec.eventId, observationId: result.observationId, attempts: rec.attempts };
+      return { status: "accepted", state: sdkCompletion ? "sdk_completed" : "completed", eventId: rec.eventId, observationId: result.observationId, attempts: rec.attempts };
     }
     if (!failure && result?.deduplicated) {
       await complete(rec, "");
@@ -383,6 +397,13 @@ export function registerCaptureFunctions(
     const key = captureKey(payload.project, payload.sessionId, eventId);
     return withKeyedLock(`capture:${key}`, async () => {
       let storedObservationId: string | undefined;
+      if(sdkCompletion){
+        const retained=await kv.get<InboxRecord>(KV.captureInbox,key);
+        if(retained?.storageCompletion==='sdk'){
+          const observation=retained.observationId?await kv.get<CompressedObservation>(KV.observations(retained.sessionId),retained.observationId):null;
+          return {status:'duplicate',state:observation&&retained.sdkRestoreState!=='pending'?'sdk_completed':'pending',eventId,observationId:retained.observationId,deduplicated:true};
+        }
+      }
       if (clientEventId) {
         const done = await kv.get<CompletedEvent>(eventScope(key), key);
         if (done?.state === "deleted") {
@@ -409,10 +430,6 @@ export function registerCaptureFunctions(
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
       }
-      if ((await currentInboxSize()) >= policy.inboxMax) {
-        counters.rejected++;
-        return { status: "rejected", eventId, error: `capture inbox is full (${policy.inboxMax} unprocessed events)`, retryable: true };
-      }
       const acceptedAt = Date.now();
       const { eventId: _ignoredEventId, observationId: _ignoredObservationId, captureKey: _ignoredCaptureKey, ...cleanPayload } = payload;
       const rec: InboxRecord = {
@@ -429,17 +446,65 @@ export function registerCaptureFunctions(
         updatedAt: new Date(acceptedAt).toISOString(),
         payload: { ...cleanPayload, data: scrubRecord(cleanPayload.data) },
       };
-      await kv.set(KV.captureInbox, key, rec);
-      if (inboxSize !== null) inboxSize++;
-      updateActiveInbox(key, true);
+      const admitted=await withKeyedLock('capture:inbox-admission',async()=>{
+        if((await currentInboxSize())>=policy.inboxMax)return false;
+        try{await kv.set(KV.captureInbox,key,rec);}catch(error){inboxSize=null;throw error;}
+        if(inboxSize!==null)inboxSize++;updateActiveInbox(key,true);return true;
+      });
+      if(!admitted){counters.rejected++;return {status:'rejected',eventId,error:`capture inbox is full (${policy.inboxMax} unprocessed events)`,retryable:true};}
       counters.accepted++;
       return attempt(rec);
+    });
+  }
+
+  async function restoreSdkSource(input:{payload:HookPayload;eventId:string}) {
+    const {payload,eventId}=input,key=captureKey(payload.project,payload.sessionId,eventId);
+    const base={eventId,completion:'sdk',durable:false,sourceRestore:'sdk-v1'};
+    return withKeyedLock(`capture:${key}`,async()=>{
+      try{
+        if(stopped)throw sdkSourceFailure('SDK_SOURCE_STOPPED');requireSdkSourceWriter(kv);
+        const at=Date.parse(payload.timestamp);if(!isValidEventId(eventId)||!Number.isFinite(at)||at<MIN_ID_TIME||at>=MAX_ID_TIME)throw sdkSourceFailure('SDK_SOURCE_IDENTITY_INVALID');
+        if(Buffer.byteLength(JSON.stringify(payload))>256*1024||extractImage(normalizeCaptureData(payload.data)))throw sdkSourceFailure('SDK_SOURCE_FORMAT_UNSUPPORTED');
+        const id=observationIdFor(key,payload.timestamp,at),keys=sdkSourceKeys(payload,key,id),requestId=randomUUID();
+        let source:InboxRecord|undefined,alreadyPresent=false;
+        await withKeyedLock('capture:inbox-admission',()=>kv.recoveryWrite!.exclusive(keys,async()=>{
+          requireSdkSourceWriter(kv);
+          if(await kv.get(KV.captureReview,key)||await kv.get(eventScope(key),key))throw sdkSourceFailure('SDK_SOURCE_LEGACY_PROTECTED');
+          const rec=await kv.get<InboxRecord>(KV.captureInbox,key),obs=await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id);
+          if(rec&&(rec.storageCompletion!=='sdk'||!['pending','retrying'].includes(rec.status)||rec.key!==key||rec.eventId!==eventId||rec.eventSource!=='client'||rec.sessionId!==payload.sessionId||rec.project!==payload.project||rec.hookType!==payload.hookType||rec.observationId!==id||!sameSdkSource(rec.payload,payload)))throw sdkSourceFailure('SDK_SOURCE_CONFLICT');
+          if(obs&&!sdkObservationMatches(obs,payload,key,id,eventId))throw sdkSourceFailure('SDK_SOURCE_CONFLICT');
+          alreadyPresent=!!obs;
+          if(rec&&['sdkRestoreState','sdkRestoreRequestId','sdkRestoreAttempts'].some(field=>Object.hasOwn(rec,field))&&(!['pending','completed'].includes(rec.sdkRestoreState??'')||typeof rec.sdkRestoreRequestId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(rec.sdkRestoreRequestId)||rec.sdkRestoreAttempts===undefined))throw sdkSourceFailure('SDK_SOURCE_RESTORE_METADATA_INVALID');
+          if(rec?.sdkRestoreAttempts!==undefined&&(!Number.isSafeInteger(rec.sdkRestoreAttempts)||rec.sdkRestoreAttempts<0||rec.sdkRestoreAttempts>3))throw sdkSourceFailure('SDK_SOURCE_BUDGET_INVALID');
+          if(!rec&&(await currentInboxSize())>=policy.inboxMax)throw sdkSourceFailure('SDK_SOURCE_INBOX_FULL');
+          if(!obs&&(rec?.sdkRestoreAttempts??0)>=3)throw sdkSourceFailure('SDK_SOURCE_RESTORE_LIMIT');
+          const now=new Date().toISOString();
+          source={...(rec??{key,eventId,eventSource:'client',sessionId:payload.sessionId,project:payload.project,hookType:payload.hookType,observationId:id,status:'pending',attempts:0,acceptedAt:now,payload:{...payload,data:scrubRecord(payload.data)}}),storageCompletion:'sdk',updatedAt:now,sdkRestoreRequestId:requestId,sdkRestoreState:'pending',sdkRestoreAttempts:(rec?.sdkRestoreAttempts??0)+(obs?0:1)};
+          try{await kv.set(KV.captureInbox,key,source);}catch(error){if(!rec)inboxSize=null;throw error;}
+          if(!rec&&inboxSize!==null)inboxSize++;
+        }));
+        if(!alreadyPresent){const outcome:any=await sdk.trigger({function_id:'mem::observe',payload:{...payload,eventId,captureKey:key,observationId:id,sdkSourceRestore:{key,requestId}}});alreadyPresent=outcome?.deduplicated===true;}
+        else await restoreIndexEntries((await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id))!);
+        await recordAudit(kv,'capture_sdk_source_restore','mem::capture-restore-sdk',[key],{completion:'sdk',stage:'verify_pending'});
+        await kv.recoveryWrite!.exclusive(keys,async()=>{
+          await assertSdkSourceClaim(kv,{...payload,eventId,captureKey:key,observationId:id},{key,requestId});if(stopped)throw sdkSourceFailure('SDK_SOURCE_STOPPED');
+          const current=await kv.get<InboxRecord>(KV.captureInbox,key),obs=await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id);
+          if(current?.sdkRestoreRequestId!==requestId||!sameSdkSource(current.payload,payload)||!sdkObservationMatches(obs,payload,key,id,eventId))throw sdkSourceFailure('SDK_SOURCE_CHANGED');
+          await kv.set(KV.captureInbox,key,{...current,sdkRestoreState:'completed',updatedAt:new Date().toISOString()});
+        });
+        updateActiveInbox(key,false);
+        return {...base,status:alreadyPresent?'duplicate':'restored',completed:true,observationId:id};
+      }catch(error){
+        const code=(error as {code?:string}).code;
+        return {...base,status:'held',completed:false,code:typeof code==='string'&&/^[A-Z0-9_]{1,80}$/.test(code)?code:'SDK_SOURCE_RESTORE_UNAVAILABLE'};
+      }
     });
   }
 
   async function retryOne(key: string, force: boolean, requestId?: string): Promise<"recovered" | "dead" | "waiting" | "gone" | "stopped"> {
     return withKeyedLock(`capture:${key}`, async () => {
       if (stopped) return "stopped";
+      if(sdkCompletion)return "waiting";
       await currentInboxSize();
       const stored=await kv.get<InboxRecord>(KV.captureInbox,key);
       if (!stored) return "gone";
@@ -494,7 +559,7 @@ export function registerCaptureFunctions(
   }
 
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
-    if (stopped) return { processed: 0, recovered: 0, deadLettered: 0 };
+    if (stopped || sdkCompletion) return { processed: 0, recovered: 0, deadLettered: 0 };
     const records = await kv.list<InboxRecord>(KV.captureInbox);
     refreshInbox(records);
     let processed = 0;
@@ -529,7 +594,7 @@ export function registerCaptureFunctions(
   }
 
   async function prune(): Promise<number> {
-    if (stopped) return 0;
+    if (stopped || sdkCompletion) return 0;
     const cutoff = Date.now() - policy.dedupRetentionHours * 3600_000;
     const perShard = Math.max(1, Math.ceil(policy.eventsMax / EVENT_SHARDS));
     let removed = 0;
@@ -569,6 +634,7 @@ export function registerCaptureFunctions(
   }
 
   async function settleRetained(): Promise<number> {
+    if(sdkCompletion)return 0;
     let requeued = 0;
     for (const target of spoolTargets) {
       if (stopped) break;
@@ -586,6 +652,7 @@ export function registerCaptureFunctions(
     return stopped ? Promise.resolve([]) : trackWork(runDrainLocalSpool);
   }
   async function runDrainLocalSpool(): Promise<DrainResult[]> {
+    if(sdkCompletion)return [];
     const results: DrainResult[] = [];
     for (const target of spoolTargets) {
       if (stopped) break;
@@ -616,7 +683,7 @@ export function registerCaptureFunctions(
     try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
       refreshInbox(records);
-      const live = records.filter((r) => r.status !== "dead");
+      const live = records.filter((r) => r.status !== "dead" && r.storageCompletion !== "sdk");
       const next = live
         .map((r) => r.nextAttemptAt)
         .filter((v): v is string => typeof v === "string")
@@ -625,7 +692,8 @@ export function registerCaptureFunctions(
         .filter((r) => r.lastError)
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       inbox = {
-        pending: records.filter((r) => r.status === "pending").length,
+        pending: records.filter((r) => r.status === "pending" && r.storageCompletion !== "sdk").length,
+        ...(sdkCompletion?{sdkCompleted:records.filter(r=>r.storageCompletion==='sdk'&&r.sdkRestoreState!=='pending').length,sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length}:{}),
         retrying: records.filter((r) => r.status === "retrying").length,
         dead: records.filter((r) => r.status === "dead").length,
         oldestAcceptedAt: live.map((r) => r.acceptedAt).sort()[0] ?? null,
@@ -645,6 +713,7 @@ export function registerCaptureFunctions(
     return { automaticRecovery:automaticRecovery.snapshot(),policy, inbox, legacyOutbox:await inspectOutbox(), progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
+  sdk.registerFunction("mem::capture-restore-sdk",(input:{payload:HookPayload;eventId:string})=>trackWork(()=>backgroundTask(restoreSdkSource)(input)));
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean; requestId?: string } = {}) => {
@@ -702,7 +771,8 @@ export function registerCaptureFunctions(
     drainLocalSpool,
     status,
     progress,
-    durability: () => ({ ...mark }),
+    completion: sdkCompletion ? "sdk" : "disk",
+    durability: () => sdkCompletion ? null : ({ ...mark }),
     setAutomaticRecoveryEnabled:value=>automaticRecovery.setEnabled(value),
     start() {
       if (stopped || timers.length) return;

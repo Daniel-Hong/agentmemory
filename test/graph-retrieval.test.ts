@@ -572,11 +572,13 @@ it("does not replay cached operations after the caller cancels its query", async
   await expect(query.searchByEntities(["Cobalt"])).rejects.toThrow();
 });
 
-it('builds adjacency once per search even when many nodes match the entity',async()=>{
- const nodes=Array.from({length:30},(_,i)=>makeNode('n'+i,'AgentMemory '+i,'concept',['obs_'+i]));
- let endpointReads=0;
- const edges=Array.from({length:29},(_,i)=>{const edge=makeEdge('e'+i,'n'+i,'n'+(i+1));Object.defineProperty(edge,'sourceNodeId',{get(){endpointReads++;return 'n'+i;}});return edge;});
- const results=await new GraphRetrieval(mockKV(nodes,edges) as never).searchByEntities(['AgentMemory'],2,40);
- expect(results).toHaveLength(30);
- expect(endpointReads).toBeLessThanOrEqual(58);
+it('reads indexed adjacency once per search even when many nodes match the entity',async()=>{
+ const nodes=Array.from({length:20},(_,i)=>makeNode('n'+i,'AgentMemory '+i,'concept',['obs_'+i]));
+ const edges=Array.from({length:19},(_,i)=>makeEdge('e'+i,'n'+i,'n'+(i+1)));
+ const kv=await mockKV(nodes,edges),get=vi.spyOn(kv,'get');
+ const results=await new GraphRetrieval(kv as never).searchByEntities(['AgentMemory'],2,40);
+ expect(new Set(results.map(result=>result.obsId))).toEqual(new Set(nodes.flatMap(node=>node.sourceObservationIds)));
+ const indexedReads=get.mock.calls.filter(([scope])=>scope===KV.graphRetrievalData).map(([,key])=>key);
+ expect(indexedReads.filter(key=>key.includes(':record:edge:'))).toHaveLength(edges.length);
+ expect(new Set(indexedReads).size).toBe(indexedReads.length);
 });

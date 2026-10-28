@@ -262,13 +262,13 @@ describe("hooks keep accepted observations until the server saved them", () => {
     expect(spoolLines(dir, port)).toHaveLength(0);
   });
 
-  it("keeps nothing when the spool is turned off", async () => {
+  it("does not send SDK captures without the required local original when the spool is turned off", async () => {
     const dir = mkdtempSync(join(tmpdir(), "am-hook-keep-"));
     const received: Array<Record<string, unknown>> = [];
     const port = await markServer(received, () => ({ bootId: "aaaaaaaaaaaaaaaaaaaaaaaa", durableAfterMs: 60_000 }));
     const env = { AGENTMEMORY_URL: `http://127.0.0.1:${port}`, AGENTMEMORY_CAPTURE_SPOOL_DIR: dir, AGENTMEMORY_CAPTURE_SPOOL: "false" };
     expect((await runHook("post-tool-use.mjs", toolPayload("spool-off"), env)).exitCode).toBe(0);
-    expect(received).toHaveLength(1);
+    expect(received).toHaveLength(0);
     expect(existsSync(dir) ? readdirSync(dir) : []).toHaveLength(0);
   });
 });

@@ -12,10 +12,12 @@ async function fixture(){
  const path=await mkdtemp(join(tmpdir(),'am-mutation-tracking-'));directories.push(path);
  vi.stubEnv('AGENTMEMORY_STATE_STORE_PATH',path);
  const rows=new Map<string,Map<string,unknown>>();
+ const boundaries:{pending:number;revision:number}[]=[];
  const responses:{resolve:()=>void;reject:(error:Error)=>void}[]=[];
  const sdk={trigger:vi.fn(({function_id,payload}:{function_id:string;payload:any})=>{
   const {scope,key}=payload;
   if(function_id==='state::get')return Promise.resolve(structuredClone(rows.get(scope)?.get(key)??null));
+  boundaries.push({pending:reader.pendingMutations(scope),revision:reader.mutationRevision(scope)});
   if(!rows.has(scope))rows.set(scope,new Map());
   const table=rows.get(scope)!,old=table.get(key)??null;let result:unknown;
   if(function_id==='state::set'){result=structuredClone(payload.value);table.set(key,result);}
@@ -25,7 +27,7 @@ async function fixture(){
   return new Promise((resolve,reject)=>responses.push({resolve:()=>resolve(result),reject}));
  })};
  const kv=new StateKV(sdk as never),reader=kv.observationReader!;
- return{kv,reader,rows,responses};
+ return{kv,reader,rows,responses,boundaries};
 }
 
 for(const scope of metadataScopes)for(const method of ['set','update','delete']as const)for(const rejected of [false,true]){
@@ -33,9 +35,10 @@ for(const scope of metadataScopes)for(const method of ['set','update','delete']a
   const f=await fixture();f.rows.set(scope,new Map([['item',{id:'item',value:'before'}]]));
   const pending=method==='set'?f.kv.set(scope,'item',{id:'item',value:'after'}):method==='update'?f.kv.update(scope,'item',[{type:'set',path:'value',value:'after'}]):f.kv.delete(scope,'item');
   const outcome=pending.then(value=>({value}),error=>({error}));
+  await vi.waitFor(()=>expect(f.responses).toHaveLength(1));
+  expect(f.boundaries).toEqual([{pending:1,revision:1}]);
   expect(f.reader.pendingMutations(scope)).toBe(1);
   expect(f.reader.mutationRevision(scope)).toBe(1);
-  await vi.waitFor(()=>expect(f.responses).toHaveLength(1));
   expect(await f.kv.get(scope,'item')).toEqual(method==='delete'?null:{id:'item',value:'after'});
   expect(f.reader.pendingMutations(scope)).toBe(1);
   const error=Error('synthetic applied response failure');

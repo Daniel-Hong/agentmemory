@@ -128,6 +128,14 @@ async function fixture(features = true, callerBudgetMs = 120) {
   const { HookClient } = await import(pathToFileURL(join(clientDir, 'long-session-hook-client.mjs')).href);
   const outbox = join(root, 'outbox');
   const client = new HookClient({ dir: outbox, url: 'http://127.0.0.1:45679', secret: 'synthetic-secret', timeoutMs: callerBudgetMs });
+  const enqueueCurrent = client.enqueue.bind(client);
+  client.enqueue = async (path: string, body: unknown) => {
+    const file = await enqueueCurrent(path, body);
+    const historical = JSON.parse(await readFile(file, 'utf8'));
+    delete historical.completionPolicy;
+    await writeFile(file, JSON.stringify(historical));
+    return file;
+  };
   const pending = async () => Promise.all((await readdir(outbox)).filter(name => name.endsWith('.json')).sort().map(async name => JSON.parse(await readFile(join(outbox, name), 'utf8'))));
   const endBody = { sessionId, hookEventName: 'SessionEnd', eventId: 'synthetic-end-event' };
   const settle = async () => { while (inflight.size) await Promise.allSettled([...inflight]); };

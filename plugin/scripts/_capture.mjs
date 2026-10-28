@@ -1,235 +1,9 @@
-import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
-import { homedir, platform } from "node:os";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-//#region src/functions/privacy.ts
-const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
-const SECRET_PATTERN_SOURCES = [
-	/(?:api[_-]?key|secret|token|password|credential|auth)[\s]*[=:]\s*["']?[A-Za-z0-9_\-/.+]{20,}["']?/gi,
-	/Bearer\s+[A-Za-z0-9._\-+/=]{20,}/gi,
-	/(?<![\p{L}\p{N}\p{M}_])sk-proj-[A-Za-z0-9\-_]{20,}/gu,
-	/(?<![\p{L}\p{N}\p{M}_])(?:sk|pk|rk|ak)-[A-Za-z0-9][A-Za-z0-9\-_]{19,}/gu,
-	/(?<![\p{L}\p{N}\p{M}_])sk-ant-[A-Za-z0-9\-_]{20,}/gu,
-	/gh[pus]_[A-Za-z0-9]{36,}/g,
-	/github_pat_[A-Za-z0-9_]{22,}/g,
-	/xoxb-[A-Za-z0-9\-]+/g,
-	/AKIA[0-9A-Z]{16}/g,
-	/AIza[A-Za-z0-9\-_]{35}/g,
-	/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-	/npm_[A-Za-z0-9]{36}/g,
-	/glpat-[A-Za-z0-9\-_]{20,}/g,
-	/dop_v1_[A-Za-z0-9]{64}/g
-];
-const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
-const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:"'<>]*:[^\s/?#@"'<>]+@/gi;
-function stripPrivateData(input) {
-	let result = input.replace(PRIVATE_TAG_RE, "[REDACTED]");
-	result = result.replace(new RegExp(PRIVATE_KEY_BLOCK_RE.source, PRIVATE_KEY_BLOCK_RE.flags), "[REDACTED_SECRET]");
-	result = result.replace(new RegExp(URL_CREDENTIALS_RE.source, URL_CREDENTIALS_RE.flags), "$1[REDACTED_SECRET]@");
-	for (const source of SECRET_PATTERN_SOURCES) {
-		const pattern = new RegExp(source.source, source.flags);
-		result = result.replace(pattern, "[REDACTED_SECRET]");
-	}
-	return result;
-}
-function scrubRecord(value, options = {}) {
-	if (typeof value === "string") return stripPrivateData(value);
-	if (Array.isArray(value)) return value.map((item) => scrubRecord(item, options));
-	if (value !== null && typeof value === "object") {
-		const proto = Object.getPrototypeOf(value);
-		if (proto !== Object.prototype && proto !== null) return value;
-		const entries = Object.entries(value).map(([key, item]) => [options.scrubKeys ? stripPrivateData(key) : key, item]);
-		const reserved = new Set(entries.map(([key]) => key));
-		const used = /* @__PURE__ */ new Set();
-		return Object.fromEntries(entries.map(([key, item]) => {
-			let unique = key;
-			if (used.has(unique)) {
-				let suffix = 2;
-				do
-					unique = `${key}_${suffix++}`;
-				while (reserved.has(unique) || used.has(unique));
-			}
-			used.add(unique);
-			return [unique, scrubRecord(item, options)];
-		}));
-	}
-	return value;
-}
-function normalizeCaptureData(value) {
-	const serialized = JSON.stringify(value);
-	return serialized === void 0 ? void 0 : scrubRecord(JSON.parse(serialized), { scrubKeys: true });
-}
-//#endregion
-//#region src/capture/receipt-digest.ts
-function canonical(value) {
-	if (Array.isArray(value)) return value.map(canonical);
-	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, canonical(item)]));
-	return value;
-}
-function captureSourceDigest(hookType, timestamp, raw) {
-	return createHash("sha256").update(JSON.stringify([
-		hookType,
-		timestamp,
-		canonical(raw)
-	])).digest("hex");
-}
-function capturePayloadDigest(body) {
-	const raw = normalizeCaptureData(body.data);
-	return captureSourceDigest(body.hookType, body.timestamp, raw);
-}
-//#endregion
-//#region src/secret-store.ts
-const SECRET_KEY = "AGENTMEMORY_SECRET";
-function agentmemoryHomeDir() {
-	return process.env["AGENTMEMORY_DATA_DIR"] || join(homedir(), ".agentmemory");
-}
-function secretFilePath() {
-	return join(agentmemoryHomeDir(), "secret");
-}
-function usable(value) {
-	if (typeof value !== "string") return "";
-	const trimmed = value.trim();
-	if (!trimmed) return "";
-	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return "";
-	return trimmed;
-}
-function unquote(value) {
-	const quote = value[0];
-	if ((quote === "\"" || quote === "'") && value.length > 1) {
-		const close = value.indexOf(quote, 1);
-		if (close !== -1) return value.slice(1, close);
-	}
-	const hash = value.indexOf(" #");
-	return hash === -1 ? value : value.slice(0, hash).trim();
-}
-function readEnvFileSecret() {
-	let content;
-	try {
-		content = readFileSync(process.env["AGENTMEMORY_ENV_FILE"] || join(homedir(), ".agentmemory", ".env"), "utf-8");
-	} catch {
-		return "";
-	}
-	if (typeof content !== "string") return "";
-	let found = "";
-	for (const line of content.split("\n")) {
-		const trimmed = line.trim();
-		if (trimmed.startsWith("#")) continue;
-		const eq = trimmed.indexOf("=");
-		if (eq === -1) continue;
-		if (trimmed.slice(0, eq).replace(/^export\s+/, "").trim() !== SECRET_KEY) continue;
-		found = usable(unquote(trimmed.slice(eq + 1).trim()));
-	}
-	return found;
-}
-function readSecretFile(path) {
-	try {
-		return usable(readFileSync(path, "utf-8"));
-	} catch {
-		return "";
-	}
-}
-function legacyDataDirSecretPaths(env = process.env) {
-	const dataDir = env["AGENTMEMORY_DATA_DIR"];
-	if (!dataDir) return [];
-	const paths = [
-		join(dataDir, "secret"),
-		join(dataDir, ".hmac"),
-		join(dataDir, "..", ".hmac")
-	];
-	return [...new Set(paths.filter((path) => path !== secretFilePath()))];
-}
-function readStoredSecret(env = process.env) {
-	const canonicalPath = canonicalSecretPath();
-	const localPath = secretFilePath();
-	const legacyPaths = legacyDataDirSecretPaths(env);
-	return readSecretFile(canonicalPath) || (localPath === canonicalPath ? "" : readSecretFile(localPath)) || legacyPaths.map(readSecretFile).find(Boolean) || "";
-}
-function isLoopbackUrl(url) {
-	let hostname;
-	try {
-		hostname = new URL(url).hostname.toLowerCase();
-	} catch {
-		return false;
-	}
-	const bare = hostname.replace(/^\[|\]$/g, "");
-	return bare === "localhost" || bare === "::1" || /^127(?:\.\d{1,3}){3}$/.test(bare);
-}
-function resolveClientSecret(baseUrl, env = process.env) {
-	const fromEnv = usable(env[SECRET_KEY]);
-	if (fromEnv) return fromEnv;
-	if (env.AGENTMEMORY_CREDENTIAL_MODE === "explicit") return "";
-	if (!isLoopbackUrl(baseUrl)) return "";
-	return readEnvFileSecret() || readStoredSecret(env);
-}
-function canonicalSecretPath() {
-	return join(homedir(), ".agentmemory", "secret");
-}
-//#endregion
-//#region src/capture/event-id.ts
-const HOST_ID_FIELDS = [
-	"event_id",
-	"eventId",
-	"tool_use_id",
-	"toolUseId",
-	"tool_call_id",
-	"toolCallId",
-	"call_id",
-	"callId",
-	"prompt_id",
-	"promptId",
-	"message_id",
-	"messageId"
-];
-const HOST_TIME_FIELDS = [
-	"timestamp",
-	"ts",
-	"created_at",
-	"createdAt",
-	"event_time"
-];
-function stableStringify(value) {
-	if (value === void 0) return "null";
-	if (value === null || typeof value !== "object") {
-		const encoded = JSON.stringify(value);
-		return encoded === void 0 ? "null" : encoded;
-	}
-	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-	const obj = value;
-	return `{${Object.keys(obj).filter((k) => obj[k] !== void 0).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
-}
-function hostScalar(host, fields) {
-	for (const field of fields) {
-		const v = host[field];
-		if (typeof v === "string" && v.trim()) return v.trim();
-		if (typeof v === "number" && Number.isFinite(v)) return String(v);
-	}
-}
-function digest(parts) {
-	return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
-}
-function hasHostIdentity(host) {
-	const source = host && typeof host === "object" ? host : {};
-	return hostScalar(source, HOST_ID_FIELDS) !== void 0 || hostScalar(source, HOST_TIME_FIELDS) !== void 0;
-}
-function deriveEventId(hookType, sessionId, host, content) {
-	const source = host && typeof host === "object" ? host : {};
-	const hostId = hostScalar(source, HOST_ID_FIELDS);
-	if (hostId) return `evh_${digest([
-		"host",
-		sessionId,
-		hookType,
-		hostId
-	])}`;
-	return `evc_${digest([
-		"content",
-		sessionId,
-		hookType,
-		hostScalar(source, HOST_TIME_FIELDS) ?? "",
-		stableStringify(content)
-	])}`;
-}
-//#endregion
+import { homedir, platform } from "node:os";
+import { spawn } from "node:child_process";
 //#region src/cli-data-dir.ts
 function argValue(args, name) {
 	const equals = `${name}=`;
@@ -309,6 +83,128 @@ function resolveDataDir(options = {}) {
 		dataDir: forInstance(defaultDir),
 		source: "default"
 	};
+}
+//#endregion
+//#region src/functions/privacy.ts
+const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
+const SECRET_PATTERN_SOURCES = [
+	/(?:api[_-]?key|secret|token|password|credential|auth)[\s]*[=:]\s*["']?[A-Za-z0-9_\-/.+]{20,}["']?/gi,
+	/Bearer\s+[A-Za-z0-9._\-+/=]{20,}/gi,
+	/(?<![\p{L}\p{N}\p{M}_])sk-proj-[A-Za-z0-9\-_]{20,}/gu,
+	/(?<![\p{L}\p{N}\p{M}_])(?:sk|pk|rk|ak)-[A-Za-z0-9][A-Za-z0-9\-_]{19,}/gu,
+	/(?<![\p{L}\p{N}\p{M}_])sk-ant-[A-Za-z0-9\-_]{20,}/gu,
+	/gh[pus]_[A-Za-z0-9]{36,}/g,
+	/github_pat_[A-Za-z0-9_]{22,}/g,
+	/xoxb-[A-Za-z0-9\-]+/g,
+	/AKIA[0-9A-Z]{16}/g,
+	/AIza[A-Za-z0-9\-_]{35}/g,
+	/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+	/npm_[A-Za-z0-9]{36}/g,
+	/glpat-[A-Za-z0-9\-_]{20,}/g,
+	/dop_v1_[A-Za-z0-9]{64}/g
+];
+const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:"'<>]*:[^\s/?#@"'<>]+@/gi;
+function stripPrivateData(input) {
+	let result = input.replace(PRIVATE_TAG_RE, "[REDACTED]");
+	result = result.replace(new RegExp(PRIVATE_KEY_BLOCK_RE.source, PRIVATE_KEY_BLOCK_RE.flags), "[REDACTED_SECRET]");
+	result = result.replace(new RegExp(URL_CREDENTIALS_RE.source, URL_CREDENTIALS_RE.flags), "$1[REDACTED_SECRET]@");
+	for (const source of SECRET_PATTERN_SOURCES) {
+		const pattern = new RegExp(source.source, source.flags);
+		result = result.replace(pattern, "[REDACTED_SECRET]");
+	}
+	return result;
+}
+function scrubRecord(value, options = {}) {
+	if (typeof value === "string") return stripPrivateData(value);
+	if (Array.isArray(value)) return value.map((item) => scrubRecord(item, options));
+	if (value !== null && typeof value === "object") {
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return value;
+		const entries = Object.entries(value).map(([key, item]) => [options.scrubKeys ? stripPrivateData(key) : key, item]);
+		const reserved = new Set(entries.map(([key]) => key));
+		const used = /* @__PURE__ */ new Set();
+		return Object.fromEntries(entries.map(([key, item]) => {
+			let unique = key;
+			if (used.has(unique)) {
+				let suffix = 2;
+				do
+					unique = `${key}_${suffix++}`;
+				while (reserved.has(unique) || used.has(unique));
+			}
+			used.add(unique);
+			return [unique, scrubRecord(item, options)];
+		}));
+	}
+	return value;
+}
+function normalizeCaptureData(value) {
+	const serialized = JSON.stringify(value);
+	return serialized === void 0 ? void 0 : scrubRecord(JSON.parse(serialized), { scrubKeys: true });
+}
+//#endregion
+//#region src/capture/event-id.ts
+const HOST_ID_FIELDS = [
+	"event_id",
+	"eventId",
+	"tool_use_id",
+	"toolUseId",
+	"tool_call_id",
+	"toolCallId",
+	"call_id",
+	"callId",
+	"prompt_id",
+	"promptId",
+	"message_id",
+	"messageId"
+];
+const HOST_TIME_FIELDS = [
+	"timestamp",
+	"ts",
+	"created_at",
+	"createdAt",
+	"event_time"
+];
+function stableStringify(value) {
+	if (value === void 0) return "null";
+	if (value === null || typeof value !== "object") {
+		const encoded = JSON.stringify(value);
+		return encoded === void 0 ? "null" : encoded;
+	}
+	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+	const obj = value;
+	return `{${Object.keys(obj).filter((k) => obj[k] !== void 0).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+}
+function hostScalar(host, fields) {
+	for (const field of fields) {
+		const v = host[field];
+		if (typeof v === "string" && v.trim()) return v.trim();
+		if (typeof v === "number" && Number.isFinite(v)) return String(v);
+	}
+}
+function digest(parts) {
+	return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
+}
+function hasHostIdentity(host) {
+	const source = host && typeof host === "object" ? host : {};
+	return hostScalar(source, HOST_ID_FIELDS) !== void 0 || hostScalar(source, HOST_TIME_FIELDS) !== void 0;
+}
+function deriveEventId(hookType, sessionId, host, content) {
+	const source = host && typeof host === "object" ? host : {};
+	const hostId = hostScalar(source, HOST_ID_FIELDS);
+	if (hostId) return `evh_${digest([
+		"host",
+		sessionId,
+		hookType,
+		hostId
+	])}`;
+	return `evc_${digest([
+		"content",
+		sessionId,
+		hookType,
+		hostScalar(source, HOST_TIME_FIELDS) ?? "",
+		stableStringify(content)
+	])}`;
 }
 //#endregion
 //#region src/capture/spool.ts
@@ -496,7 +392,7 @@ function parseLines(text) {
 	};
 }
 function isExpired(rec, policy, now) {
-	if (rec.requireReceipt) return false;
+	if (rec.requireReceipt || rec.holdReason === "SDK_COMPLETION_ONLY") return false;
 	const at = Date.parse(rec.spooledAt);
 	return Number.isFinite(at) && now - at > policy.maxAgeMs;
 }
@@ -563,9 +459,9 @@ function appendSpool(url, eventId, body, reason, options = {}) {
 		return withLock(paths.lock, (locked) => {
 			let expired = 0;
 			if (locked && fileSize(paths.file) + bytes > policy.maxBytes) expired = pruneExpiredLocked(paths, policy);
-			const over = fileSize(paths.file) + sentBytes(paths) + bytes - policy.maxBytes;
+			const over = fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes - policy.maxBytes;
 			if (locked && over > 0) evictSent(paths, over);
-			if (fileSize(paths.file) + sentBytes(paths) + bytes > policy.maxBytes) {
+			if (fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes > policy.maxBytes) {
 				if (expired) writeStats(paths, (s) => void (s.expired += expired));
 				return note("full", bytes);
 			}
@@ -642,6 +538,120 @@ function parseSentMark(body) {
 		durableAfterMs: Math.min(Math.ceil(after), MAX_DURABLE_AFTER_MS)
 	};
 }
+function sdkOriginals(paths) {
+	let records = 0, bytes = 0;
+	try {
+		for (const name of readdirSync(join(paths.dir, `${paths.name}.sdk-originals`))) {
+			if (!/^[a-f0-9]{64}(?:\.envelope-[a-f0-9]{64})?\.json(?:\.[a-f0-9-]+\.tmp)?$/.test(name)) continue;
+			bytes += statSync(join(paths.dir, `${paths.name}.sdk-originals`, name)).size;
+			if (name.endsWith(".json")) records++;
+		}
+	} catch {}
+	return {
+		records,
+		bytes
+	};
+}
+function readSdkOriginal(url, eventId, options = {}) {
+	if (!/^[A-Za-z0-9_.:-]{8,128}$/.test(eventId)) throw Error("SDK_SOURCE_SELECTION_INVALID");
+	const paths = spoolPaths(url, options.dir), folder = join(paths.dir, `${paths.name}.sdk-originals`), identity = createHash("sha256").update(eventId).digest("hex");
+	return withLock(paths.lock, (locked) => {
+		if (!locked) throw Error("SDK_SOURCE_SELECTION_BUSY");
+		if (readdirSync(folder).some((name) => name.startsWith(identity + ".envelope-"))) throw Error("SDK_SOURCE_SELECTION_AMBIGUOUS");
+		const fd = openSync(join(folder, identity + ".json"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+		try {
+			const stat = fstatSync(fd);
+			if (!stat.isFile() || stat.size > (options.policy ?? spoolPolicy()).maxRecordBytes) throw Error("SDK_SOURCE_FORMAT_UNSUPPORTED");
+			const rec = JSON.parse(readFileSync(fd, "utf8"));
+			if (rec.v !== 1 || rec.eventId !== eventId || rec.completion !== "sdk" || rec.durable !== false || rec.body?.eventId !== eventId || rec.body?.captureCompletion !== "sdk-v1") throw Error("SDK_SOURCE_SELECTION_INVALID");
+			return rec.body;
+		} finally {
+			closeSync(fd);
+		}
+	});
+}
+function sameSdkEnvelopeSource(a, b) {
+	const source = (body) => {
+		const value = { ...body };
+		if (typeof a.timestamp === "string" && typeof b.timestamp === "string") delete value.timestamp;
+		if (body.hookType === "prompt_submit" && body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
+			const data = { ...body.data };
+			if (typeof data.prompt === "string" && data.backfill === true) delete data.backfill;
+			value.data = data;
+		}
+		return value;
+	};
+	return isDeepStrictEqual(source(a), source(b));
+}
+function retainSdkOriginal(url, eventId, body, options = {}) {
+	const policy = options.policy ?? spoolPolicy();
+	if (!policy.enabled) return false;
+	const paths = spoolPaths(url, options.dir);
+	const retainedBody = scrubRecord(JSON.parse(JSON.stringify(body)), { scrubKeys: true });
+	const line = JSON.stringify({
+		v: 1,
+		eventId,
+		body: retainedBody,
+		completion: "sdk",
+		durable: false
+	}) + "\n";
+	const bytes = Buffer.byteLength(line);
+	if (bytes > policy.maxRecordBytes) return false;
+	try {
+		ensureDir(paths.dir);
+		return withLock(paths.lock, (locked) => {
+			if (!locked) return false;
+			const folder = join(paths.dir, `${paths.name}.sdk-originals`);
+			ensureDir(folder);
+			const identity = createHash("sha256").update(eventId).digest("hex");
+			let file = join(folder, identity + ".json");
+			if (existsSync(file)) {
+				const prior = JSON.parse(readFileSync(file, "utf8"));
+				if (prior.eventId !== eventId) return false;
+				if (!isDeepStrictEqual(prior.body, retainedBody)) {
+					if (!prior.body || !sameSdkEnvelopeSource(prior.body, retainedBody)) return false;
+					file = join(folder, identity + ".envelope-" + createHash("sha256").update(stableStringify(retainedBody)).digest("hex") + ".json");
+				}
+			}
+			if (existsSync(file)) {
+				const prior = JSON.parse(readFileSync(file, "utf8"));
+				if (prior.eventId !== eventId || !isDeepStrictEqual(prior.body, retainedBody)) return false;
+				const fd = openSync(file, "r");
+				try {
+					fsyncSync(fd);
+				} finally {
+					closeSync(fd);
+				}
+				syncDirectory(folder);
+				syncDirectory(paths.dir);
+				syncDirectory(join(paths.dir, ".."));
+				return true;
+			}
+			if (fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes > policy.maxBytes) return false;
+			const temp = file + "." + randomUUID() + ".tmp";
+			try {
+				const fd = openSync(temp, "wx", 384);
+				try {
+					writeFileSync(fd, line);
+					fsyncSync(fd);
+				} finally {
+					closeSync(fd);
+				}
+				renameSync(temp, file);
+				syncDirectory(folder);
+				syncDirectory(paths.dir);
+				syncDirectory(join(paths.dir, ".."));
+				return true;
+			} finally {
+				try {
+					unlinkSync(temp);
+				} catch {}
+			}
+		});
+	} catch {
+		return false;
+	}
+}
 function retainSent(url, eventId, body, mark, options = {}) {
 	const policy = options.policy ?? spoolPolicy();
 	if (!policy.enabled || !BOOT_ID_RE.test(mark.bootId)) return false;
@@ -669,7 +679,7 @@ function retainSent(url, eventId, body, mark, options = {}) {
 		const dueAt = Math.ceil((now + mark.durableAfterMs) / SENT_BUCKET_MS) * SENT_BUCKET_MS;
 		const file = join(paths.dir, `${paths.name}.sent-${mark.bootId}-${dueAt}.jsonl`);
 		return withLock(paths.lock, () => {
-			if (fileSize(paths.file) + sentBytes(paths) + bytes > policy.maxBytes) return false;
+			if (fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes > policy.maxBytes) return false;
 			const fd = openSync(file, "a", 384);
 			try {
 				writeSync(fd, line);
@@ -759,7 +769,13 @@ function requeueUnlocked(paths, leftover) {
 	} catch {}
 }
 function spoolHasRecords(url, dir) {
-	return fileSize(spoolPaths(url, dir).file) > 0;
+	const paths = spoolPaths(url, dir);
+	if (fileSize(paths.file) > 0) return true;
+	try {
+		return readdirSync(paths.dir).some((name) => name.startsWith(paths.name + ".draining-") && name.endsWith(".jsonl") && fileSize(join(paths.dir, name)) > 0);
+	} catch {
+		return false;
+	}
 }
 function drainInProgress(url, dir) {
 	const paths = spoolPaths(url, dir);
@@ -817,11 +833,17 @@ async function drainSpool(url, send, options = {}) {
 				leftover.push(rec);
 				continue;
 			}
-			if (seen.has(rec.eventId)) {
+			const identity = rec.eventId + ":" + (rec.body.captureCompletion === "sdk-v1" ? "sdk" : "legacy");
+			if (!rec.requireReceipt && !rec.holdReason && seen.has(identity)) {
 				result.duplicates++;
 				continue;
 			}
-			seen.add(rec.eventId);
+			if (!rec.requireReceipt && !rec.holdReason) seen.add(identity);
+			if (rec.holdReason === "SDK_COMPLETION_ONLY") {
+				leftover.push(rec);
+				result.held = (result.held ?? 0) + 1;
+				continue;
+			}
 			if (isExpired(rec, policy, now)) {
 				result.expired++;
 				continue;
@@ -839,6 +861,14 @@ async function drainSpool(url, send, options = {}) {
 				result.error = err instanceof Error ? err.message : String(err);
 			}
 			if (rec.requireReceipt && outcome === "rejected") outcome = "retry";
+			if (outcome === "held") {
+				leftover.push({
+					...rec,
+					holdReason: "SDK_COMPLETION_ONLY"
+				});
+				result.held = (result.held ?? 0) + 1;
+				continue;
+			}
 			if (outcome === "delivered") result.delivered++;
 			else if (outcome === "duplicate") result.duplicates++;
 			else if (outcome === "rejected") result.rejected++;
@@ -852,7 +882,7 @@ async function drainSpool(url, send, options = {}) {
 		}
 		result.remaining = leftover.length;
 		withLock(paths.lock, (locked) => locked ? requeueLocked(paths, leftover) : requeueUnlocked(paths, leftover), 2e3);
-		if (leftover.some((record) => record.requireReceipt)) syncDirectory(paths.dir);
+		if (leftover.some((record) => record.requireReceipt || record.holdReason)) syncDirectory(paths.dir);
 		for (const file of files) try {
 			unlinkSync(file);
 		} catch {}
@@ -873,6 +903,177 @@ async function drainSpool(url, send, options = {}) {
 	} finally {
 		releaseLock(paths.drainLock);
 	}
+}
+//#endregion
+//#region src/capture/delivery.ts
+async function sendCapture(record, post, url, options = {}) {
+	const sdk = !record.requireReceipt && (options.fresh || record.body.captureCompletion === "sdk-v1");
+	const body = {
+		...record.body,
+		...sdk ? { captureCompletion: "sdk-v1" } : {}
+	};
+	if (!sdk) delete body.captureCompletion;
+	if (sdk && !retainSdkOriginal(url, record.eventId, body, options)) return "retry";
+	const result = await post(body);
+	const value = result.body && typeof result.body === "object" ? result.body : {};
+	if (result.status === 503 && value.reason === "SDK_COMPLETION_ONLY") return "held";
+	if (result.status >= 200 && result.status < 300) {
+		if (value.completion === "sdk") {
+			if (!sdk || value.completed !== true || value.durable !== false || value.eventId !== record.eventId) return "retry";
+			return value.status === "duplicate" ? "duplicate" : "delivered";
+		}
+		const mark = parseSentMark(value);
+		if (record.requireReceipt && (!mark || typeof value.observationId !== "string" || !value.observationId || value.success === false || value.error)) return "retry";
+		if (mark) {
+			reconcileSent(url, mark.bootId, options);
+			if (!retainSent(url, record.eventId, record.body, mark, {
+				...options,
+				requireReceipt: record.requireReceipt,
+				preserveImages: record.requireReceipt
+			})) return "retry";
+		}
+		return value.status === "duplicate" ? "duplicate" : "delivered";
+	}
+	return result.status === 0 || result.status === 408 || result.status === 429 || result.status >= 500 ? "retry" : "rejected";
+}
+async function restoreSdkSourcePayload(body, post) {
+	try {
+		const result = await post({
+			...body,
+			captureCompletion: "sdk-v1"
+		}), value = result.body;
+		if (result.status >= 200 && result.status < 300 && value?.completed === true && value.completion === "sdk" && value.durable === false && value.sourceRestore === "sdk-v1" && value.eventId === body.eventId && (value.status === "restored" || value.status === "duplicate")) return {
+			completed: true,
+			status: value.status
+		};
+		return {
+			completed: false,
+			status: "held",
+			code: typeof value?.code === "string" && /^[A-Z0-9_]{1,80}$/.test(value.code) ? value.code : "SDK_SOURCE_RESTORE_UNSUPPORTED"
+		};
+	} catch {
+		return {
+			completed: false,
+			status: "held",
+			code: "SDK_SOURCE_RESTORE_UNCERTAIN"
+		};
+	}
+}
+async function restoreSdkOriginal(url, eventId, post, options = {}) {
+	try {
+		return await restoreSdkSourcePayload(readSdkOriginal(url, eventId, options), post);
+	} catch {
+		return {
+			completed: false,
+			status: "held",
+			code: "SDK_SOURCE_SELECTION_UNAVAILABLE"
+		};
+	}
+}
+//#endregion
+//#region src/capture/receipt-digest.ts
+function canonical(value) {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, canonical(item)]));
+	return value;
+}
+function captureSourceDigest(hookType, timestamp, raw) {
+	return createHash("sha256").update(JSON.stringify([
+		hookType,
+		timestamp,
+		canonical(raw)
+	])).digest("hex");
+}
+function capturePayloadDigest(body) {
+	const raw = normalizeCaptureData(body.data);
+	return captureSourceDigest(body.hookType, body.timestamp, raw);
+}
+//#endregion
+//#region src/secret-store.ts
+const SECRET_KEY = "AGENTMEMORY_SECRET";
+function agentmemoryHomeDir() {
+	return process.env["AGENTMEMORY_DATA_DIR"] || join(homedir(), ".agentmemory");
+}
+function secretFilePath() {
+	return join(agentmemoryHomeDir(), "secret");
+}
+function usable(value) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim();
+	if (!trimmed) return "";
+	if (trimmed.startsWith("${") && trimmed.endsWith("}")) return "";
+	return trimmed;
+}
+function unquote(value) {
+	const quote = value[0];
+	if ((quote === "\"" || quote === "'") && value.length > 1) {
+		const close = value.indexOf(quote, 1);
+		if (close !== -1) return value.slice(1, close);
+	}
+	const hash = value.indexOf(" #");
+	return hash === -1 ? value : value.slice(0, hash).trim();
+}
+function readEnvFileSecret() {
+	let content;
+	try {
+		content = readFileSync(process.env["AGENTMEMORY_ENV_FILE"] || join(homedir(), ".agentmemory", ".env"), "utf-8");
+	} catch {
+		return "";
+	}
+	if (typeof content !== "string") return "";
+	let found = "";
+	for (const line of content.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.startsWith("#")) continue;
+		const eq = trimmed.indexOf("=");
+		if (eq === -1) continue;
+		if (trimmed.slice(0, eq).replace(/^export\s+/, "").trim() !== SECRET_KEY) continue;
+		found = usable(unquote(trimmed.slice(eq + 1).trim()));
+	}
+	return found;
+}
+function readSecretFile(path) {
+	try {
+		return usable(readFileSync(path, "utf-8"));
+	} catch {
+		return "";
+	}
+}
+function legacyDataDirSecretPaths(env = process.env) {
+	const dataDir = env["AGENTMEMORY_DATA_DIR"];
+	if (!dataDir) return [];
+	const paths = [
+		join(dataDir, "secret"),
+		join(dataDir, ".hmac"),
+		join(dataDir, "..", ".hmac")
+	];
+	return [...new Set(paths.filter((path) => path !== secretFilePath()))];
+}
+function readStoredSecret(env = process.env) {
+	const canonicalPath = canonicalSecretPath();
+	const localPath = secretFilePath();
+	const legacyPaths = legacyDataDirSecretPaths(env);
+	return readSecretFile(canonicalPath) || (localPath === canonicalPath ? "" : readSecretFile(localPath)) || legacyPaths.map(readSecretFile).find(Boolean) || "";
+}
+function isLoopbackUrl(url) {
+	let hostname;
+	try {
+		hostname = new URL(url).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	const bare = hostname.replace(/^\[|\]$/g, "");
+	return bare === "localhost" || bare === "::1" || /^127(?:\.\d{1,3}){3}$/.test(bare);
+}
+function resolveClientSecret(baseUrl, env = process.env) {
+	const fromEnv = usable(env[SECRET_KEY]);
+	if (fromEnv) return fromEnv;
+	if (env.AGENTMEMORY_CREDENTIAL_MODE === "explicit") return "";
+	if (!isLoopbackUrl(baseUrl)) return "";
+	return readEnvFileSecret() || readStoredSecret(env);
+}
+function canonicalSecretPath() {
+	return join(homedir(), ".agentmemory", "secret");
 }
 //#endregion
 //#region src/hooks/_capture.ts
@@ -909,32 +1110,24 @@ async function post(body, timeoutMs, target) {
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(timeoutMs)
 	});
-	const text = await res.text().catch(() => "");
-	const outcome = classify(res.status);
+	const result = await res.json().catch(() => null);
+	return classifyReply(res.status, result);
+}
+function classifyReply(status, result) {
+	const value = result && typeof result === "object" ? result : null;
+	const outcome = classify(status);
+	if (status === 503 && value?.reason === "SDK_COMPLETION_ONLY") return {
+		outcome: "held",
+		mark: null
+	};
 	if (outcome !== "delivered" && outcome !== "duplicate") return {
 		outcome,
 		mark: null
 	};
-	try {
-		const result = JSON.parse(text);
-		return {
-			outcome,
-			mark: parseSentMark(result),
-			acknowledged: Boolean(result && typeof result.observationId === "string" && result.observationId && result.success !== false && !result.error)
-		};
-	} catch {
-		return {
-			outcome,
-			mark: null
-		};
-	}
-}
-function keepUntilDurable(eventId, body, mark, target) {
-	const url = target?.url ?? REST_URL;
-	const { requeued } = reconcileSent(url, mark.bootId, { dir: target?.dir });
 	return {
-		requeued,
-		retained: retainSent(url, eventId, body, mark, { dir: target?.dir })
+		outcome,
+		mark: parseSentMark(value),
+		acknowledged: Boolean(value && typeof value.observationId === "string" && value.observationId && value.success !== false && !value.error)
 	};
 }
 async function durableReceipt(body, target, deadline) {
@@ -960,7 +1153,7 @@ async function durableReceipt(body, target, deadline) {
 		return false;
 	}
 }
-async function handoffObservation(body, timeoutMs, target) {
+async function handoffObservation(body, timeoutMs, target, initialReply) {
 	const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
 	const payload = {
 		...body,
@@ -976,7 +1169,7 @@ async function handoffObservation(body, timeoutMs, target) {
 	let reason = "server-error";
 	try {
 		if (!remaining()) return "pending";
-		const { outcome, mark, acknowledged } = await post(payload, remaining(), target);
+		const { outcome, mark, acknowledged } = initialReply ? classifyReply(initialReply.status, initialReply.body) : await post(payload, remaining(), target);
 		if (outcome === "delivered" || outcome === "duplicate") {
 			if (oversized) return await durableReceipt({
 				...body,
@@ -995,6 +1188,7 @@ async function handoffObservation(body, timeoutMs, target) {
 			if (requeued > 0 && target.url === REST_URL) startDrainChild();
 			return outcome;
 		}
+		if (outcome === "held") return "held";
 		if (outcome === "rejected") return "rejected";
 	} catch (err) {
 		const name = err instanceof Error ? err.name : "";
@@ -1030,42 +1224,46 @@ async function captureObservation(body, timeoutMs) {
 	const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
 	const payload = {
 		...body,
-		eventId
+		eventId,
+		captureCompletion: "sdk-v1"
 	};
-	let reason;
+	let reason = "delivery-pending";
 	try {
-		const { outcome, mark } = await post(payload, timeoutMs);
-		if (outcome !== "retry") {
-			const kept = mark ? keepUntilDurable(eventId, payload, mark) : {
-				requeued: 0,
-				retained: true
-			};
-			if (kept.requeued > 0 || spoolHasRecords(REST_URL)) startDrainChild();
-			if (kept.retained) return outcome;
-			reason = "sent-retention-failed";
-		} else reason = "server-error";
-	} catch (err) {
-		const name = err instanceof Error ? err.name : "";
+		const outcome = await sendCapture({
+			eventId,
+			body: payload
+		}, (value) => postRaw(value, timeoutMs), REST_URL, { fresh: true });
+		if (outcome === "delivered" || outcome === "duplicate" || outcome === "rejected") {
+			if (spoolHasRecords(REST_URL)) startDrainChild();
+			return outcome;
+		}
+		reason = outcome === "held" ? "sdk-completion-held" : "server-error";
+	} catch (error) {
+		const name = error instanceof Error ? error.name : "";
 		reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "unreachable";
 	}
-	return appendSpool(REST_URL, eventId, payload, reason).spooled ? "spooled" : "dropped";
+	return appendSpool(REST_URL, eventId, payload, reason, { preserveImages: true }).spooled ? "spooled" : "dropped";
+}
+async function postRaw(body, timeoutMs, path = "/observe") {
+	const response = await fetch(`${REST_URL}/agentmemory${path}`, {
+		method: "POST",
+		headers: authHeaders(),
+		body: JSON.stringify(body),
+		signal: AbortSignal.timeout(timeoutMs)
+	});
+	return {
+		status: response.status,
+		body: await response.json().catch(() => ({}))
+	};
+}
+async function restoreObservationOriginal(eventId, timeoutMs = 5e3) {
+	return restoreSdkOriginal(REST_URL, eventId, (body) => postRaw(body, timeoutMs, "/capture/restore-sdk"));
 }
 function isDrainChild() {
 	return process.env[DRAIN_CHILD_ENV] === "1";
 }
 async function runDrainChild() {
-	return drainSpool(REST_URL, async (record) => {
-		const { outcome, mark, acknowledged } = await post({
-			...record.body,
-			eventId: record.eventId
-		}, DRAIN_REQUEST_TIMEOUT_MS);
-		if (record.requireReceipt && (outcome === "delivered" || outcome === "duplicate") && (!mark || !acknowledged)) return "retry";
-		if (mark && !retainSent(REST_URL, record.eventId, record.body, mark, {
-			requireReceipt: record.requireReceipt,
-			preserveImages: record.requireReceipt
-		})) return "retry";
-		return outcome;
-	}, {
+	return drainSpool(REST_URL, (record) => sendCapture(record, (b) => postRaw(b, DRAIN_REQUEST_TIMEOUT_MS), REST_URL), {
 		maxRecords: DRAIN_MAX_RECORDS,
 		deadlineMs: DRAIN_DEADLINE_MS
 	}).then((result) => result.skipped === "locked" ? {
@@ -1083,6 +1281,6 @@ async function runDrainChild() {
 	}));
 }
 //#endregion
-export { REST_URL, authHeaders, captureObservation, handoffObservation, isDrainChild, runDrainChild, stripPrivateData, withEventId };
+export { REST_URL, authHeaders, captureObservation, handoffObservation, isDrainChild, restoreObservationOriginal, restoreSdkSourcePayload, runDrainChild, stripPrivateData, withEventId };
 
 //# sourceMappingURL=_capture.mjs.map

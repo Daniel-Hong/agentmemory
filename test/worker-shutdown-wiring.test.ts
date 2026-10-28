@@ -1,3 +1,4 @@
+import {isStorageWorkCompleted} from '../src/ops/storage-completion.mjs';
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -12,15 +13,15 @@ import { mockSdk } from './helpers/mocks.js';
 const dirs:string[]=[];
 afterEach(async()=>{await Promise.all(dirs.splice(0).map(dir=>rm(dir,{recursive:true,force:true})));});
 function gate(){let release!:()=>void;const promise=new Promise<void>(resolve=>{release=resolve;});return {promise,release};}
-async function fixture({configured=true,indexFailed=false,bootFailed=false,writerSafe=false,mutationUncertain=false,sdkFails=false}={}) {
+async function fixture({configured=true,indexFailed=false,bootFailed=false,writerSafe=false,mutationUncertain=false,sdkFails=false,sdkOnly=false}={}) {
  const dir=await mkdtemp(join(tmpdir(),'am-worker-stop-'));dirs.push(dir);
  const events:string[]=[];const sdk={...mockSdk(),shutdown:async()=>{events.push('sdk');if(sdkFails)throw Error('fixture disconnect failure');}};
- const kv={recoveryMutationSafe:writerSafe,mutationOutcomeUncertain:mutationUncertain,durability:configured?{drain:async()=>{events.push('drain');},freeze:()=>{events.push('freeze');},wait:async()=>{events.push('disk');return {synced:true,mutationFailures:0};}}:null};
+ const kv={recoveryMutationSafe:writerSafe,mutationOutcomeUncertain:mutationUncertain,durability:configured?{completion:sdkOnly?"sdk":"disk",drain:async()=>{events.push('drain');},freeze:()=>{events.push('freeze');},wait:async()=>{events.push('disk');return sdkOnly?{completion:"sdk",completed:true,synced:false,mutationFailures:0}:{synced:true,mutationFailures:0};}}:null};
  const source=readFileSync('src/index.ts','utf8');
  const start=source.indexOf('  const ingress = createShutdownIngress();');
  const end=source.indexOf('  try {\n  if (persistentBackground)',start);
  const body=source.slice(start,end);
- const deps={writerLease:writerSafe?{}:undefined,markFileWriterClean:()=>events.push('writer-clean'),createBackgroundControl:()=>({settled:async()=>{},commitCleanShutdown:async()=>{events.push("restart-guard");}}),installBackgroundControl:()=>{},operationalState:{},createShutdownIngress,createBackgroundLifecycle,verifiedShutdown,closeLongSessionInferenceAdmission:()=>events.push('close-model'),checkAuth:()=>null,kv,sdk,secret:'fixture-secret',dirname,runtimeMetadataPath:(name:string)=>join(dir,name),readFileSync,settleWithin,SHUTDOWN_FLUSH_TIMEOUT_MS,
+ const deps={isStorageWorkCompleted,writerLease:writerSafe?{}:undefined,markFileWriterClean:()=>events.push('writer-clean'),createBackgroundControl:()=>({settled:async()=>{},commitCleanShutdown:async()=>{events.push("restart-guard");}}),installBackgroundControl:()=>{},operationalState:{},createShutdownIngress,createBackgroundLifecycle,verifiedShutdown,closeLongSessionInferenceAdmission:()=>events.push('close-model'),checkAuth:()=>null,kv,sdk,secret:'fixture-secret',dirname,runtimeMetadataPath:(name:string)=>join(dir,name),readFileSync,settleWithin,SHUTDOWN_FLUSH_TIMEOUT_MS,
  clearWorkerPidfile:()=>events.push('clear-pid'),process:{on:vi.fn(),kill:()=>{},exit:(code:number)=>{events.push('exit:'+code);throw Error('exit:'+code);}}};
  const js=transpileModule(body,{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ES2022}}).outputText;
  const load=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;let fatalShutdown;${js};return {shutdown,bootDone,resources,lifecycle,trackBoot,failBoot:()=>{bootFailed=true;}};`);
@@ -52,4 +53,11 @@ it('cannot report a successful worker exit after initialization failed',async()=
 
 it.each([{mutationUncertain:false,sdkFails:false,clean:true},{mutationUncertain:true,sdkFails:false,clean:false},{mutationUncertain:false,sdkFails:true,clean:false}])('preserves clean writer admission only after verified settled writes and disconnect: $clean',async(args)=>{
  const f=await fixture({writerSafe:true,...args});f.bootDone();await expect(f.shutdown()).rejects.toThrow('exit:0');expect(f.events.includes('writer-clean')).toBe(args.clean);if(args.clean)expect(f.events.indexOf('writer-clean')).toBeGreaterThan(f.events.indexOf('sdk'));
+});
+
+it('completes SDK-only shutdown without granting a clean durable writer marker',async()=>{
+ const f=await fixture({writerSafe:true,sdkOnly:true});f.bootDone();
+ await expect(f.shutdown()).rejects.toThrow('exit:0');
+ expect(f.events).toContain('clear-pid');expect(f.events).not.toContain('writer-clean');
+ expect(JSON.parse(await readFile(join(f.dir,'shutdown-receipt.json'),'utf8'))).toMatchObject({completed:true,verified:false,durability:{synced:false,completion:'sdk'}});
 });

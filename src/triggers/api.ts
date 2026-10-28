@@ -186,7 +186,9 @@ function reflectDisabledResponse(): Response {
   });
 }
 
-export function captureStatusCode(result: CaptureResult): number {
+export function captureStatusCode(result: CaptureResult, completion?: "sdk" | "disk", policy?: unknown): number {
+  if(completion==="sdk"&&policy==="sdk-v1"&&result.status!=="rejected"&&["sdk_completed","completed"].includes(result.state))return result.status==="duplicate"?200:201;
+  if(result.status !== "rejected" && (completion === "sdk" || result.state === "sdk_completed"))return 503;
   if (result.status === "duplicate") return 200;
   if (result.status === "accepted") return result.state === "completed" ? 201 : 202;
   return result.retryable ? 503 : 422;
@@ -195,8 +197,12 @@ export function captureStatusCode(result: CaptureResult): number {
 export function captureResponseBody(
   result: CaptureResult,
   durability?: { bootId: string; durableAfterMs: number } | null,
+  completion?: "sdk" | "disk",
+  policy?: unknown,
 ): Record<string, unknown> {
   if (result.status === "rejected") return { ...result, success: false };
+  if(completion==="sdk"&&policy==="sdk-v1"&&["sdk_completed","completed"].includes(result.state))return {...result,completion:"sdk",completed:true,durable:false};
+  if (result.status !== 'rejected' && (completion === 'sdk' || result.state === 'sdk_completed')) return {...result,completion:'sdk',durable:false,retryable:true,reason:'SDK_COMPLETION_ONLY'};
   if (!durability) return { ...result };
   return { ...result, bootId: durability.bootId, acceptedAt: new Date().toISOString(), durableAfterMs: durability.durableAfterMs };
 }
@@ -717,11 +723,24 @@ export function registerApiTriggers(
         payload: { payload, eventId },
       });
       return {
-        status_code: captureStatusCode(result),
-        body: captureResponseBody(result, getCaptureController()?.durability() ?? null),
+        status_code: captureStatusCode(result, getCaptureController()?.completion, body.captureCompletion),
+        body: captureResponseBody(result, getCaptureController()?.durability() ?? null, getCaptureController()?.completion, body.captureCompletion),
       };
     },
   );
+
+  sdk.registerFunction('api::capture-restore-sdk',async(req:HttpRequest):Promise<Response>=>{
+    const denied=checkAuth(req,secret);if(denied)return denied;
+    if(!secret)return {status_code:503,body:{completed:false,code:'SDK_SOURCE_AUTH_REQUIRED'}};
+    const body=req.body as Record<string,unknown>|undefined;
+    if(!body||Array.isArray(body)||body.captureCompletion!=='sdk-v1'||!isValidEventId(body.eventId)||!['hookType','sessionId','project','cwd','timestamp'].every(k=>typeof body[k]==='string'&&(body[k]as string).length>0)||!Object.keys(body).every(k=>['eventId','captureCompletion','hookType','sessionId','project','cwd','timestamp','data'].includes(k)))return {status_code:400,body:{completed:false,code:'SDK_SOURCE_INPUT_INVALID'}};
+    const payload={hookType:body.hookType,sessionId:body.sessionId,project:body.project,cwd:body.cwd,timestamp:body.timestamp,data:body.data};
+    try{
+      const result:any=await sdk.trigger({function_id:'mem::capture-restore-sdk',payload:{payload,eventId:body.eventId}});
+      return {status_code:result.completed?(result.status==='duplicate'?200:201):409,headers:{'Cache-Control':'no-store'},body:result};
+    }catch{return {status_code:503,body:{completed:false,code:'SDK_SOURCE_RESTORE_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-restore-sdk',config:{api_path:'/agentmemory/capture/restore-sdk',http_method:'POST'}});
 
   sdk.registerFunction("api::capture-receipts", async (req:HttpRequest):Promise<Response>=>{
     const denied=checkAuth(req,secret);if(denied)return denied;

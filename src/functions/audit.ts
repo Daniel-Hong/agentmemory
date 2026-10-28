@@ -339,6 +339,7 @@ export async function startAuditMigration(
   kv: StateKV,
   deps: AuditMigrationDeps = {},
 ): Promise<void> {
+  if(kv.durability?.completion==='sdk'){logger.info('audit migration held: SDK completion is not a disk proof');return;}
   const onRedis = kv.backend === "redis";
   const runProbe =
     deps.probe ?? (onRedis ? () => probeLegacyAuditScope(kv) : probeLegacyAuditFile);
@@ -524,6 +525,7 @@ export async function runAuditRetentionSweep(
   kv: StateKV,
   retentionMonths: number,
 ): Promise<{ droppedMonths: string[]; droppedRows: number }> {
+  if(kv.durability?.completion==='sdk')return {droppedMonths:[],droppedRows:0};
   if (!Number.isFinite(retentionMonths) || retentionMonths <= 0) {
     return { droppedMonths: [], droppedRows: 0 };
   }

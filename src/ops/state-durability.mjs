@@ -23,9 +23,11 @@ export function namespaceJson(buffer){
   throw Error('state_namespace_incomplete');
 }
 
-export function createStateDurabilityFence({storePath,timeoutMs=15000,pollIntervalMs=100,clock=Date.now}={}){
+export function createStateDurabilityFence({storePath,timeoutMs=15000,pollIntervalMs=100,clock=Date.now,completion='disk'}={}){
   if(typeof storePath!=='string'||!isAbsolute(storePath))throw Error('absolute_state_store_path_required');
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||!Number.isSafeInteger(pollIntervalMs)||pollIntervalMs<1)throw Error('state_durability_interval_invalid');
+  if(!['sdk','disk'].includes(completion))throw Error('state_completion_invalid');
+  let sdkCompleted=0,sdkFailed=0;
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),touched=new Map(),pruneAttempts=new Map();
   const certificates=new Set(),certificateContext=new AsyncLocalStorage();
@@ -88,6 +90,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     return pending;
   }
   async function verifyKeys(kv,selected,{deadline,expectedValues}={},sharedSelection){
+    if(completion==='sdk'&&mutationFailures)throw Object.assign(Error('sdk_mutation_uncertain'),{code:'SDK_MUTATION_UNCERTAIN'});
     if(deadline!==undefined&&!Number.isSafeInteger(deadline))throw Error('state_durability_deadline_invalid');
     if(expectedValues!==undefined&&(!Array.isArray(expectedValues)||expectedValues.length!==selected.length))throw Error('state_durability_expectations_invalid');
     const pinned=expectedValues===undefined?undefined:structuredClone(expectedValues);
@@ -104,7 +107,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       finally{clearTimeout(timer);}
     }
     for(const {scope} of selected)if(!expected.has(scope))expected.set(scope,new Map());
-    const measurement=measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began});
+    const measurement=completion==='disk'?measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began}):null;
     let outcome='failed';
     try{
     stage='capture';measurement?.enter('capture');
@@ -120,12 +123,24 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       }
     }
     try{
+      if(completion==='sdk'&&!pinned){
+        let timer;try{await Promise.race([Promise.allSettled([...active]),new Promise((_,reject)=>{timer=setTimeout(()=>reject(captureTimeout()),Math.max(0,budgetMs-(clock()-began)));})]);}finally{clearTimeout(timer);}
+        if(mutationFailures)throw Object.assign(Error('sdk_mutation_uncertain'),{code:'SDK_MUTATION_UNCERTAIN'});
+      }
       // Refill free SDK slots instead of waiting for the slowest lookup in each quartet.
-      await Promise.all(Array.from({length:Math.min(4,selected.length)},()=>captureNext()));
+      if(completion!=='sdk'||pinned)await Promise.all(Array.from({length:Math.min(4,selected.length)},()=>captureNext()));
     }catch(error){captureFailed=true;captureError=error;}
     finally{captureClosed=true;}
     if(captureFailed){lastCode=captureError?.code==='STATE_DURABILITY_TIMEOUT'?'STATE_CAPTURE_TIMEOUT':typeof captureError?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(captureError.code)?captureError.code:'STATE_CAPTURE_FAILED';throw failed();}
     measurement?.event('capture_finished',undefined,{capturedKeyCount});
+    if(completion==='sdk'){
+      if(mutationFailures)throw Object.assign(Error('sdk_mutation_uncertain'),{code:'SDK_MUTATION_UNCERTAIN'});
+      if(clock()-began>=budgetMs)throw failed();
+      forgetKeys(selectedRevisions);outcome='sdk_completed';
+      lastVerification={status:'sdk_completed',at:clock(),completion,synced:false,errorCode:null};
+      return {keys:selected.length,scopes:expected.size,completion,completed:true,synced:false,waitMs:clock()-began,mutationFailures};
+    }
+
     const files=[...expected.keys()].map(scope=>({scope,path:join(storePath,encodeURIComponent(scope)+'.bin')}));
     async function check(){
       const absent=[],signatures=new Map();
@@ -191,7 +206,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     }catch(error){
       if(typeof error?.code==='string'&&error.code.startsWith('STATE_READ_COORDINATION_')){outcome='failed';stage='admission';lastCode=error.code;measurement?.retry(lastCode,stage);throw failed();}
       throw error;
-    }finally{measurement?.finish(outcome,lastCode,stage);measurements.complete(outcome,stage,lastCode);}
+    }finally{if(completion==='sdk'){if(outcome==='sdk_completed')sdkCompleted=Math.min(Number.MAX_SAFE_INTEGER,sdkCompleted+1);else sdkFailed=Math.min(Number.MAX_SAFE_INTEGER,sdkFailed+1);}else{measurement?.finish(outcome,lastCode,stage);measurements.complete(outcome,stage,lastCode);}}
   }
   async function publishScopes(kv,selected){
     const began=clock(),groups=new Map();
@@ -206,7 +221,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       }
     }
     if(firstFailure){lastVerification=failedVerification;throw firstFailure;}
-    return {keys:verifiedKeys,scopes:scopes.size,synced:true,waitMs:clock()-began,mutationFailures};
+    return {keys:verifiedKeys,scopes:scopes.size,completion,completed:true,synced:completion==='disk',waitMs:clock()-began,mutationFailures};
   }
   async function wait(kv){await drain();return publishScopes(kv,keys());}
   async function flushStable(kv,options){
@@ -219,5 +234,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:measurements.snapshot(),readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
+  return {completion,withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({completion,sdkCompletion:completion==='sdk'?{completed:sdkCompleted,failed:sdkFailed}:null,frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:completion==='disk'?measurements.snapshot():null,readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
 }

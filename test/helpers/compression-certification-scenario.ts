@@ -77,7 +77,7 @@ export async function verifySyntheticSeed(paths:{path:string;scope:string;expect
  if(pinnedChecksums&&Object.keys(pinnedChecksums).length!==sourceFiles.length)throw Error('synthetic_seed_checksum_scope_mismatch');
  return sourceFiles;
 }
-const xml='<type>command_run</type><title>Synthetic compressed command</title><facts><fact>Synthetic fixture</fact></facts><narrative>Synthetic bounded result.</narrative><concepts><concept>fixture</concept></concepts><files></files><importance>5</importance>';
+const xml='<observation><type>command_run</type><title>Synthetic compressed command</title><facts><fact>Synthetic fixture</fact></facts><narrative>Synthetic bounded result.</narrative><concepts><concept>fixture</concept></concepts><files></files><importance>5</importance></observation>';
 
 // SDK replies precede atomic file publication. Queues are independent per scope,
 // ordered within a scope, and hold snapshots of the accepted writes.
@@ -146,7 +146,7 @@ export async function runCompressionCertificationScenario(options:CompressionCer
   }};
   const previousPath=process.env.AGENTMEMORY_STATE_STORE_PATH;
   process.env.AGENTMEMORY_STATE_STORE_PATH=directory;
-  const durability=durabilityFactory({storePath:directory,timeoutMs,pollIntervalMs:5});
+  const durability=durabilityFactory({storePath:directory,timeoutMs,pollIntervalMs:5,completion:'disk'});
   const certificateEvents:Record<string,unknown>[]=[];
   const waitForKeys=durability.waitForKeys,waitForKeyGroups=durability.waitForKeyGroups;
   const role=(selection:any[])=>selection.some(row=>sourceUnitSet.has(row.scope))?'source_intent':selection.some(row=>row.scope===COMMITTED||row.scope.startsWith(COMMITTED+':unit:'))?'committed_marker':'index_publication';
@@ -267,7 +267,7 @@ export async function runCompressionCertificationScenario(options:CompressionCer
       inferencePeak,compressionCalls,embeddingCalls,inferenceEvents,outcomes,sdkGets,certificateEvents,
       durabilityReads:{physicalReads:reads.startedReads-initialReads.startedReads,scanBytes:reads.scanBytes-initialReads.scanBytes,sharedRequests:reads.sharedRequests-initialReads.sharedRequests},
       namespacePublishes,publicationFailures,sourcePublicationEvents,taskEvents,taskErrors:errors,metrics:await metrics.get('mem::compress'),
-      originalSourcesPreserved:[...selected.values.values()].every((row:any)=>row?.sourceRaw?.toolOutput===raw.toolOutput),
+      originalSourcesPreserved:selected.values.size===itemCount&&[...selected.values.values()].every((row:any)=>row?.sourceRaw?.toolOutput===raw.toolOutput),
       diskCompressedTargets:[...selected.values.values()].filter((row:any)=>row.llmCompressionRevision!==undefined).length,
       pendingTargets:(await kv.list<any>(RETRY)).filter(row=>row.id.startsWith('target-')).length,
       durablePendingTargets:pendingDisk.size,

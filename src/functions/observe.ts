@@ -1,3 +1,4 @@
+import {assertSdkSourceClaim,sdkSourceKeys,sdkObservationMatches,sdkSourceFailure,type SdkSourceClaim} from "../capture/sdk-source-restore.js";
 import { TriggerAction, type IIIClient } from "iii-sdk";
 import type { RawObservation, CompressedObservation, HookPayload, Origin, Session } from "../types.js";
 
@@ -72,7 +73,7 @@ export function registerObserveFunction(
   maxObservationsPerSession?: number,
 ): void {
   sdk.registerFunction("mem::observe", 
-    async (payload: HookPayload) => {
+    async (payload: HookPayload & {sdkSourceRestore?:SdkSourceClaim}) => {
 
       if (
         !payload?.sessionId ||
@@ -194,6 +195,7 @@ export function registerObserveFunction(
         // A timed-out capture can already be stored; replay must not scan the session again.
         const stored = durable ? await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId) : undefined;
         if (stored) {
+          if(payload.sdkSourceRestore&&!sdkObservationMatches(stored,payload,payload.sdkSourceRestore.key,obsId,payload.eventId!))throw sdkSourceFailure("SDK_SOURCE_CONFLICT");
           if (livePrompt) await recordLivePrompt(kv, payload.sessionId, livePrompt, promptRef);
           certify = await prepareIndexEntries(stored, deferCertification);
           return { observationId: obsId, deduplicated: true, existing: true };
@@ -256,7 +258,7 @@ export function registerObserveFunction(
 
         const autoCompress = isAutoCompressEnabled();
         const finalizeIdleMs = getFinalizeIdleMs();
-        if (existingSession && existingSession.status !== "active") {
+        if (!payload.sdkSourceRestore && existingSession && existingSession.status !== "active") {
           const dueAt = Date.now() + finalizeIdleMs;
           await requestSummaryRefresh(kv, payload.sessionId, dueAt);
           if (finalizeIdleMs > 0) await scheduleSessionFinalize(kv, payload.sessionId, dueAt);
@@ -265,7 +267,18 @@ export function registerObserveFunction(
         synthetic.syntheticCompression = withoutObservationSource(synthetic);
         if (autoCompress) synthetic.compression = pendingCompression();
         try {
-          await kv.set(KV.observations(payload.sessionId), obsId, synthetic);
+          let restoreRaced:CompressedObservation|undefined;
+          if(payload.sdkSourceRestore){
+            const claim=payload.sdkSourceRestore;
+            if(!kv.recoveryWrite)throw sdkSourceFailure('SDK_SOURCE_WRITER_UNVERIFIED');
+            await kv.recoveryWrite.exclusive(sdkSourceKeys(payload,claim.key,obsId),async()=>{
+              await assertSdkSourceClaim(kv,payload,claim);
+              const current=await kv.get<CompressedObservation>(KV.observations(payload.sessionId),obsId);
+              if(current){if(!sdkObservationMatches(current,payload,claim.key,obsId,payload.eventId!))throw sdkSourceFailure('SDK_SOURCE_CONFLICT');restoreRaced=current;return;}
+              await kv.set(KV.observations(payload.sessionId),obsId,synthetic);
+            });
+          }else await kv.set(KV.observations(payload.sessionId), obsId, synthetic);
+          if(restoreRaced){certify=await prepareIndexEntries(restoreRaced,deferCertification);return {observationId:obsId,deduplicated:true,existing:true};}
           await indexObservationSession(kv, obsId, payload.sessionId).catch(
             (err) => {
               logger.warn("observation index update failed", {
@@ -312,18 +325,18 @@ export function registerObserveFunction(
         const session = existingSession;
         if (session) {
           const updates: Array<{ type: "set" | "remove"; path: string; value?: unknown }> = [
-            { type: "set", path: "updatedAt", value: new Date().toISOString() },
+            ...(!payload.sdkSourceRestore ? [{ type: "set" as const, path: "updatedAt", value: new Date().toISOString() }] : []),
             {
               type: "set",
               path: "observationCount",
-              value: (session.observationCount || 0) + 1,
+              value: payload.sdkSourceRestore?(Array.isArray(existing)?existing.length:existing.count)+1:(session.observationCount || 0) + 1,
             },
           ];
-          if (session.status !== "active" && finalizeIdleMs > 0) {
+          if (!payload.sdkSourceRestore && session.status !== "active" && finalizeIdleMs > 0) {
             updates.push({ type: "set", path: "status", value: "active" });
             updates.push({ type: "remove", path: "endedAt" });
           }
-          if (!session.firstPrompt && typeof raw.userPrompt === "string") {
+          if (!payload.sdkSourceRestore && !session.firstPrompt && typeof raw.userPrompt === "string") {
             const trimmed = raw.userPrompt.replace(/\s+/g, " ").trim();
             if (trimmed.length > 0) {
               updates.push({
@@ -361,7 +374,7 @@ export function registerObserveFunction(
             startedAt,
             updatedAt: ts,
             status: "active",
-            observationCount: 1,
+            observationCount: payload.sdkSourceRestore?(Array.isArray(existing)?existing.length:existing.count)+1:1,
             ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
             ...(trimmedPrompt && trimmedPrompt.length > 0
               ? { firstPrompt: trimmedPrompt }

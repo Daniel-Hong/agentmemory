@@ -1,4 +1,5 @@
-import { appendSpool, drainSpool, parseSentMark, reconcileSent, retainSent, spoolSummary, type SendOutcome, type SpoolRecord } from "./spool.js";
+import {sendCapture} from "./delivery.js";
+import { appendSpool, drainSpool, spoolSummary, type SendOutcome, type SpoolRecord } from "./spool.js";
 import { scrubRecord, stripPrivateData } from "../functions/privacy.js";
 
 export function cleanCapture(value: unknown): unknown {
@@ -20,17 +21,8 @@ export function createCapture(url: string, post: (body: Record<string, unknown>)
   let stopped = false;
   let error: string | undefined;
 
-  async function send(record: Pick<SpoolRecord, "eventId" | "body">): Promise<SendOutcome> {
-    const result = await post(record.body);
-    if (result.status >= 200 && result.status < 300) {
-      const mark = parseSentMark(result.body);
-      if (mark) {
-        reconcileSent(url, mark.bootId);
-        retainSent(url, record.eventId, record.body, mark);
-      }
-      return (result.body as { status?: string })?.status === "duplicate" ? "duplicate" : "delivered";
-    }
-    return result.status === 0 || result.status === 408 || result.status === 429 || result.status >= 500 ? "retry" : "rejected";
+  async function send(record: Pick<SpoolRecord, "eventId" | "body" | "requireReceipt">,fresh=false): Promise<SendOutcome> {
+    return sendCapture(record,post,url,{fresh});
   }
   function track(work: Promise<unknown>) {
     const safe = work.catch(() => { error = "Capture spool is unavailable; check disk space and permissions."; });
@@ -40,15 +32,16 @@ export function createCapture(url: string, post: (body: Record<string, unknown>)
   }
   function replay() {
     if (stopped || draining) return draining;
-    draining = track(drainSpool(url, send, { maxRecords: 100, deadlineMs: 600 })).finally(() => { draining = undefined; });
+    draining = track(drainSpool(url, record=>send(record), { maxRecords: 100, deadlineMs: 600 })).finally(() => { draining = undefined; });
     return draining;
   }
   return {
     enqueue(body: Record<string, unknown> & { eventId: string }) {
       track((async () => {
-        const outcome = await send({ eventId: body.eventId, body });
+        const payload={...body,captureCompletion:"sdk-v1"};
+        const outcome = await send({ eventId: body.eventId, body:payload },true);
         if (outcome === "retry") {
-          const result = appendSpool(url, body.eventId, body, "client-delivery-failed");
+          const result = appendSpool(url, body.eventId, payload, "client-delivery-failed");
           if (!result.spooled) error = "Capture could not be queued; check /agentmemory-status.";
         } else if (outcome === "rejected") error = "Capture was rejected; check the daemon URL and credentials.";
       })());

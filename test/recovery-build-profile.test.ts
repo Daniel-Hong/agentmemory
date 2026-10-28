@@ -9,7 +9,7 @@ const dirs:string[]=[];
 afterEach(async()=>{await Promise.all(dirs.splice(0).map(p=>rm(p,{recursive:true,force:true})));});
 async function source(){
  const dir=await mkdtemp(join(tmpdir(),'am-recovery-profile-'));dirs.push(dir);await mkdir(join(dir,'src/ops'),{recursive:true});
- for(const name of ['memory-pressure.mjs','background-control.mjs'])await writeFile(join(dir,'src/ops',name),await readFile(resolve('src/ops',name)));
+ for(const name of ['memory-pressure.mjs','background-control.mjs','storage-completion.mjs'])await writeFile(join(dir,'src/ops',name),await readFile(resolve('src/ops',name)));
  await writeFile(join(dir,'package.json'),JSON.stringify({name:'synthetic',version:'0.9.30-daniel.11',agentmemoryCompatibility:{backgroundControlVersion:2,automaticMemoryRecovery:true}}));
  for(const args of [['init','--quiet'],['add','.'],['-c','user.name=Synthetic','-c','user.email=synthetic@localhost','commit','--quiet','-m','fixture']])execFileSync('git',args,{cwd:dir});
  return dir;

@@ -1,4 +1,5 @@
-import { readFile, readdir, mkdir, open, rename, unlink } from 'node:fs/promises';
+import {constants as fsConstants} from "node:fs";
+import { readFile, readdir, mkdir, open, rename, unlink, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,6 +18,7 @@ export async function hydrateHookEnvironment() {
 }
 async function atomicJson(path, data, onPhase) {
   const temp = path + '.' + randomUUID() + '.tmp';
+  try {
   onPhase?.('queue_open');
   const fd = await open(temp, 'wx', 0o600);
   try {
@@ -30,10 +32,12 @@ async function atomicJson(path, data, onPhase) {
     const directory = await open(join(path, ".."), "r");
     try { await directory.sync(); } finally { await directory.close(); }
   }
+  }finally{await unlink(temp).catch(()=>{});}
 }
 function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; }
 }
+async function syncFolder(path){if(process.platform==='win32')return;const fd=await open(path,'r');try{await fd.sync();}finally{await fd.close();}}
 const activeTickets = new Set();
 async function acquireLock(path) {
   const dir = path + '.tickets';
@@ -79,7 +83,21 @@ export class HookClient {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     const eventId = body.eventId ?? randomUUID();
     const file = join(this.dir, `${Date.now()}-${process.hrtime.bigint().toString().padStart(24, "0")}-${eventId}.json`);
-    await atomicJson(file, { path, body: { ...body, eventId }, enqueuedAt: new Date().toISOString() }, this.onPhase);
+    const record={ path, body: { ...body, eventId }, ...(path==='/agentmemory/observe'?{completionPolicy:'sdk-v1'}:{}), enqueuedAt:new Date().toISOString() };
+    const lock=await acquireLock(join(this.dir,'.flush.lock'));if(!lock)throw Error('capture_queue_busy');
+    try{
+      if(path==='/agentmemory/observe'){
+        const raw=process.env.AGENTMEMORY_CAPTURE_SPOOL_MAX_BYTES;
+        const max=raw&&/^\d+$/.test(raw)&&Number(raw)>0?Number(raw):5*1024*1024;
+        let bytes=Buffer.byteLength(JSON.stringify(record));
+        for(const folder of [this.dir,join(this.dir,'accepted-originals')]){
+          let names;try{names=await readdir(folder);}catch(e){if(e.code==='ENOENT')continue;throw e;}
+          for(const name of names)if(/\.json(?:\.held|\.corrupt|\.[a-f0-9-]+\.tmp)?$/.test(name))bytes+=(await stat(join(folder,name))).size;
+        }
+        if(bytes>max)throw Error('capture_originals_full');
+      }
+      await atomicJson(file,record,this.onPhase);
+    }finally{await releaseLock(lock);}
     this.durableQueued = true;
     return file;
   }
@@ -110,8 +128,19 @@ export class HookClient {
         attempted++;
         try {
           if (record.path === '/agentmemory/observe') {
-            const { handoffObservation } = await import('./_capture.mjs');
-            const outcome = await handoffObservation(record.body, this.timeoutMs, { url: this.url, headers: this.headers() });
+            let outcome, initialReply;
+            if(record.completionPolicy==='sdk-v1'){
+              const response=await fetch(this.url+record.path,{method:'POST',headers:this.headers(),body:JSON.stringify({...record.body,captureCompletion:'sdk-v1'}),signal:AbortSignal.timeout(this.timeoutMs)});
+              const result=await response.json();
+              initialReply={status:response.status,body:result};
+              if(response.ok&&result.completion==='sdk'&&result.completed===true&&result.durable===false&&result.eventId===record.body.eventId)outcome='delivered';
+              else if(response.status===503&&result.reason==='SDK_COMPLETION_ONLY')outcome='held';
+              else if(result.completion==='sdk')throw Error('SDK capture not completed');
+            }
+            if(!outcome){const {handoffObservation}=await import('./_capture.mjs');outcome=await handoffObservation(record.body,this.timeoutMs,{url:this.url,headers:this.headers()},initialReply);}
+            if(outcome==='held'){
+              await rename(path,path+'.held');await syncFolder(this.dir);continue;
+            }
             if (!['delivered', 'duplicate', 'spooled'].includes(outcome)) throw Error('capture handoff not confirmed: ' + outcome);
           } else {
             const response = await fetch(this.url + record.path, { method: 'POST', headers: this.headers(), body: JSON.stringify(record.body), signal: AbortSignal.timeout(this.timeoutMs) });
@@ -119,7 +148,10 @@ export class HookClient {
             const result = await response.json();
             if (result.success === false || result.error) throw Error('session request not acknowledged');
           }
-          await unlink(path);
+          if(record.path==='/agentmemory/observe'&&record.completionPolicy==='sdk-v1'){
+            const archive=join(this.dir,'accepted-originals');await mkdir(archive,{recursive:true,mode:0o700});
+            await rename(path,join(archive,name));await syncFolder(archive);await syncFolder(this.dir);
+          }else await unlink(path);
         } catch (e) {
           record.attempts = (record.attempts ?? 0) + 1;
           record.lastError = String(e); record.nextAttemptAt = Date.now() + Math.min(300000, 1000 * 2 ** Math.min(record.attempts - 1, 8));
@@ -129,6 +161,22 @@ export class HookClient {
       }
       return complete;
     } finally { await releaseLock(lock); }
+  }
+  async restoreOriginal(name) {
+    const held={completed:false,status:'held'};
+    if(typeof name!=='string'||!/^[-A-Za-z0-9_.:]+\.json$/.test(name)||basename(name)!==name)return {...held,code:'SDK_SOURCE_SELECTION_INVALID'};
+    const lock=await acquireLock(join(this.dir,'.flush.lock'));if(!lock)return {...held,code:'SDK_SOURCE_BUSY'};
+    try{
+      const fd=await open(join(this.dir,'accepted-originals',name),fsConstants.O_RDONLY|(fsConstants.O_NOFOLLOW??0));let record;
+      try{const info=await fd.stat();if(!info.isFile()||info.size>256*1024+4096)return {...held,code:'SDK_SOURCE_FORMAT_UNSUPPORTED'};record=JSON.parse(await fd.readFile('utf8'));}finally{await fd.close();}
+      if(record.path!=='/agentmemory/observe'||record.completionPolicy!=='sdk-v1'||!record.body?.eventId)return {...held,code:'SDK_SOURCE_SELECTION_INVALID'};
+      const {restoreSdkSourcePayload}=await import('./_capture.mjs');
+      if(typeof restoreSdkSourcePayload!=='function')return {...held,code:'SDK_SOURCE_RESTORE_UNSUPPORTED'};
+      return await restoreSdkSourcePayload(record.body,async body=>{
+        const response=await fetch(this.url+'/agentmemory/capture/restore-sdk',{method:'POST',headers:this.headers(),body:JSON.stringify(body),signal:AbortSignal.timeout(this.timeoutMs)});
+        return {status:response.status,body:await response.json().catch(()=>({}))};
+      });
+    }catch{return {...held,code:'SDK_SOURCE_SELECTION_UNAVAILABLE'};}finally{await releaseLock(lock);}
   }
   async context(sessionId, project) {
     this.onPhase?.('context');
@@ -234,11 +282,11 @@ async function drain(dir, url) {
     const capture = await import('./_capture.mjs');
     let managed = await capture.runDrainChild();
     let delay = 1000;
-    while ((await readdir(dir)).some(x => x.endsWith('.json')) || managed?.remaining > 0) {
+    while ((await readdir(dir)).some(x => x.endsWith('.json')) || (managed?.remaining??0)>(managed?.held??0)) {
       const ok = await client.flush({ limit: 100, budgetMs: 15000 });
       managed = await capture.runDrainChild();
-      if (ok && !managed?.remaining) delay = 1000; else delay = Math.min(60000, delay * 2);
-      if ((await readdir(dir)).some(x => x.endsWith('.json')) || managed?.remaining > 0) await new Promise(resolve => setTimeout(resolve, delay));
+      if (ok && !((managed?.remaining??0)-(managed?.held??0))) delay = 1000; else delay = Math.min(60000, delay * 2);
+      if ((await readdir(dir)).some(x => x.endsWith('.json')) || (managed?.remaining??0)>(managed?.held??0)) await new Promise(resolve => setTimeout(resolve, delay));
     }
   } finally { await releaseLock(lock); }
 }

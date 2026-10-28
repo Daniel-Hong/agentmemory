@@ -40,11 +40,12 @@ export function registerCaptureReceipts(sdk: IIIClient, kv: StateKV): void {
       const done = await get<CompletedEvent>(captureEventScope(key), key);
       if (!done) {
         const queued = await get<{status?: string}>(KV.captureInbox, key);
-        return receipt(['pending', 'retrying', 'dead'].includes(queued?.status ?? '') ? queued!.status! : 'unknown');
+        return receipt((queued as {storageCompletion?:string})?.storageCompletion==='sdk'?'sdk_completed':['pending', 'retrying', 'dead'].includes(queued?.status ?? '') ? queued!.status! : 'unknown');
       }
       if (done.key !== key) return receipt('unverifiable');
       if (done.state === 'deleted') return receipt('deleted');
       if (!digest) return receipt('completed');
+      if(kv.durability?.completion==='sdk')return receipt('sdk_completed');
       if (!kv.durability || !done.observationId) return receipt('unavailable');
       const scope = KV.observations(done.sessionId);
       const obs = await get<CompressedObservation>(scope, done.observationId), raw = obs?.sourceRaw;

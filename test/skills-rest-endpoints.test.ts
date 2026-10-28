@@ -15,7 +15,11 @@ describe("generated REST endpoint methods", () => {
 
   it("documents HTTP routes from every trigger module", () => {
     const rows = collectRestEndpointsInDirectory(fileURLToPath(new URL("../src/triggers", import.meta.url)));
-    expect(rows).toHaveLength(146);
+    const reference = readFileSync(new URL("../plugin/skills/agentmemory-rest-api/REFERENCE.md", import.meta.url), "utf8");
+    const documented = [...reference.matchAll(/^\| (GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \| `([^`]+)` \|$/gm)]
+      .map(([, method, path]) => ({ path, method }));
+    expect(documented).toEqual(rows);
+    expect(reference).toContain(`${rows.length} registered endpoints:`);
     expect(rows).toEqual(expect.arrayContaining([
       { path: "/agentmemory/viewer/events", method: "GET" },
       { path: "/agentmemory/viewer/snapshot", method: "GET" },

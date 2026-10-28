@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import {isStorageWorkCompleted} from './ops/storage-completion.mjs';
+
 import {
   spawn,
   execFileSync,
@@ -2976,7 +2978,7 @@ async function waitForEngineFlush(): Promise<void> {
 
 async function stopWorkerPid(pid: number, graceMs: number): Promise<boolean> {
   const s = p.spinner();
-  s.start(`Stopping agentmemory worker (pid ${pid})... [flushing state]`);
+  s.start(`Stopping agentmemory worker (pid ${pid})... [draining storage work]`);
   const startedAt = Date.now();
   const stopped = await signalAndWait(pid, "SIGTERM", Math.max(graceMs,600000));
   const stoppedAt = Date.now();
@@ -2985,7 +2987,7 @@ async function stopWorkerPid(pid: number, graceMs: number): Promise<boolean> {
     const receipt = JSON.parse(readFileSync(runtimeMetadataPath("shutdown-receipt.json"), "utf8"));
     const receiptAt = typeof receipt.at === "string" ? Date.parse(receipt.at) : NaN;
     verified = stoppedAt >= startedAt && Number.isFinite(receiptAt) && receiptAt >= startedAt && receiptAt <= stoppedAt
-      && receipt.pid === pid && receipt.verified === true && receipt.durability?.synced === true && receipt.durability?.mutationFailures === 0;
+      && receipt.pid === pid && receipt.errorCode == null && (receipt.verified === true && receipt.durability?.synced === true || receipt.verified === false && receipt.completed === true && receipt.durability?.completion === 'sdk' && receipt.durability?.synced === false) && isStorageWorkCompleted(receipt.durability);
   } catch {}
   const ok=stopped&&verified;
   s.stop(ok ? `Stopped worker pid ${pid}` : `Failed to stop worker pid ${pid}`);

@@ -1,3 +1,4 @@
+import {isStorageWorkCompleted} from './storage-completion.mjs';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {timingSafeEqual} from 'node:crypto';
 
@@ -36,7 +37,7 @@ export function createBackgroundControl({clock=Date.now}={}){
   stage('storage');
   if(typeof kv.durability?.wait!=='function')throw Object.assign(Error('background_storage_unavailable'),{code:'BACKGROUND_PAUSE_FENCE_UNAVAILABLE'});
   const result=await kv.durability.wait(kv);
-  if(result?.synced!==true||result?.mutationFailures!==0)throw Object.assign(Error('background_storage_unavailable'),{code:'BACKGROUND_STORAGE_UNVERIFIED'});
+  if(!isStorageWorkCompleted(result))throw Object.assign(Error('background_storage_unavailable'),{code:'BACKGROUND_STORAGE_UNVERIFIED'});
  }
  async function confirmPauseRecord(updateStage=true){
   if(updateStage&&transition)stage('storage');

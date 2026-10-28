@@ -1,10 +1,11 @@
+import {sendCapture} from "../capture/delivery.js";
 import { randomUUID } from "node:crypto";
 import { resolveClientSecret, isLoopbackUrl } from "../secret-store.js";
 import { captureOutputMax, shouldCaptureTool, truncateCaptureOutput } from "../hooks/_capture-filter.js";
 import { resolveProject } from "../hooks/_project.js";
 import { stripPrivateData } from "../functions/privacy.js";
 import { deriveEventId } from "../capture/event-id.js";
-import { appendSpool, drainSpool, parseSentMark, reconcileSent, retainSent, type SendOutcome } from "../capture/spool.js";
+import { appendSpool, drainSpool, type SendOutcome } from "../capture/spool.js";
 
 interface Session { id: string; header?: { cwd?: string } }
 interface Event { type: string; seq: number; time?: number; data: Record<string, unknown> }
@@ -91,17 +92,8 @@ export function apply(ctx: Context, config: { url?: string; secret?: string } = 
     }
   }
 
-  async function deliver(body: Record<string, unknown>): Promise<SendOutcome> {
-    const result = await post("/observe", body);
-    if (result.status >= 200 && result.status < 300) {
-      const mark = parseSentMark(result.body);
-      if (mark && typeof body.eventId === "string") {
-        reconcileSent(url, mark.bootId);
-        retainSent(url, body.eventId, body, mark);
-      }
-      return result.status === 200 ? "duplicate" : "delivered";
-    }
-    return !result.status || result.status >= 500 || [408, 429].includes(result.status) ? "retry" : "rejected";
+  async function deliver(body: Record<string, unknown>,fresh=false,requireReceipt?:boolean): Promise<SendOutcome> {
+    return sendCapture({eventId:body.eventId as string,body,requireReceipt},b=>post("/observe",b),url,{fresh});
   }
 
   function enqueue(state: State, task: () => Promise<unknown>) {
@@ -128,9 +120,9 @@ export function apply(ctx: Context, config: { url?: string; secret?: string } = 
   function observe(session: Session, state: State, event: Event, hookType: string, data: Record<string, unknown>) {
     const eventId = deriveEventId(hookType, session.id, { request_id: `dsh:${event.seq}` }, data);
     const body = { eventId, hookType, sessionId: session.id, project: state.project, cwd: state.cwd,
-      timestamp: new Date(event.time ?? Date.now()).toISOString(), data };
+      timestamp: new Date(event.time ?? Date.now()).toISOString(), data, captureCompletion:"sdk-v1" };
     enqueue(state, async () => {
-      if (await deliver(body) === "retry") appendSpool(url, eventId, body, "unreachable");
+      if (await deliver(body,true) === "retry") appendSpool(url, eventId, body, "unreachable");
     });
   }
 
@@ -203,7 +195,7 @@ export function apply(ctx: Context, config: { url?: string; secret?: string } = 
   });
 
   const drain = () => {
-    draining = drainSpool(url, item => deliver({ ...item.body, eventId: item.eventId }), { maxRecords: 100, deadlineMs: 2000 }).catch(warn);
+    draining = drainSpool(url, item => deliver({ ...item.body, eventId: item.eventId },false,item.requireReceipt), { maxRecords: 100, deadlineMs: 2000 }).catch(warn);
   };
   const timer = setInterval(drain, 10_000);
   timer.unref();

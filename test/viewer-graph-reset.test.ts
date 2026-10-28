@@ -35,7 +35,7 @@ function rig() {
     renderGraphView: vi.fn(), renderGraphDetail: vi.fn(), renderGraphOverview: vi.fn(),
     syncGraphSim: vi.fn(), requestGraphDraw: vi.fn(), centerGraphOn: vi.fn(), selectGraphNode: vi.fn(),
     graphSearchMatches: () => [],
-    renderFlagsChip: vi.fn(), renderFlagsPanel: vi.fn(), updateCountBadges: vi.fn(), updateFooter: vi.fn(),
+    renderConnection: vi.fn(), renderFlagsChip: vi.fn(), renderFlagsPanel: vi.fn(), updateCountBadges: vi.fn(), updateFooter: vi.fn(),
     markDirty: vi.fn(), renderTab: vi.fn(), tabRendered: { graph: true },
   };
   const f = runInNewContext(`${functions}\n({${names.join(",")}})`, context);

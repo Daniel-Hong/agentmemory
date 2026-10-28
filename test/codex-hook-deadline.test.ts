@@ -50,7 +50,7 @@ describe("Codex foreground durable handoff", () => {
     ["SessionEnd", "const enqueue=HookClient.prototype.enqueue; HookClient.prototype.enqueue = async function (...args) { await enqueue.apply(this,args); this.onPhase?.('retained'); await new Promise(() => setInterval(() => {}, 1000)); };", "retained", 2800],
   ])("returns %s before its host deadline after durable handoff even when later work stalls", async (event, setup, phase, budget, retained) => {
     const dir = fixture();
-    writeFileSync(join(dir, "client.mjs"), `globalThis.fetch = async () => { throw Error('unexpected fixture HTTP'); };\n` + readFileSync(join(process.cwd(), "integrations/codex-compat/long-session-hook-client.mjs"), "utf8"));
+    writeFileSync(join(dir, "client.mjs"), `globalThis.fetch = async (_url, options) => { const body=JSON.parse(options.body); return new Response(JSON.stringify({completion:'sdk',completed:true,durable:false,eventId:body.eventId})); };\n` + readFileSync(join(process.cwd(), "integrations/codex-compat/long-session-hook-client.mjs"), "utf8"));
     writeFileSync(join(dir, "entry.mjs"), `import { HookClient, hookMain } from './client.mjs'; ${setup} await hookMain('${event}');`);
     writeFileSync(join(dir, "_capture.mjs"), `export const runDrainChild=async()=>{ globalThis.fetch=async()=>new Response(JSON.stringify({success:true})); }; export const handoffObservation=async()=> { await new Promise(r=>setTimeout(r,100)); return 'delivered'; };`);
     writeFileSync(join(dir, "input.json"), JSON.stringify(input));
@@ -74,7 +74,7 @@ describe("Codex foreground durable handoff", () => {
 
   it("reports phase timings without copying the payload or session into diagnostics", async () => {
     const dir = fixture();
-    writeFileSync(join(dir, "client.mjs"), `globalThis.fetch = async () => { throw Error('unexpected fixture HTTP'); };\n` + readFileSync(join(process.cwd(), "integrations/codex-compat/long-session-hook-client.mjs"), "utf8"));
+    writeFileSync(join(dir, "client.mjs"), `globalThis.fetch = async (_url, options) => { const body=JSON.parse(options.body); return new Response(JSON.stringify({completion:'sdk',completed:true,durable:false,eventId:body.eventId})); };\n` + readFileSync(join(process.cwd(), "integrations/codex-compat/long-session-hook-client.mjs"), "utf8"));
     writeFileSync(join(dir, "entry.mjs"), `import { hookMain } from './client.mjs'; await hookMain('PostToolUse');`);
     writeFileSync(join(dir, "_capture.mjs"), `export const isDrainChild=()=>false; export const runDrainChild=async()=>{}; export const handoffObservation=async()=> 'delivered';`);
     writeFileSync(join(dir, "input.json"), JSON.stringify(input));
@@ -115,7 +115,12 @@ it("returns within the host deadline when a real context HTTP endpoint never res
  writeFileSync(join(dir,"entry.mjs"),"import {hookMain} from './client.mjs';await hookMain('UserPromptSubmit');");
  writeFileSync(join(dir,"_capture.mjs"),"export const runDrainChild=async()=>({remaining:0});export const handoffObservation=async()=> 'delivered';");
  writeFileSync(join(dir,"input.json"),JSON.stringify({...input,prompt:"synthetic prompt"}));
- const server=createServer((_req,_res)=>{contextCalls++;});
+ const server=createServer(async(req,res)=>{
+  if(req.url==='/agentmemory/observe'){
+   let text='';for await(const part of req)text+=part;const body=JSON.parse(text);
+   res.setHeader('content-type','application/json');res.end(JSON.stringify({completion:'sdk',completed:true,durable:false,eventId:body.eventId}));
+  }else contextCalls++;
+ });
  await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
  const address=server.address();if(!address||typeof address==='string')throw Error("fixture port missing");
  const inputFd=openSync(join(dir,"input.json"),"r"),errorFd=openSync(join(dir,"stderr"),"w");

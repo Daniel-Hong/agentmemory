@@ -71,7 +71,7 @@
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 tool MCP" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 hook otomatis" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 DB eksternal" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,200+ pengujian lolos" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,300+ pengujian lolos" height="38" /></picture>
 </p>
 
 <p align="center">
@@ -1384,7 +1384,7 @@ Referensi lengkap ada di [`.env.example`](../.env.example), termasuk penyedia, f
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-150 endpoint di port `3111`. REST API terbind ke `127.0.0.1` secara default. Endpoint yang terlindungi membutuhkan `Authorization: Bearer <secret>`, dan endpoint mesh sync membutuhkan `AGENTMEMORY_SECRET` yang diset secara eksplisit di kedua peer.
+154 endpoint di port `3111`. REST API terbind ke `127.0.0.1` secara default. Endpoint yang terlindungi membutuhkan `Authorization: Bearer <secret>`, dan endpoint mesh sync membutuhkan `AGENTMEMORY_SECRET` yang diset secara eksplisit di kedua peer.
 
 Autentikasi aktif secara default. Jika `AGENTMEMORY_SECRET` tidak disetel, CLI membuat rahasia acak saat pertama dijalankan di `~/.agentmemory/secret` dan menyalinnya ke `secret` dalam direktori data terpilih, dengan mode `0600`. Klien bawaan mengutamakan file kanonis ini untuk koneksi lokal dan hanya mengirim rahasia tersimpan ke URL loopback. `AGENTMEMORY_SECRET` eksplisit selalu diutamakan; klien remote harus mengaturnya melalui environment. Deployment Docker membuat rahasianya sendiri.
 
@@ -1465,7 +1465,7 @@ curl -X POST http://localhost:3111/agentmemory/graph/compact -H "Authorization: 
 ```bash
 npm run dev               # Hot reload
 npm run build             # Production build
-npm test                  # 5,200+ tests
+npm test                  # 5,300+ tests
 npm run test:integration  # API tests (requires running services)
 ```
 

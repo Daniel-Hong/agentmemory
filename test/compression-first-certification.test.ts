@@ -9,15 +9,17 @@ async function factories(){return{
 };}
 async function report(result:unknown){if(process.env.AM_COMPRESSION_REPORT){const{writeFile}=await import('node:fs/promises');await writeFile(process.env.AM_COMPRESSION_REPORT,JSON.stringify({syntheticCompressionFirstCertification:true,...result as object},null,2)+'\n');}}
 
-it('reproduces compression reported failed after the result and retry intent were written but not certified',async()=>{
+it('reports compression success separately from a failed disk certificate and retained retry intent',async()=>{
  const result=await runCompressionCertificationScenario({itemCount:1,publicationDelayMs:100,timeoutMs:35});
- expect(result.outcomes).toEqual([expect.objectContaining({success:false,revisionWritten:true,retained:true,diagnosticCategory:'state_durability'})]);
- expect(result.metrics).toMatchObject({totalCalls:1,failureCount:1});
- expect(result.embeddingCalls).toBe(0);expect(result.pendingTargets).toBe(1);expect(result.committedTargets).toBe(0);expect(result.originalSourcesPreserved).toBe(true);expect(result.inferencePeak).toBe(1);
+ expect(result.outcomes).toEqual([expect.objectContaining({success:true,revisionWritten:true,retained:false,diagnosticCategory:null})]);
+ expect(result.metrics).toMatchObject({totalCalls:1,successCount:1,failureCount:0});
+ expect(result.certificateEvents).toContainEqual(expect.objectContaining({kind:'source_intent',outcome:'failed',code:'STATE_DURABILITY_TIMEOUT'}));
+ expect(result.embeddingCalls).toBe(0);expect(result.pendingTargets).toBe(1);expect(result.durablePendingTargets).toBe(1);expect(result.committedTargets).toBe(0);expect(result.originalSourcesPreserved).toBe(true);expect(result.inferencePeak).toBe(1);
 });
 it('uses serial full compression arrivals and real final vector publication on an uncontended file',async()=>{
  const result=await runCompressionCertificationScenario({itemCount:2,timeoutMs:2000});
  expect(result.outcomes.every(row=>row.success)).toBe(true);expect(result.compressionCalls).toBe(2);expect(result.embeddingCalls).toBe(2);expect(result.inferencePeak).toBe(1);
+ expect(result.certificateEvents.filter(row=>row.outcome==='failed')).toEqual([]);
  expect(result.originalSourcesPreserved).toBe(true);expect(result.pendingTargets).toBe(0);expect(result.committedTargets).toBe(2);expect(result.publicationFailures).toBe(0);
  expect(result.inferenceEvents.map(row=>row.kind+':'+row.phase)).toEqual(['compress:start','compress:end','embed:start','embed:end','compress:start','compress:end','embed:start','embed:end']);
 });
@@ -36,7 +38,7 @@ for(const delay of [6000,17000])it.runIf(process.env.AM_COMPRESSION_STRESS===Str
  const result=await runCompressionCertificationScenario({namespaceBytes:253_000_000,itemCount:2,inferenceMs:25,foregroundWritesAtMs:[1000,4000,8000],recoveryAtMs:200,recoveryItemCount:4,publicationDelayMs:40,firstCompressionPublicationDelayMs:delay,arrivalAnchor:'first_compression_write',timeoutMs:15000,warmCaptureBudget:process.env.AM_COMPRESSION_WARM==='1',...await factories()});
  await report(result);
  expect(result.inferencePeak).toBe(1);expect(result.originalSourcesPreserved).toBe(true);expect(result.diskCompressedTargets).toBe(2);expect(result.publicationFailures).toBe(0);
- if(delay>15000){expect(result.outcomes[0]).toMatchObject({success:false,revisionWritten:true,retained:true,diagnosticCategory:'state_durability'});expect(result.certificateEvents.some(row=>row.kind==='source_intent'&&row.outcome==='failed'&&row.code==='STATE_DURABILITY_TIMEOUT')).toBe(true);}
+ if(delay>15000){expect(result.outcomes[0]).toMatchObject({success:true,revisionWritten:true,retained:false,diagnosticCategory:null});expect(result.certificateEvents.some(row=>row.kind==='source_intent'&&row.outcome==='failed'&&row.code==='STATE_DURABILITY_TIMEOUT')).toBe(true);expect(result.pendingTargets).toBeGreaterThan(0);expect(result.durablePendingTargets).toBeGreaterThan(0);}
 },180000);
 it.runIf(process.env.AM_COMPRESSION_PREWRITE==='1')('compares the original scenario-start prewrite churn with a warm existing capture budget',async()=>{
  const result=await runCompressionCertificationScenario({namespaceBytes:253_000_000,itemCount:2,inferenceMs:25,foregroundWritesAtMs:[1000,4000,8000],recoveryAtMs:200,recoveryItemCount:4,publicationDelayMs:40,firstCompressionPublicationDelayMs:6000,arrivalAnchor:'scenario_start',timeoutMs:15000,warmCaptureBudget:true,...await factories()});

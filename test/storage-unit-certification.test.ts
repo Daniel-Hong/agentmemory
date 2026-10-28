@@ -6,6 +6,7 @@ import {storageUnitFor,createStorageUnitAdapter} from './helpers/storage-unit-ad
 it('routes the complete compression certification and publication through sixteen real namespace units',async()=>{
  const result=await runCompressionCertificationScenario({namespaceBytes:512*1024,itemCount:2,warmCaptureBudget:true,storageUnitCount:16}as any);
  expect((result as any).storageUnits).toMatchObject({count:16,logicalSourceFilePresent:false,duplicateSourceKeys:0,sourceKeysComplete:true});
+ expect(result.certificateEvents.filter(row=>row.outcome==='failed')).toEqual([]);
  expect(result.outcomes.every(row=>row.success)).toBe(true);expect(result.committedTargets).toBe(2);expect(result.pendingTargets).toBe(0);expect(result.originalSourcesPreserved).toBe(true);expect(result.inferencePeak).toBe(1);
  expect((result as any).storageUnits.sourceFileCount).toBe(16);
  const certificates=result.certificateEvents.filter(row=>row.kind==='source_intent');
@@ -15,7 +16,9 @@ it('routes the complete compression certification and publication through sixtee
 });
 it('keeps originals and a real durable retry instead of certifying a delayed shard',async()=>{
  const result=await runCompressionCertificationScenario({namespaceBytes:512*1024,itemCount:1,publicationDelayMs:80,timeoutMs:30,storageUnitCount:16});
- expect(result.outcomes[0]).toMatchObject({success:false,retained:true,revisionWritten:true});expect(result.pendingTargets).toBe(1);expect(result.durablePendingTargets).toBe(1);expect(result.committedTargets).toBe(0);expect(result.embeddingCalls).toBe(0);expect(result.originalSourcesPreserved).toBe(true);
+ expect(result.outcomes[0]).toMatchObject({success:true,retained:false,revisionWritten:true,diagnosticCategory:null});
+ expect(result.certificateEvents).toContainEqual(expect.objectContaining({kind:'source_intent',outcome:'failed',code:'STATE_DURABILITY_TIMEOUT'}));
+ expect(result.pendingTargets).toBe(1);expect(result.durablePendingTargets).toBe(1);expect(result.committedTargets).toBe(0);expect(result.embeddingCalls).toBe(0);expect(result.originalSourcesPreserved).toBe(true);
 });
 
 async function restartFixture(mode:'cancel'|'publication_failure'|'foreign_generation'|'same_target'){
@@ -35,7 +38,7 @@ async function restartFixture(mode:'cancel'|'publication_failure'|'foreign_gener
  }};
  const source=KV.observations('restart'),item={id:'target',sessionId:'restart',kind:'synthetic' as const};let hotWritten=false;
  const embed=vi.fn(async()=>{if(mode==='same_target'&&!hotWritten){hotWritten=true;await first.storage.kv.set(source,item.id,{id:item.id,sessionId:item.sessionId,title:'new canonical',sourceRaw:{toolOutput:'original retained'}});}return new Float32Array([1,0]);});
- function create(){const fence=createStateDurabilityFence({storePath:dir,timeoutMs:500,pollIntervalMs:5}),physical=new StateKV(sdk as never,{backend:'file',durability:fence});const storage=createStorageUnitAdapter(physical,[source,RETRY,COMMITTED],16),index=new VectorIndex(),persistence=new IndexPersistence(storage.kv,index);persistence.stop();const worker=registerEmbeddingRecovery({kv:storage.kv,KV,index,provider:{dimensions:2,embed},withKeyedLock,schedule:false,clock:()=>now,persistIndex:publication=>persistence.saveVerified(publication)});return{fence,storage,index,persistence,worker};}
+ function create(){const fence=createStateDurabilityFence({storePath:dir,timeoutMs:500,pollIntervalMs:5,completion:'disk'}),physical=new StateKV(sdk as never,{backend:'file',durability:fence});const storage=createStorageUnitAdapter(physical,[source,RETRY,COMMITTED],16),index=new VectorIndex(),persistence=new IndexPersistence(storage.kv,index);persistence.stop();const worker=registerEmbeddingRecovery({kv:storage.kv,KV,index,provider:{dimensions:2,embed},withKeyedLock,schedule:false,clock:()=>now,persistIndex:publication=>persistence.saveVerified(publication)});return{fence,storage,index,persistence,worker};}
  let first=create(),second:ReturnType<typeof create>|undefined;
  try{
   await first.storage.kv.set(source,item.id,{id:item.id,sessionId:item.sessionId,title:'original canonical',sourceRaw:{toolOutput:'original retained'}});await first.worker.enqueue(item);
@@ -67,6 +70,6 @@ it.runIf(process.env.AM_STORAGE_BENCH==='1')('measures fixed storage units with 
  if(process.env.AM_STORAGE_REPORT){const{writeFile}=await import('node:fs/promises');await writeFile(process.env.AM_STORAGE_REPORT,JSON.stringify({mode,layout:count,...result},null,2)+'\n');}
  expect(result.inferencePeak).toBe(1);expect(result.originalSourcesPreserved).toBe(true);expect(result.storageUnits.duplicateSourceKeys).toBe(0);expect(result.storageUnits.sourceKeysComplete).toBe(true);
  expect(result.storageUnits.logicalSourceFilePresent).toBe(count===1);
- if(negative){expect(result.firstAttemptFailures).toBe(1);expect(result.embeddingCalls).toBe(0);expect(result.committedTargets).toBe(0);expect(result.durablePendingTargets).toBe(1);}
+ if(negative){expect(result.outcomes[0]).toMatchObject({success:true,revisionWritten:true});expect(result.firstAttemptFailures).toBe(0);expect(result.certificateEvents).toContainEqual(expect.objectContaining({kind:'source_intent',outcome:'failed',code:'STATE_DURABILITY_TIMEOUT'}));expect(result.embeddingCalls).toBe(0);expect(result.committedTargets).toBe(0);expect(result.pendingTargets).toBe(1);expect(result.durablePendingTargets).toBe(1);}
  else{expect(result.committedTargets).toBe(2);expect(result.pendingTargets).toBe(0);}
 },180000);

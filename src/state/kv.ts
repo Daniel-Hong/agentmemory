@@ -137,7 +137,7 @@ export class StateKV {
     const storePath = this.backend === 'file' ? getEnvVar('AGENTMEMORY_STATE_STORE_PATH') : undefined
     if (this.backend === 'file' && storePath && ownsFileWriterLease(options.writerLease,storePath)) {this.recoveryWrite=createRecordRecoveryGate();this.writerLease=options.writerLease;this.writerStorePath=storePath;}
     this.durability = this.backend === 'file'
-      ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath }) : null)
+      ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath, completion: 'sdk' }) : null)
       : null
     this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this }) : null
     this.graphFileList = this.backend === 'file' && storePath ? createGraphFileList({ storePath }) : null

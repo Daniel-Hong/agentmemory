@@ -21,8 +21,8 @@ it('reports the one physical scan to every active consumer and correlates lifecy
  const h=harness(),a:any[]=[],b:any[]=[],one=vi.fn(),two=vi.fn();
  const p=h.request(a,one),q=h.request(b,two);await turn();h.calls[0].open();h.calls[0].finish();await Promise.all([p,q]);
  expect(h.calls).toHaveLength(1);expect(one).toHaveBeenCalledTimes(1);expect(two).toHaveBeenCalledTimes(1);
- expect(a.map(e=>e.phase)).toEqual(['queued','started','opened','completed']);
- expect(b.map(e=>e.phase)).toEqual(['joined','started','opened','completed']);
+ expect(a.map(e=>e.phase)).toEqual(['queued','classifying','classified','admission_queued','admitted','started','opened','completed']);
+ expect(b.map(e=>e.phase)).toEqual(['joined','classifying','classified','admission_queued','admitted','started','opened','completed']);
  expect(new Set([...a,...b].map(e=>e.readId)).size).toBe(1);
  expect(a.at(-1)).toMatchObject({bytesRead:100,fileBytes:100,complete:true});
  expect(JSON.stringify([a,b])).not.toMatch(/PRIVATE|private-key|signature|path/);
@@ -48,7 +48,7 @@ it('keeps observer throws and rejected promises out of read success and failure 
 it('diagnoses direct fallback and all-waiter cancellation without cached success',async()=>{
  const h=harness(),a:any[]=[],c=new AbortController();
  const p=h.reader.read('/PRIVATE-path',{keys:new Set(['private-key']),onEntry:()=>{},onDiagnostic:(e:any)=>a.push(e)}as any);await turn();h.calls[0].open();h.calls[0].finish();await p;
- expect(a.map(e=>e.phase)).toEqual(['started','opened','completed']);
+ expect(a.map(e=>e.phase)).toEqual(['classifying','classified','admission_queued','admitted','started','opened','completed']);
  const b:any[]=[];const q=h.request(b,vi.fn(),c);const rejected=expect(q).rejects.toMatchObject({name:'AbortError'});await turn();c.abort();await rejected;await turn();
  expect(b.at(-1)).toMatchObject({phase:'aborted',started:true});await h.reader.drain();expect(h.reader.snapshot().activeReads).toBe(0);
 });
@@ -76,7 +76,7 @@ it('isolates diagnostic payload mutation between shared consumers',async()=>{
  const h=harness(),events:any[]=[];
  const one=h.reader.read('/PRIVATE-path',{keys:new Set(['private-key']),onDiagnostic:(event:any)=>{event.phase='PRIVATE';},onRead:(info:any)=>{info.bytesRead=999;}}as any);
  const observer=vi.fn();const two=h.request(events,observer);await turn();h.calls[0].open();h.calls[0].finish();await Promise.all([one,two]);
- expect(events.map(e=>e.phase)).toEqual(['joined','started','opened','completed']);expect(observer.mock.calls[0][0].bytesRead).toBe(100);expect(events.at(-1).bytesRead).toBe(100);
+ expect(events.map(e=>e.phase)).toEqual(['joined','classifying','classified','admission_queued','admitted','started','opened','completed']);expect(observer.mock.calls[0][0].bytesRead).toBe(100);expect(events.at(-1).bytesRead).toBe(100);
 });
 it('ignores a throwing certificate-reference accessor without changing existing failure fields',()=>{
  const details={category:'state_durability',get certificateRef(){throw Error('diagnostic');}};

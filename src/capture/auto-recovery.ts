@@ -31,6 +31,7 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
  const now=options.now??Date.now;let busy=false,halted=false,enabled=options.enabled,revision=0,initialized:Promise<void>|undefined;let durableEnabled:boolean|null=null,configurationStatus='unloaded';
  let view={enabled:options.enabled,supported:false,phase:'idle',resolved:0,verifying:0,blocked:0,reasonCounts:{}as Record<string,number>,breakerUntil:0,lastCheckedAt:null as string|null,lastErrorCode:null as string|null,verificationFailureCounts:{}as Record<string,number>};
  const blockReason=()=>{
+  if(kv.durability?.completion==='sdk')return 'SDK_COMPLETION_ONLY';
   if(halted)return 'RECOVERY_STORAGE_OR_STATE_UNAVAILABLE';
   if(!options.writerOwned()||!kv.recoveryWrite||kv.backend!=='file'||!kv.durability)return 'FILE_WRITER_UNSUPPORTED';
   if(!kv.recoveryMutationSafe)return kv.recoveryBlockReason??'WRITER_EPOCH_UNVERIFIED';
@@ -43,6 +44,7 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
  async function initialize(){return initialized??=(async()=>{try{const control=await kv.get<Control>(SCOPE,'control');if(control&&!validControl(control))throw Error();if(control?.enabled!==undefined){durableEnabled=control.enabled;if(!revision)enabled=control.enabled;configurationStatus='loaded';}else configurationStatus='default';view.breakerUntil=control?.openUntil??0;await refresh();}catch{halted=true;configurationStatus='unknown';throw fail('RECOVERY_STORAGE_OR_STATE_UNAVAILABLE');}})();}
  async function setEnabled(value:boolean){
   if(typeof value!=='boolean')return {ok:false,code:'INVALID_RECOVERY_CONTROL',state:snapshot()};
+  if(kv.durability?.completion==='sdk'){await initialize();return {ok:false,code:'SDK_COMPLETION_ONLY',state:snapshot()};}
   const request=++revision;if(!value)enabled=false;configurationStatus='pending';
   try{
    await initialize();if(request===revision)configurationStatus='pending';
@@ -67,7 +69,7 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
   if(control&&!validControl(control))throw fail('RECOVERY_STATE_UNSUPPORTED');
   const counts:Record<string,number>={};for(const r of rows)if(r.phase!=='resolved'){const reason=SAFE_REASONS.has(r.reason)?r.reason:'RECOVERY_STATE_UNSUPPORTED';counts[reason]=(counts[reason]??0)+1;}
   const verificationFailureCounts:Record<string,number>={};for(const r of rows)if(r.phase!=='resolved'&&r.lastVerificationFailure){const f=r.lastVerificationFailure,k=f.operation+':'+f.stage+':'+f.code;verificationFailureCounts[k]=(verificationFailureCounts[k]??0)+1;}
-  view={...view,verificationFailureCounts,supported:kv.recoveryMutationSafe&&!!kv.recoveryWrite&&kv.backend==='file'&&!!kv.durability&&options.writerOwned(),resolved:rows.filter(r=>r.phase==='resolved').length,verifying:rows.filter(r=>['checking','verifying'].includes(r.phase)).length,blocked:rows.filter(r=>r.phase==='blocked').length,reasonCounts:counts,breakerUntil:control?.openUntil??0,lastCheckedAt:new Date(now()).toISOString()};
+  view={...view,verificationFailureCounts,supported:kv.durability?.completion!=='sdk'&&kv.recoveryMutationSafe&&!!kv.recoveryWrite&&kv.backend==='file'&&!!kv.durability&&options.writerOwned(),resolved:rows.filter(r=>r.phase==='resolved').length,verifying:rows.filter(r=>['checking','verifying'].includes(r.phase)).length,blocked:rows.filter(r=>r.phase==='blocked').length,reasonCounts:counts,breakerUntil:control?.openUntil??0,lastCheckedAt:new Date(now()).toISOString()};
   return {rows,control:control??{version:1,kind:'control',failures:0,openUntil:0}as Control};
  }
  function keys(row:Row){return [{scope:KV.captureReview,key:row.key},{scope:KV.captureInbox,key:row.key},{scope:KV.observations(row.sessionId),key:row.observationId},{scope:'mem:embedding-retry:v1',key:row.observationId},{scope:'mem:embedding-committed:v1',key:row.observationId},{scope:captureEventScope(row.key),key:row.key}];}

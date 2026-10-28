@@ -1,3 +1,4 @@
+import {isStorageWorkCompleted} from './ops/storage-completion.mjs';
 import {createEngineEpochEvidence} from "./ops/engine-epoch.mjs";
 import {acquireFileWriterLease,markFileWriterClean,ownsFileWriterLease} from "./ops/file-writer-lease.mjs";
 import { createBackgroundControl, installBackgroundControl, controlBackgroundFunctions, registerBackgroundControlApi, backgroundTask } from "./ops/background-control.mjs";
@@ -330,12 +331,12 @@ async function main() {
             throw Object.assign(Error("index_save_unverified"), { code: "INDEX_SAVE_UNVERIFIED" });
           if (!kv.durability) throw Object.assign(Error("file_durability_unconfigured"), { code: "STATE_DURABILITY_UNCONFIGURED" });
           progress({ stage: "durability_drain" }); await kv.durability.drain();
-          progress({ stage: "disk_fence" });
+          progress({ stage: kv.durability.completion==='sdk'?"sdk_completion":"disk_fence" });
           const beforeGuard = await kv.durability.wait(kv);
-          if (beforeGuard.synced !== true || beforeGuard.mutationFailures !== 0) throw Object.assign(Error("shutdown_storage_unverified"), { code: "SHUTDOWN_NOT_VERIFIED" });
+          if (!isStorageWorkCompleted(beforeGuard)) throw Object.assign(Error("shutdown_storage_unverified"), { code: "SHUTDOWN_NOT_VERIFIED" });
           if (drained) { progress({ stage: "restart_guard" }); await control.commitCleanShutdown(); }
           progress({ stage: "freeze" }); kv.durability.freeze();
-          progress({ stage: "final_disk_fence" }); disk = await kv.durability.wait(kv);
+          progress({ stage: kv.durability.completion==='sdk'?"final_sdk_completion":"final_disk_fence" }); disk = await kv.durability.wait(kv);
         }, progress);
         return disk;
       },
@@ -344,8 +345,8 @@ async function main() {
     if (resources.viewer) await settleWithin(new Promise<void>(resolve => resources.viewer!.close(() => resolve())), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
     const sdkDrained=await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
     if(writerLease&&kv.recoveryMutationSafe&&outcome.verified&&!bootFailed&&sdkDrained&&!kv.mutationOutcomeUncertain){try{markFileWriterClean(writerLease);}catch{/* The dirty marker remains conservative on failure. */}}
-    if (outcome.verified) clearWorkerPidfile();
-    process.exit(outcome.verified && !bootFailed ? 0 : 1);
+    if (outcome.completed) clearWorkerPidfile();
+    process.exit(outcome.completed && !bootFailed ? 0 : 1);
   }
   process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
   fatalShutdown = shutdown;
@@ -736,7 +737,7 @@ async function main() {
     `Ready. ${embeddingProvider ? "Triple-stream (BM25+Vector+Graph)" : "BM25+Graph"} search active.`,
   );
   bootLog(
-    `REST API: 150 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
+    `REST API: 154 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,

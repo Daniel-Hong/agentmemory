@@ -36,6 +36,7 @@ export function createCaptureRetryJobs(kv: StateKV, retry: (key: string, force: 
   return {
     async status(id?:string) { return view(id?await get(id):await latest()); },
     async start(input: Selection) {
+      if(kv.durability?.completion==='sdk')throw Error('SDK_COMPLETION_ONLY');
       if(!uuid.test(input.requestId)||input.all!==true&&!input.eventId||input.all===true&&(input.eventId||input.key))throw Error('INVALID_CAPTURE_JOB');
       return lock(async()=>{
         const raw=await kv.get<Job & {aliasOf?:string}>(KV.captureJobs,input.requestId);const previous=raw?structuredClone(raw):null;
@@ -51,10 +52,12 @@ export function createCaptureRetryJobs(kv: StateKV, retry: (key: string, force: 
       });
     },
     async stop(id:string) {
+      if(kv.durability?.completion==='sdk')throw Error('SDK_COMPLETION_ONLY');
       if(!uuid.test(id))throw Error('INVALID_CAPTURE_JOB');
       return lock(async()=>{const job=await get(id);if(!job)return null;if(active(job)){job.stopRequested=true;job.status=job.items.some(x=>x.status==='working'||x.status==='waiting')?'stopping':'stopped';await save(job);}return view(job);});
     },
     async tick() {
+      if(kv.durability?.completion==='sdk'){lastErrorCode='SDK_COMPLETION_ONLY';stage('blocked');return;}
       if(working)return;working=true;stage('loading');
       try{
         const selected=await lock(async()=>{

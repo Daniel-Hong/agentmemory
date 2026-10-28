@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectRestEndpointsInDirectory } from "./skills/rest-endpoints.js";
 import { ESSENTIAL_TOOLS, getAllTools } from "../src/mcp/tools-registry.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -104,11 +105,7 @@ const FACTS: Fact[] = [
   {
     key: "restEndpoints",
     label: "REST endpoints",
-    value: () => String(
-      countMatches("src/triggers/api.ts", /api_path:\s*["`]/g) +
-      countMatches("src/triggers/viewer-sse.ts", /api_path:\s*["`]/g) +
-      countMatches("src/triggers/viewer-streams.ts", /api_path:\s*["`]/g),
-    ),
+    value: () => String(collectRestEndpointsInDirectory(join(ROOT, "src/triggers")).length),
     nouns: [
       "REST endpoints", "REST API endpoints", "endpoints", "endpoint", "Endpunkte", "эндпоинт", "个端点", "個端點", "개 엔드포인트", "개의 엔드포인트", "エンドポイント",
       "uç nokta", "एंडपॉइंट", "endepunkt", "de endpoint", "ендпоінт", "na endpoint", "اینڈ پوائنٹ", "نقطة نهاية", "এন্ডপয়েন্ট", "개",

@@ -1,5 +1,7 @@
 import {
   chmodSync,
+  constants,
+  fstatSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -14,9 +16,12 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { join, resolve } from "node:path";
 import { resolveDataDir } from "../cli-data-dir.js";
 import { scrubRecord } from "../functions/privacy.js";
+import { stableStringify } from "./event-id.js";
 
 export interface SpoolRecord {
   v: 1;
@@ -27,6 +32,7 @@ export interface SpoolRecord {
   body: Record<string, unknown>;
   bootId?: string;
   requireReceipt?: boolean;
+  holdReason?: "SDK_COMPLETION_ONLY";
 }
 
 export interface SentMark {
@@ -83,12 +89,14 @@ export interface SpoolSummary {
   oldestAt: string | null;
   retained: number;
   retainedBytes: number;
+  sdkRetained: number;
+  sdkRetainedBytes: number;
   maxBytes: number;
   maxAgeHours: number;
   stats: SpoolStats;
 }
 
-export type SendOutcome = "delivered" | "duplicate" | "rejected" | "retry";
+export type SendOutcome = "delivered" | "duplicate" | "rejected" | "retry" | "held";
 
 export interface DrainResult {
   claimed: number;
@@ -99,6 +107,7 @@ export interface DrainResult {
   corrupt: number;
   remaining: number;
   error?: string;
+  held?: number;
   skipped?: "locked" | "empty" | "disabled";
 }
 
@@ -272,7 +281,7 @@ function parseLines(text: string): { records: SpoolRecord[]; corrupt: number } {
 }
 
 function isExpired(rec: SpoolRecord, policy: SpoolPolicy, now: number): boolean {
-  if (rec.requireReceipt) return false;
+  if (rec.requireReceipt || rec.holdReason==="SDK_COMPLETION_ONLY") return false;
   const at = Date.parse(rec.spooledAt);
   return Number.isFinite(at) && now - at > policy.maxAgeMs;
 }
@@ -348,9 +357,9 @@ export function appendSpool(
     return withLock(paths.lock, (locked) => {
       let expired = 0;
       if (locked && fileSize(paths.file) + bytes > policy.maxBytes) expired = pruneExpiredLocked(paths, policy);
-      const over = fileSize(paths.file) + sentBytes(paths) + bytes - policy.maxBytes;
+      const over = fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes - policy.maxBytes;
       if (locked && over > 0) evictSent(paths, over);
-      if (fileSize(paths.file) + sentBytes(paths) + bytes > policy.maxBytes) {
+      if (fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes > policy.maxBytes) {
         if (expired) writeStats(paths, (s) => void (s.expired += expired));
         return note("full", bytes);
       }
@@ -428,6 +437,81 @@ export function parseSentMark(body: unknown): SentMark | null {
   return { bootId, durableAfterMs: Math.min(Math.ceil(after), MAX_DURABLE_AFTER_MS) };
 }
 
+function sdkOriginals(paths: SpoolPaths): { records: number; bytes: number } {
+  let records=0,bytes=0;
+  try { for(const name of readdirSync(join(paths.dir,`${paths.name}.sdk-originals`))){
+    if(!/^[a-f0-9]{64}(?:\.envelope-[a-f0-9]{64})?\.json(?:\.[a-f0-9-]+\.tmp)?$/.test(name))continue;
+    bytes+=statSync(join(paths.dir,`${paths.name}.sdk-originals`,name)).size;if(name.endsWith('.json'))records++;
+  }}catch{}
+  return {records,bytes};
+}
+
+export function readSdkOriginal(url:string,eventId:string,options:{dir?:string;policy?:SpoolPolicy}={}):Record<string,unknown>{
+ if(!/^[A-Za-z0-9_.:-]{8,128}$/.test(eventId))throw Error('SDK_SOURCE_SELECTION_INVALID');
+ const paths=spoolPaths(url,options.dir),folder=join(paths.dir,`${paths.name}.sdk-originals`),identity=createHash('sha256').update(eventId).digest('hex');
+ return withLock(paths.lock,locked=>{
+  if(!locked)throw Error('SDK_SOURCE_SELECTION_BUSY');
+  if(readdirSync(folder).some(name=>name.startsWith(identity+'.envelope-')))throw Error('SDK_SOURCE_SELECTION_AMBIGUOUS');
+  const fd=openSync(join(folder,identity+'.json'),constants.O_RDONLY|(constants.O_NOFOLLOW??0));
+  try{
+   const stat=fstatSync(fd);if(!stat.isFile()||stat.size>(options.policy??spoolPolicy()).maxRecordBytes)throw Error('SDK_SOURCE_FORMAT_UNSUPPORTED');
+   const rec=JSON.parse(readFileSync(fd,'utf8'));
+   if(rec.v!==1||rec.eventId!==eventId||rec.completion!=='sdk'||rec.durable!==false||rec.body?.eventId!==eventId||rec.body?.captureCompletion!=='sdk-v1')throw Error('SDK_SOURCE_SELECTION_INVALID');
+   return rec.body;
+  }finally{closeSync(fd);}
+ });
+}
+
+function sameSdkEnvelopeSource(a:Record<string,unknown>,b:Record<string,unknown>):boolean {
+ const source=(body:Record<string,unknown>)=>{
+  const value={...body};
+  if(typeof a.timestamp==='string'&&typeof b.timestamp==='string')delete value.timestamp;
+  if(body.hookType==='prompt_submit'&&body.data&&typeof body.data==='object'&&!Array.isArray(body.data)){
+   const data={...body.data} as Record<string,unknown>;
+   if(typeof data.prompt==='string'&&data.backfill===true)delete data.backfill;
+   value.data=data;
+  }
+  return value;
+ };
+ return isDeepStrictEqual(source(a),source(b));
+}
+
+export function retainSdkOriginal(url:string,eventId:string,body:Record<string,unknown>,options:{dir?:string;policy?:SpoolPolicy}={}):boolean {
+ const policy=options.policy??spoolPolicy();if(!policy.enabled)return false;
+ const paths=spoolPaths(url,options.dir);
+ const retainedBody=scrubRecord(JSON.parse(JSON.stringify(body)),{scrubKeys:true});
+ const line=JSON.stringify({v:1,eventId,body:retainedBody,completion:'sdk',durable:false})+'\n';
+ const bytes=Buffer.byteLength(line);if(bytes>policy.maxRecordBytes)return false;
+ try {
+  ensureDir(paths.dir);
+  return withLock(paths.lock,locked=>{
+   if(!locked)return false;
+   const folder=join(paths.dir,`${paths.name}.sdk-originals`);ensureDir(folder);
+   const identity=createHash('sha256').update(eventId).digest('hex');
+   let file=join(folder,identity+'.json');
+   if(existsSync(file)){
+    const prior=JSON.parse(readFileSync(file,'utf8'));
+    if(prior.eventId!==eventId)return false;
+    if(!isDeepStrictEqual(prior.body,retainedBody)){
+     if(!prior.body||!sameSdkEnvelopeSource(prior.body,retainedBody))return false;
+     file=join(folder,identity+'.envelope-'+createHash('sha256').update(stableStringify(retainedBody)).digest('hex')+'.json');
+    }
+   }
+   if(existsSync(file)){
+    const prior=JSON.parse(readFileSync(file,'utf8'));
+    if(prior.eventId!==eventId||!isDeepStrictEqual(prior.body,retainedBody))return false;
+    const fd=openSync(file,'r');try{fsyncSync(fd);}finally{closeSync(fd);}syncDirectory(folder);syncDirectory(paths.dir);syncDirectory(join(paths.dir,'..'));return true;
+   }
+   if(fileSize(paths.file)+sentBytes(paths)+sdkOriginals(paths).bytes+bytes>policy.maxBytes)return false;
+   const temp=file+'.'+randomUUID()+'.tmp';
+   try{
+    const fd=openSync(temp,'wx',0o600);try{writeFileSync(fd,line);fsyncSync(fd);}finally{closeSync(fd);}
+    renameSync(temp,file);syncDirectory(folder);syncDirectory(paths.dir);syncDirectory(join(paths.dir,'..'));return true;
+   }finally{try{unlinkSync(temp);}catch{}}
+  });
+ }catch{return false;}
+}
+
 export function retainSent(
   url: string,
   eventId: string,
@@ -461,7 +545,7 @@ export function retainSent(
     const dueAt = Math.ceil((now + mark.durableAfterMs) / SENT_BUCKET_MS) * SENT_BUCKET_MS;
     const file = join(paths.dir, `${paths.name}.sent-${mark.bootId}-${dueAt}.jsonl`);
     return withLock(paths.lock, () => {
-      if (fileSize(paths.file) + sentBytes(paths) + bytes > policy.maxBytes) return false;
+      if (fileSize(paths.file) + sentBytes(paths) + sdkOriginals(paths).bytes + bytes > policy.maxBytes) return false;
       const fd = openSync(file, "a", 0o600);
       try {
         writeSync(fd, line);
@@ -558,7 +642,9 @@ function requeueUnlocked(paths: SpoolPaths, leftover: SpoolRecord[]): void {
 }
 
 export function spoolHasRecords(url: string, dir?: string): boolean {
-  return fileSize(spoolPaths(url, dir).file) > 0;
+  const paths=spoolPaths(url,dir);
+  if(fileSize(paths.file)>0)return true;
+  try{return readdirSync(paths.dir).some(name=>name.startsWith(paths.name+'.draining-')&&name.endsWith('.jsonl')&&fileSize(join(paths.dir,name))>0);}catch{return false;}
 }
 
 export function drainInProgress(url: string, dir?: string): boolean {
@@ -604,11 +690,13 @@ export async function drainSpool(
     let processed = 0;
     for (const rec of records) {
       if (options.shouldStop?.()) { leftover.push(rec); continue; }
-      if (seen.has(rec.eventId)) {
+      const identity=rec.eventId+":"+(rec.body.captureCompletion==="sdk-v1"?"sdk":"legacy");
+      if (!rec.requireReceipt && !rec.holdReason && seen.has(identity)) {
         result.duplicates++;
         continue;
       }
-      seen.add(rec.eventId);
+      if(!rec.requireReceipt&&!rec.holdReason)seen.add(identity);
+      if(rec.holdReason==="SDK_COMPLETION_ONLY"){leftover.push(rec);result.held=(result.held??0)+1;continue;}
       if (isExpired(rec, policy, now)) {
         result.expired++;
         continue;
@@ -626,6 +714,7 @@ export async function drainSpool(
         result.error = err instanceof Error ? err.message : String(err);
       }
       if (rec.requireReceipt && outcome === "rejected") outcome = "retry";
+      if(outcome==="held"){leftover.push({...rec,holdReason:"SDK_COMPLETION_ONLY"});result.held=(result.held??0)+1;continue;}
       if (outcome === "delivered") result.delivered++;
       else if (outcome === "duplicate") result.duplicates++;
       else if (outcome === "rejected") result.rejected++;
@@ -636,7 +725,7 @@ export async function drainSpool(
     }
     result.remaining = leftover.length;
     withLock(paths.lock, (locked) => (locked ? requeueLocked(paths, leftover) : requeueUnlocked(paths, leftover)), 2000);
-    if (leftover.some(record => record.requireReceipt)) syncDirectory(paths.dir);
+    if (leftover.some(record => record.requireReceipt || record.holdReason)) syncDirectory(paths.dir);
     for (const file of files) {
       try {
         unlinkSync(file);
@@ -701,6 +790,8 @@ export function spoolSummary(url: string, options: { policy?: SpoolPolicy; dir?:
     oldestAt,
     retained,
     retainedBytes,
+    sdkRetained:sdkOriginals(paths).records,
+    sdkRetainedBytes:sdkOriginals(paths).bytes,
     maxBytes: policy.maxBytes,
     maxAgeHours: Math.round(policy.maxAgeMs / 3600_000),
     stats: readSpoolStats(paths),

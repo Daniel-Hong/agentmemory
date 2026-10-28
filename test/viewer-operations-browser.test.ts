@@ -7,11 +7,12 @@ import { describe, expect, it } from "vitest";
 const source=readFileSync('src/viewer/index.html','utf8');
 const stub=`<script>
 window.fixtureErrors=[];window.addEventListener('error',e=>fixtureErrors.push(e.message));window.addEventListener('unhandledrejection',e=>fixtureErrors.push(String(e.reason && e.reason.stack || e.reason)));
-localStorage.removeItem('agentmemory-refresh');window.requests=[];window.pauses=0;window.resumes=0;
+localStorage.removeItem('agentmemory-refresh');window.requests=[];window.pauses=0;window.resumes=0;window.sseAborts=0;
 var fixtureControl={status:'running'},fixtureJob={status:'idle'};
 var fixtureSession={id:'fixture-session',project:'<script>bad<'+ '/script>',observationCount:5,summaryProgress:{status:'blocked',pendingCount:3,blockedObservations:{'obs-1':{status:'blocked',attempts:8,lastError:'PRIVATE_SECRET',diagnostics:{category:'output_truncated',field:'title'}}}},enrichmentProgress:{compress:{pendingCount:0},graph:{pendingCount:1,status:'blocked'}}};
 var fixtureHealth={status:'healthy',health:{memory:{heapUsed:96000000,heapTotal:100000000,heapLimit:1000000000,rss:800000000},cpu:{percent:116.7,capacityCores:16,capacityPercent:7.29},alerts:[],notes:[]},memoryPressure:{level:'high',availableBytes:100000000},snapshotRecovery:{enabled:true,status:'queued',nextCheckAt:1700000000000,format:'partial-application-export'},functionMetrics:[{functionId:'mem::compress',totalCalls:100,successCount:10,failureCount:90,avgLatencyMs:2,avgQualityScore:0,qualitySampleCount:3,qualityEpochAt:1700000000000}],embeddingRecovery:{pendingCount:0},featureLifecycle:{enabled:false},providerReadiness:{status:'waiting',lastCheckedAt:Date.now()-600000,nextCheckAt:Date.now()-300000,errorCode:'OLLAMA_TIMEOUT'}};
 window.fetch=async(url,opts)=>{var path=String(url),method=(opts||{}).method||'GET';requests.push({path:path,method:method,body:opts&&opts.body});
+ if(path.includes('/viewer/events'))return new Response(new ReadableStream({start(controller){opts.signal.addEventListener('abort',()=>{sseAborts++;controller.error(opts.signal.reason);},{once:true});}}),{status:200,headers:{'Content-Type':'text/event-stream'}});
  var payload={};
  if(path.includes('/sessions?') && !path.includes('includeSummary=false') && !path.includes('&q='))return new Response(JSON.stringify({error:'synthetic_oversized_summary_response'}),{status:500});
  if(path.includes('/viewer/snapshot'))payload={version:'fixture',provider:'openai',health:fixtureHealth.health,report:{status:'ok',headline:'Synthetic fixture',problems:[],service:{ports:{},version:'fixture'},provider:{llm:'openai',embeddings:'none'},flags:[],functions:[],counts:{}},counts:{},flags:[],functionMetrics:fixtureHealth.functionMetrics};
@@ -25,7 +26,6 @@ window.fetch=async(url,opts)=>{var path=String(url),method=(opts||{}).method||'G
  else if(path.includes('/semantic'))payload={facts:[]};
  else if(path.includes('/procedural'))payload={procedures:[]};
  return new Response(JSON.stringify(payload),{status:200,headers:{'Content-Type':'application/json'}});};
-window.WebSocket=class {static OPEN=1;static CONNECTING=0;constructor(){this.readyState=1;setTimeout(()=>this.onopen&&this.onopen(),0);}send(){}close(){this.readyState=3;this.onclose&&this.onclose();}};
 </script>`;
 const exercise=`<script>
 setTimeout(async()=>{try {
@@ -38,7 +38,7 @@ setTimeout(async()=>{try {
  var details=document.getElementById('operations-details');details.focus();details.open=true;details.dispatchEvent(new Event('toggle'));report.detailsFocusable=details.querySelector('summary').tabIndex===0;report.noModal=!document.getElementById('modal-overlay').classList.contains('open');
  report.horizontalOverflow=document.documentElement.scrollWidth>window.innerWidth;
  var select=document.getElementById('auto-refresh-interval');select.value='60';select.dispatchEvent(new Event('change'));report.interval=autoRefresh.seconds;
- var toggle=document.getElementById('auto-refresh-toggle');toggle.checked=false;toggle.dispatchEvent(new Event('change'));report.off=!autoRefresh.enabled&&operations.refreshTimer===null&&state.ws===null;report.saved=JSON.parse(localStorage.getItem('agentmemory-refresh'));report.banner=document.getElementById('offline-banner').textContent;
+ var liveController=liveAbortController,abortsBeforeOff=sseAborts;var toggle=document.getElementById('auto-refresh-toggle');toggle.checked=false;toggle.dispatchEvent(new Event('change'));report.off=!autoRefresh.enabled&&operations.refreshTimer===null&&liveAbortController===null&&!!liveController&&liveController.signal.aborted&&sseAborts===abortsBeforeOff+1;report.saved=JSON.parse(localStorage.getItem('agentmemory-refresh'));report.banner=document.getElementById('offline-banner').textContent;
  var before=requests.length;connectWs();scheduleOperationsRefresh();report.offRequests=requests.length-before;
  document.querySelector('[data-action="refresh-operations"]').click();await new Promise(r=>setTimeout(r,40));report.manualRequests=requests.length-before;
  document.querySelector('[data-action="pause-background"]').focus();document.querySelector('[data-action="pause-background"]').click();report.focusAfterPause=!!document.activeElement.closest('#health-operations');document.querySelector('[data-action="pause-background"]').click();await new Promise(r=>setTimeout(r,100));report.pauseCount=pauses;report.pausing=document.getElementById('view-health').textContent;

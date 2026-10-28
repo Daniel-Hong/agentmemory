@@ -875,6 +875,8 @@ export class IndexPersistence {
       (manifest.value && typeof manifest.value === "object" ? generationTime(manifest.value.generation) : null) ??
       new Date(this.now()).toISOString();
 
+    if(this.kv.durability?.completion==='sdk')return {vector:legacy,state:'unavailable',savedAt};
+
     const staging = new VectorIndex();
     for (const [id, entry] of legacy.entries()) staging.add(id, entry.sessionId, entry.embedding);
     try {
@@ -907,6 +909,7 @@ export class IndexPersistence {
   }
 
   private async removeLegacyVectorSnapshot(manifest: IndexShardManifest | null): Promise<void> {
+    if(this.kv.durability?.completion==='sdk')return;
     if (manifest && Array.isArray(manifest.shards)) {
       await this.deleteShards(manifest.shards.filter(isValidShardDescriptor), "legacy_vector_cleanup");
     }
@@ -915,6 +918,7 @@ export class IndexPersistence {
   }
 
   private async verifyVectorReplacement(legacy: VectorIndex, meta: VectorMeta): Promise<void> {
+    if(this.kv.durability?.completion==='sdk')throw new Error('SDK_COMPLETION_ONLY');
     if (meta.count < legacy.size) throw new Error("vector_migration_count_mismatch");
     const keys: Array<{ scope: string; key: string }> = [{ scope: KV.bm25Index, key: VECTOR_META_KEY }];
     if (!isDeepStrictEqual(await this.kv.get(KV.bm25Index, VECTOR_META_KEY), meta)) throw new Error("vector_migration_metadata_mismatch");
@@ -955,7 +959,7 @@ export class IndexPersistence {
         for (const [id, entry] of source.entries()) {
           if (!loaded.has(id)) loaded.loadPersisted(id, entry.sessionId, entry.embedding);
         }
-        loaded.markAllChanged();
+        if(this.kv.durability?.completion!=='sdk')loaded.markAllChanged();
       }
       return false;
     }
@@ -964,6 +968,7 @@ export class IndexPersistence {
   }
 
   private async removeLegacyBm25Snapshot(): Promise<void> {
+    if(this.kv.durability?.completion==='sdk')return;
     const manifestRead = await this.readIndexValue<IndexShardManifest>(KV.bm25Index, LEGACY_BM25_MANIFEST_KEY, "bm25", "manifest");
     const legacyRead = await this.readIndexValue<string>(KV.bm25Index, LEGACY_BM25_KEY, "bm25", "legacy");
     if (!manifestRead.ok || !legacyRead.ok) return;

@@ -18,7 +18,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       const verifiedAt=clock();
       if(!Number.isFinite(verifiedAt)||verifiedAt<0)throw Error('evidence_clock_invalid');
       observedPublications.delete(id);
-      observedPublications.set(id,{verifiedAt,fingerprint});publicationObservations++;
+      observedPublications.set(id,{verifiedAt,fingerprint,...(kv.durability?.completion==='sdk'?{completion:'sdk',durable:false}:{})});publicationObservations++;
       if(observedPublications.size>512){observedPublications.delete(observedPublications.keys().next().value);publicationEvidenceEvicted++;}
     }catch{evidenceFailure();}
   }
@@ -306,5 +306,5 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
   return {add,enqueue,prepareEnqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,
     observedPublication:id=>{try{return publicationEvidenceAvailable?structuredClone(observedPublications.get(id)??null):null;}catch{evidenceFailure();return null;}},
     defer:(item,error,attempted=true)=>stopped?Promise.resolve(false):track(withKeyedLock(key(item.id),()=>retain(item,error,attempted))),
-    snapshot:()=>structuredClone({...state,publicationEvidence:{scope:'this_process_observation',limit:512,retained:observedPublications.size,observed:publicationObservations,evicted:publicationEvidenceEvicted,available:publicationEvidenceAvailable,unavailable:publicationEvidenceUnavailable}})};
+    snapshot:()=>structuredClone({...state,publicationEvidence:{completion:kv.durability?.completion==='sdk'?'sdk':'disk',scope:'this_process_observation',limit:512,retained:observedPublications.size,observed:publicationObservations,evicted:publicationEvidenceEvicted,available:publicationEvidenceAvailable,unavailable:publicationEvidenceUnavailable}})};
 }

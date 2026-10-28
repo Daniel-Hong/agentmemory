@@ -24,6 +24,7 @@ type Daemon = {
   received: Received[];
   call: (id: string, payload: unknown) => Promise<any>;
   close: () => Promise<void>;
+  enrich: () => Promise<void>;
 };
 
 const ROUTES: Record<string, string> = {
@@ -91,6 +92,12 @@ async function startDaemon(
   registerSearchFunction(sdk as never, kv as never);
   registerApiTriggers(sdk as never, kv as never);
   registerEventTriggers(sdk as never, kv as never);
+  const { registerEnrichmentWorker } = await import('../src/ops/background-enrichment.mjs');
+  const { withKeyedLock } = await import('../src/state/keyed-mutex.js');
+  const { rawFromObservationSource } = await import('../src/functions/observation-source.js');
+  const enrichment = registerEnrichmentWorker({ kv: kv as never, sdk: sdk as never, KV, withKeyedLock,
+    isGraphEnabled: () => false, isCompressEnabled: () => process.env.AGENTMEMORY_AUTO_COMPRESS === 'true',
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never, rawFromObservationSource, schedule: false });
   const call = (id: string, payload: unknown) => sdk.trigger(id, payload) as Promise<any>;
   const received: Received[] = [];
   const server: Server = createServer((req, res) => {
@@ -118,7 +125,9 @@ async function startDaemon(
     kv,
     received,
     call,
-    close: () => {
+    enrich: () => enrichment.pump(),
+    close: async () => {
+      await enrichment.stop();
       server.closeAllConnections();
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -469,6 +478,8 @@ describe("packaged Stop hook reply capture", () => {
 
     await runHook(daemon.port, stop({ last_assistant_message: reply }));
 
+    expect(vi.mocked(llm.compress)).not.toHaveBeenCalled();
+    await daemon.enrich();
     expect(await waitFor(() => storedReplies(daemon)[0]?.title === "Chose the embedding model", 3000)).toBe(true);
     expect(vi.mocked(llm.compress).mock.calls[0]![1]).toContain(`Assistant response:\n${reply}`);
     const [stored] = storedReplies(daemon);
