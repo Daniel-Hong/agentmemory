@@ -70,7 +70,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% שיעור שליפה R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% פחות טוקנים" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 כלי MCP" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 כלי MCP" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 hooks אוטומטיים" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 מסדי נתונים חיצוניים" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ בדיקות עוברות" height="38" /></picture>
@@ -651,7 +651,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code (בלוק אחד, הדביקו אותו)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code בלי התקנת ה-plugin (נתיב MCP בלבד)
@@ -740,7 +740,7 @@ Pi תומך גם בחבילה הניתנת להתקנה `@agentmemory/pi`. הת�
 <summary><b>OpenClaw (הדביקו את ה-prompt הזה)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -765,7 +765,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent (הדביקו את ה-prompt הזה)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -830,7 +830,7 @@ npx skills add rohitg00/agentmemory -y -a '*'   # install to every installed age
 | **Cline / Roo Code / Kilo Code** | הגדרות MCP של Cline (Settings UI → MCP Servers → Edit) | אותו בלוק `mcpServers`. |
 | **Devin CLI (MCP + hooks)** | `~/.config/devin/config.json` | `agentmemory connect devin` ממזג את רשומת ה-MCP; `--with-hooks` מוסיף שישה hooks מובנים של לכידה אוטומטית (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) עם matchers של tool באותיות קטנות של Devin. אמתו עם `devin mcp list` ו-`/hooks` בתוך devin. |
 | **Devin CLI (plugin מלא)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin` מתוך checkout רושם את כל 17 ה-skills כפקודות slash מסוג `/agentmemory:<skill>` בתוספת שרת ה-MCP. ה-hooks של plugin ב-Devin לא יכולים להפעיל `SessionStart`/`SessionEnd`, אז משלבים אותו עם `connect devin --with-hooks` ללכידה מלאה של session. |
-| **Devin (cloud)** | Settings → Connections → MCP servers | הוסיפו MCP מותאם אישית (STDIO): command `npx`, args `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` שמצביע על deployment של agentmemory נגיש ברשת בתוספת `AGENTMEMORY_SECRET` (sessions בענן לא יכולים להגיע ל-localhost — ראו [`deploy/`](../deploy/)). שמרו את ה-secret ב-Devin Secrets, ואז השתמשו ב-"Test listing tools" כדי לאמת ש-54 הכלים מופיעים. |
+| **Devin (cloud)** | Settings → Connections → MCP servers | הוסיפו MCP מותאם אישית (STDIO): command `npx`, args `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` שמצביע על deployment של agentmemory נגיש ברשת בתוספת `AGENTMEMORY_SECRET` (sessions בענן לא יכולים להגיע ל-localhost — ראו [`deploy/`](../deploy/)). שמרו את ה-secret ב-Devin Secrets, ואז השתמשו ב-"Test listing tools" כדי לאמת ש-55 הכלים מופיעים. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (ממזג אוטומטית). |
 | **GitHub Copilot CLI (MCP בלבד)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` ממזג את `mcpServers.agentmemory`; Copilot קולט את זה בהפעלה הבאה או ב-`/mcp`. |
 | **GitHub Copilot CLI (plugin מלא)** | התקנת plugin של Copilot | `copilot plugin install rohitg00/agentmemory:plugin` עבור ה-plugin מתוך ה-subdir ב-GitHub. |
@@ -1053,11 +1053,11 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="שרת MCP" height="32" /></picture></h2>
 
-54 כלים, 6 משאבים, 3 פרומפטים, ו-17 skills.
+55 כלים, 6 משאבים, 3 פרומפטים, ו-17 skills.
 
-> **shim MCP לעומת שרת מלא:** חבילת `@agentmemory/mcp` המתפרסמת היא shim דק. היא חושפת את שטח ה-54-הכלים המלא **רק כשהיא מצליחה להגיע לשרת agentmemory רץ** דרך `AGENTMEMORY_URL` (מצב proxy). בלי שרת נגיש, ה-shim חוזר לסט מקומי של 7 כלים (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). משתנה הסביבה `AGENTMEMORY_TOOLS=core|all` הוא דגל *בצד השרת*; הגדרתו בבלוק ה-`env` של ה-shim אין לה שום אפקט. אם אתם רואים רק 7 כלים ב-Cursor / OpenCode / Gemini CLI, הפעילו את `npx -y @agentmemory/agentmemory@latest` (או את ערימת ה-Docker) והגדירו `AGENTMEMORY_URL=http://localhost:3111`.
+> **shim MCP לעומת שרת מלא:** חבילת `@agentmemory/mcp` המתפרסמת היא shim דק. היא חושפת את שטח ה-55-הכלים המלא **רק כשהיא מצליחה להגיע לשרת agentmemory רץ** דרך `AGENTMEMORY_URL` (מצב proxy). בלי שרת נגיש, ה-shim חוזר לסט מקומי של 7 כלים (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). משתנה הסביבה `AGENTMEMORY_TOOLS=core|all` הוא דגל *בצד השרת*; הגדרתו בבלוק ה-`env` של ה-shim אין לה שום אפקט. אם אתם רואים רק 7 כלים ב-Cursor / OpenCode / Gemini CLI, הפעילו את `npx -y @agentmemory/agentmemory@latest` (או את ערימת ה-Docker) והגדירו `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 כלים
+### 55 כלים
 
 שלושה שטחי כלים, מהקטן לגדול: `AGENTMEMORY_TOOLS=core` מגביל את הנראות ל-8 כלים חיוניים (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); הסט הבסיסי שלהלן הוא 14 הכלים הבסיסיים של הרשימה (registry); ברירת המחדל (`AGENTMEMORY_TOOLS=all`) חושפת את כל 54.
 
@@ -1370,7 +1370,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpoints בפורט `3111`. ה-REST API נקשר ל-`127.0.0.1` כברירת מחדל. endpoints מוגנים דורשים `Authorization: Bearer <secret>`, ו-endpoints של mesh sync דורשים `AGENTMEMORY_SECRET` מוגדר באופן מפורש בשני ה-peers.
+155 endpoints בפורט `3111`. ה-REST API נקשר ל-`127.0.0.1` כברירת מחדל. endpoints מוגנים דורשים `Authorization: Bearer <secret>`, ו-endpoints של mesh sync דורשים `AGENTMEMORY_SECRET` מוגדר באופן מפורש בשני ה-peers.
 
 **אימות (Authentication) פעיל כברירת מחדל.** אם `AGENTMEMORY_SECRET` לא מוגדר, בהפעלה הראשונה ה-CLI יוצר סוד אקראי ב-`~/.agentmemory/secret` עם הרשאות `0600`, ומעתיק אותו גם לתיקיית הנתונים שנבחרה. כל לקוח מצורף קורא אותו משם כשהוא מדבר עם שרת מקומי: ה-CLI, המציג, ה-hooks תחת `plugin/scripts`, שרת ה-MCP וה-shim `@agentmemory/mcp`, התצורות שנכתבות על ידי `agentmemory connect`, והאינטגרציות המצורפות של OpenCode, Pi, OpenClaw, Hermes וה-filesystem-watcher. ה-secret המאוחסן נשלח רק ל-URLs של loopback (`localhost`, `127.0.0.0/8`, `::1`). `AGENTMEMORY_SECRET` מפורש גובר תמיד, ולקוחות מרוחקים עדיין צריכים אותו מוגדר. Docker וה-entrypoints של `deploy/` כבר מייצרים ומייצאים את ה-secret שלהם. כדי לקרוא ל-API ביד:
 

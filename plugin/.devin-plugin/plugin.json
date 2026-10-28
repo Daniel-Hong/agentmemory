@@ -2,7 +2,7 @@
   "name": "agentmemory",
   "displayName": "agentmemory",
   "version": "0.9.31-daniel.37",
-  "description": "Persistent memory for Devin CLI and Devin Desktop. Captures every session automatically, recalls with hybrid BM25 + vector + graph search, and exposes 54 memory tools over MCP. Keyless by default, runs on your machine. Not supported in cloud sessions.",
+  "description": "Persistent memory for Devin CLI and Devin Desktop. Captures every session automatically, recalls with hybrid BM25 + vector + graph search, and exposes 55 memory tools over MCP. Keyless by default, runs on your machine. Not supported in cloud sessions.",
   "logo": "assets/icon.svg",
   "author": {
     "name": "Rohit Ghumare",

@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% visszakeresési R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92%-kal kevesebb token" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP eszköz" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP eszköz" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 automatikus hook" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 külső adatbázis" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ sikeres teszt" height="38" /></picture>
@@ -647,7 +647,7 @@ A parancs frissíti a helyi környezetet, és módosíthatja az aktuális munkat
 ### Claude Code (egyetlen blokk, illeszd be)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code a plugin telepítése nélkül (önálló MCP útvonal)
@@ -736,7 +736,7 @@ A Pi a telepíthető `@agentmemory/pi` csomagot is támogatja. A helyi telepít�
 <summary><b>OpenClaw (illeszd be ezt a promptot)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -761,7 +761,7 @@ Teljes útmutató: [`integrations/openclaw/`](../integrations/openclaw/)
 <summary><b>Hermes Agent (illeszd be ezt a promptot)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -826,7 +826,7 @@ Az agentmemory bejegyzés **ugyanaz az MCP szerver blokk** minden olyan hoszton,
 | **Cline / Roo Code / Kilo Code** | Cline MCP beállítások (Settings UI → MCP Servers → Edit) | Ugyanaz a `mcpServers` blokk. |
 | **Devin CLI (MCP + hookok)** | `~/.config/devin/config.json` | Az `agentmemory connect devin` beolvasztja az MCP bejegyzést; a `--with-hooks` hozzáad hat natív automatikus rögzítő hookot (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) a Devin kisbetűs tool-matchereivel. Ellenőrizd a `devin mcp list` és a `/hooks` paranccsal a devinen belül. |
 | **Devin CLI (teljes plugin)** | `plugin/.devin-plugin/` | A `devin plugins install ./plugin` egy checkoutból regisztrálja mind a 17 skillt `/agentmemory:<skill>` slash parancsokként, plusz az MCP szervert. A Devin plugin-hookok nem tudják elsütni a `SessionStart`/`SessionEnd`-et, ezért párosítsd a `connect devin --with-hooks`-szal a teljes session-rögzítéshez. |
-| **Devin (felhő)** | Settings → Connections → MCP servers | Adj hozzá egy egyéni MCP-t (STDIO): parancs `npx`, argumentumok `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL`, amely egy hálózatilag elérhető agentmemory-telepítésre mutat, plusz `AGENTMEMORY_SECRET` (a felhős sessionök nem érik el a localhostot — lásd [`deploy/`](../deploy/)). Tárold a secretet a Devin Secretsben, majd a "Test listing tools" segítségével ellenőrizd, hogy mind az 54 eszköz megjelenik. |
+| **Devin (felhő)** | Settings → Connections → MCP servers | Adj hozzá egy egyéni MCP-t (STDIO): parancs `npx`, argumentumok `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL`, amely egy hálózatilag elérhető agentmemory-telepítésre mutat, plusz `AGENTMEMORY_SECRET` (a felhős sessionök nem érik el a localhostot — lásd [`deploy/`](../deploy/)). Tárold a secretet a Devin Secretsben, majd a "Test listing tools" segítségével ellenőrizd, hogy mind az 55 eszköz megjelenik. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (automatikusan beolvaszt). |
 | **GitHub Copilot CLI (csak MCP)** | `~/.copilot/mcp-config.json` | Az `agentmemory connect copilot-cli` beolvasztja a `mcpServers.agentmemory`-t; a Copilot a következő indításkor vagy a `/mcp`-vel veszi fel. |
 | **GitHub Copilot CLI (teljes plugin)** | Copilot plugin telepítés | `copilot plugin install rohitg00/agentmemory:plugin` a GitHub-aldirektóriumban lévő pluginhoz. |
@@ -1050,11 +1050,11 @@ A normál npm-telepítés tartalmazza az opcionális `@huggingface/transformers`
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP szerver" height="32" /></picture></h2>
 
-54 eszköz, 6 resource, 3 prompt és 17 skill.
+55 eszköz, 6 resource, 3 prompt és 17 skill.
 
-> **MCP shim a teljes szerverrel szemben:** a publikált `@agentmemory/mcp` csomag egy vékony shim. A teljes, 54 eszközből álló felületet **csak akkor** adja meg, **ha el tud érni egy futó agentmemory szervert** az `AGENTMEMORY_URL` révén (proxy mód). Ha nincs elérhető szerver, a shim visszaesik egy 7 eszközből álló lokális készletre (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Az `AGENTMEMORY_TOOLS=core|all` env-változó egy *szerveroldali* kapcsoló; a shim `env` blokkjában beállítva nincs hatása. Ha csak 7 eszközt látsz a Cursorban / OpenCode-ban / Gemini CLI-ben, indítsd el az `npx -y @agentmemory/agentmemory@latest`-et (vagy a Docker-stacket), és állítsd be az `AGENTMEMORY_URL=http://localhost:3111`-et.
+> **MCP shim a teljes szerverrel szemben:** a publikált `@agentmemory/mcp` csomag egy vékony shim. A teljes, 55 eszközből álló felületet **csak akkor** adja meg, **ha el tud érni egy futó agentmemory szervert** az `AGENTMEMORY_URL` révén (proxy mód). Ha nincs elérhető szerver, a shim visszaesik egy 7 eszközből álló lokális készletre (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Az `AGENTMEMORY_TOOLS=core|all` env-változó egy *szerveroldali* kapcsoló; a shim `env` blokkjában beállítva nincs hatása. Ha csak 7 eszközt látsz a Cursorban / OpenCode-ban / Gemini CLI-ben, indítsd el az `npx -y @agentmemory/agentmemory@latest`-et (vagy a Docker-stacket), és állítsd be az `AGENTMEMORY_URL=http://localhost:3111`-et.
 
-### 54 eszköz
+### 55 eszköz
 
 Három eszközfelület, a legkisebbtől a legnagyobbig: az `AGENTMEMORY_TOOLS=core` 8 alapeszközre szűkíti a láthatóságot (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); az alábbi alapkészlet a regisztri 14 alapozó eszköze; az alapértelmezett (`AGENTMEMORY_TOOLS=all`) mind az 54-et megjeleníti.
 
@@ -1367,7 +1367,7 @@ A teljes [`.env.example`](../.env.example) leírja a szolgáltatókat, rögzít�
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpoint a `3111`-es porton. A REST API alapértelmezetten a `127.0.0.1`-hez kötődik. A védett végpontok `Authorization: Bearer <secret>`-et igényelnek, és a mesh-sync végpontok mindkét oldalon explicit módon beállított `AGENTMEMORY_SECRET`-et igényelnek.
+155 endpoint a `3111`-es porton. A REST API alapértelmezetten a `127.0.0.1`-hez kötődik. A védett végpontok `Authorization: Bearer <secret>`-et igényelnek, és a mesh-sync végpontok mindkét oldalon explicit módon beállított `AGENTMEMORY_SECRET`-et igényelnek.
 
 **A hitelesítés alapértelmezetten be van kapcsolva.** Ha az `AGENTMEMORY_SECRET` nincs beállítva, a CLI első indításkor véletlen titkot hoz létre a `~/.agentmemory/secret` fájlban `0600` jogosultsággal, és a kiválasztott adatkönyvtárba is átmásolja. Minden becsomagolt kliens onnan olvassa, amikor egy lokális szerverrel beszél: a CLI, a megjelenítő, a `plugin/scripts` alatti hookok, az MCP szerver és a `@agentmemory/mcp` shim, az `agentmemory connect` által írt konfigurációk, és a becsomagolt OpenCode, Pi, OpenClaw, Hermes és fájlrendszer-figyelő integrációk. A tárolt secret csak loopback URL-eknek kerül elküldésre (`localhost`, `127.0.0.0/8`, `::1`). Egy explicit `AGENTMEMORY_SECRET` mindig elsőbbséget kap, és a távoli klienseknek továbbra is be kell állítaniuk. A Docker és a `deploy/` entrypointok már generálnak és exportálnak egy saját secretet. Az API kézi hívásához:
 

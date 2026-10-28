@@ -11,6 +11,9 @@ import { KV } from "../src/state/schema.js";
 import { withKeyedLock } from "../src/state/keyed-mutex.js";
 import { SAFE_PAYLOAD_BYTES, payloadByteLength } from "../src/state/frame-guard.js";
 import type { MemoryProvider, RawObservation } from "../src/types.js";
+import { logger } from "../src/logger.js";
+import * as liveEvents from "../src/viewer/live-events.js";
+import * as outputValidator from "../src/eval/validator.js";
 
 vi.mock("../src/logger.js", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 const xml = '<observation><type>file_read</type><title>Recovered cobalt configuration</title><facts><fact>The cobalt port is 9921.</fact></facts><narrative>Read the cobalt deployment configuration successfully.</narrative><concepts><concept>configuration</concept></concepts><files></files><importance>6</importance></observation>';
@@ -56,10 +59,60 @@ function rig(provider: MemoryProvider = { name: "test", compress: vi.fn(async ()
   };
   return { kv, sdk, provider, call, seed, flush: () => Promise.all(pending.splice(0)) };
 }
-beforeEach(() => { getSearchIndex().clear(); setEmbeddingProvider(null); setVectorIndex(null); vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true"); });
-afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); setEmbeddingProvider(null); setVectorIndex(null); });
+beforeEach(() => { vi.clearAllMocks(); getSearchIndex().clear(); setEmbeddingProvider(null); setVectorIndex(null); vi.stubEnv("AGENTMEMORY_AUTO_COMPRESS", "true"); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); setEmbeddingProvider(null); setVectorIndex(null); });
 
 describe("compression recovery", () => {
+  it("reports safe compression diagnostics for a local deadline without exposing retained data", async () => {
+    vi.useFakeTimers();
+    const r = rig({ name: "test", compress: vi.fn(() => new Promise<string>(() => {})), summarize: vi.fn() });
+    await r.seed();
+    const task = r.call("mem::compress", { sessionId: "session-recovery", observationId: raw().id });
+    await vi.advanceTimersByTimeAsync(COMPRESSION_TIMEOUT_MS + 1);
+    const result = await task;
+    expect(result).toMatchObject({ success: false, error: "compression_failed", retained: true, retryable: true,
+      diagnostics: { category: "compression_timeout", errorCode: "COMPRESSION_TIMEOUT" } });
+    const fields = vi.mocked(logger.warn).mock.calls.at(-1)?.[1];
+    expect(fields).toEqual({ diagnostics: result.diagnostics, phase: "provider", elapsedMs: COMPRESSION_TIMEOUT_MS });
+    expect(await r.kv.get(KV.observations("session-recovery"), raw().id)).toMatchObject({ compression: { status: "failed", attempts: 1 } });
+  });
+
+  it.each(["provider", "validation", "commit", "index", "publication"] as const)("reports safe compression diagnostics at the %s failure boundary", async (phase) => {
+    const r = rig(); await r.seed();
+    const error = new Error("synthetic-private-error-canary");
+    if (phase === "provider") vi.mocked(r.provider.compress).mockRejectedValueOnce(error);
+    if (phase === "validation") vi.spyOn(outputValidator, "validateOutput").mockImplementationOnce(() => { throw error; });
+    if (phase === "commit") {
+      const set = r.kv.set.bind(r.kv);
+      vi.spyOn(r.kv, "set").mockImplementation(async (scope, id, value) => {
+        if (value.compression?.status === "complete") throw error;
+        return set(scope, id, value);
+      });
+    }
+    if (phase === "index") vi.spyOn(getSearchIndex(), "add").mockImplementationOnce(() => { throw error; });
+    if (phase === "publication") vi.spyOn(liveEvents, "emitLiveEvent").mockImplementationOnce(() => { throw error; });
+    const result = await r.call("mem::compress", { sessionId: "session-recovery", observationId: raw().id });
+    expect(result.success).toBe(false);
+    expect(result.diagnostics).toEqual({ category: "compression_failed", errorCode: "COMPRESSION_UNCLASSIFIED" });
+    const fields = vi.mocked(logger.warn).mock.calls.at(-1)?.[1];
+    expect(fields).toEqual({ diagnostics: result.diagnostics, phase, elapsedMs: expect.any(Number) });
+    expect(Number.isFinite(fields?.elapsedMs)).toBe(true);
+    expect(Number(fields?.elapsedMs)).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify([result.diagnostics, fields]).includes("synthetic-private-error-canary")).toBe(false);
+    expect(JSON.stringify(fields).includes(raw().id)).toBe(false);
+    expect(JSON.stringify(fields).includes("session-recovery")).toBe(false);
+  });
+
+  it("preserves attached safe compression diagnostics and deferral while excluding arbitrary error fields", async () => {
+    const error = Object.assign(new Error("synthetic-private-error-canary"), { providerUnavailable: true,
+      diagnostics: { category: "provider_unavailable", errorCode: "SYNTHETIC_UNAVAILABLE", httpStatus: 503, body: "synthetic-private-error-canary" } });
+    const r = rig({ name: "test", compress: vi.fn(async () => { throw error; }), summarize: vi.fn() }); await r.seed();
+    const result = await r.call("mem::compress", { sessionId: "session-recovery", observationId: raw().id });
+    expect(result).toMatchObject({ success: false, error: "provider_unavailable", deferred: true, retained: true, retryable: true });
+    expect(result.diagnostics).toEqual({ category: "provider_unavailable", errorCode: "SYNTHETIC_UNAVAILABLE", httpStatus: 503 });
+    expect(vi.mocked(logger.warn).mock.calls.at(-1)?.[1]).toEqual({ diagnostics: result.diagnostics, phase: "provider", elapsedMs: expect.any(Number) });
+  });
+
   it("keeps deferred capture searchable, then recovers worker failure after restart without changing identity or counts", async () => {
     const provider = { name: "test", compress: vi.fn(async () => { throw new Error("private-provider-body"); }), summarize: vi.fn() };
     const r = rig(provider);

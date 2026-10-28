@@ -112,7 +112,7 @@ Supported agent names:
 
 If you cannot tell which agent you are, default to `claude-code` on macOS/Linux. On native Windows, `copilot-cli` is the only automated adapter; configure all other agents with the manual MCP block in the README. Run `connect` inside WSL only when the target agent is installed inside the same WSL environment. After wiring, restart the agent or run its MCP reload command (for example `/mcp` in Claude Code) so it picks up the server.
 
-Expect: the agent now lists agentmemory's tools. With the server running you should see the full set of 54 tools (for example `memory_save`, `memory_smart_search`, `memory_sessions`). If you see only 7 tools, the MCP shim could not reach the server; see Troubleshooting.
+Expect: the agent now lists agentmemory's tools. With the server running you should see the full set of 55 tools (for example `memory_save`, `memory_smart_search`, `memory_sessions`). If you see only 7 tools, the MCP shim could not reach the server; see Troubleshooting.
 
 For Oh My Pi, `connect omp` installs native capture, recall and the bundled skills. Use `connect omp --with-mcp` for the full toolset, then restart OMP and run `/agentmemory-status`. See [OMP setup and verification](integrations/omp/README.md).
 
@@ -194,7 +194,7 @@ These are off by default because they spend tokens. Enable them only if the user
 
 ## Tool surface
 
-The MCP server exposes 54 tools by default (`--tools all`). Use `--tools core` (or `AGENTMEMORY_TOOLS=core`) for a lean 8-tool set on hosts with tight tool limits. The 8 core tools cover save, recall, consolidate, smart search, sessions, diagnose, lesson save, and reflect.
+The MCP server exposes 55 tools by default (`--tools all`). Use `--tools core` (or `AGENTMEMORY_TOOLS=core`) for a lean 8-tool set on hosts with tight tool limits. The 8 core tools cover save, recall, consolidate, smart search, sessions, diagnose, lesson save, and reflect.
 
 ## Lifecycle commands
 

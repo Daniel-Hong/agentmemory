@@ -59,7 +59,7 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
     cpSync(join(root, "docs/plugins/codex-local.md"), join(destination, "README.md"));
   } else {
     delete manifest.mcpServers;
-    manifest.description = manifest.description.replace("through 54 MCP tools and 17 skills.", "through 17 skills that use the MCP tools of your own Agent Memory daemon.");
+    manifest.description = manifest.description.replace("through 55 MCP tools and 17 skills.", "through 17 skills that use the MCP tools of your own Agent Memory daemon.");
     manifest.interface.longDescription = manifest.interface.longDescription.replace("Automatic capture requires trusted, supported hooks.", "This package contains the skills only. Install the Agent Memory daemon and wire its MCP server with `agentmemory connect codex` so the skills can call the memory tools.");
     writeFileSync(join(destination, "README.md"), SKILLS_README);
   }

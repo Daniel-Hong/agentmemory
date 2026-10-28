@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% hämtning R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% färre tokens" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP-verktyg" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP-verktyg" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 automatiska hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 externa databaser" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ godkända tester" height="38" /></picture>
@@ -644,7 +644,7 @@ Kommandot uppdaterar den lokala körtiden och kan uppdatera JavaScript-beroenden
 ### Claude Code (ett block, klistra in det)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code utan plugin-installationen (fristående MCP-väg)
@@ -731,7 +731,7 @@ Pi stöder även det installerbara paketet `@agentmemory/pi`. [Pi-guiden](../int
 <summary><b>OpenClaw (klistra in denna prompt)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -756,7 +756,7 @@ Fullständig guide: [`integrations/openclaw/`](../integrations/openclaw/)
 <summary><b>Hermes Agent (klistra in denna prompt)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -821,7 +821,7 @@ agentmemory-posten är **samma MCP-serverblock** på alla värdar som använder 
 | **Cline / Roo Code / Kilo Code** | Clines MCP-inställningar (Settings UI → MCP Servers → Edit) | Samma `mcpServers`-block. |
 | **Devin CLI (MCP + hooks)** | `~/.config/devin/config.json` | `agentmemory connect devin` slår samman MCP-posten; `--with-hooks` lägger till sex inbyggda auto-infångnings-hooks (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) med Devins gemener i verktygsmatcharna. Verifiera med `devin mcp list` och `/hooks` inuti devin. |
 | **Devin CLI (fullständigt plugin)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin` från en checkout registrerar alla 17 skills som `/agentmemory:<skill>`-snabbkommandon plus MCP-servern. Devins plugin-hooks kan inte utlösa `SessionStart`/`SessionEnd`, så kombinera med `connect devin --with-hooks` för fullständig sessionsinfångning. |
-| **Devin (moln)** | Settings → Connections → MCP servers | Lägg till en anpassad MCP (STDIO): kommando `npx`, argument `-y @agentmemory/mcp@latest`, miljövariabeln `AGENTMEMORY_URL` som pekar på en nätverksåtkomlig agentmemory-driftsättning plus `AGENTMEMORY_SECRET` (molnsessioner kan inte nå localhost — se [`deploy/`](../deploy/)). Spara hemligheten i Devin Secrets, och använd sedan "Test listing tools" för att bekräfta att alla 54 verktyg visas. |
+| **Devin (moln)** | Settings → Connections → MCP servers | Lägg till en anpassad MCP (STDIO): kommando `npx`, argument `-y @agentmemory/mcp@latest`, miljövariabeln `AGENTMEMORY_URL` som pekar på en nätverksåtkomlig agentmemory-driftsättning plus `AGENTMEMORY_SECRET` (molnsessioner kan inte nå localhost — se [`deploy/`](../deploy/)). Spara hemligheten i Devin Secrets, och använd sedan "Test listing tools" för att bekräfta att alla 55 verktyg visas. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (slås samman automatiskt). |
 | **GitHub Copilot CLI (endast MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` slår samman `mcpServers.agentmemory`; Copilot plockar upp det vid nästa start eller via `/mcp`. |
 | **GitHub Copilot CLI (fullständigt plugin)** | Copilot plugin-installation | `copilot plugin install rohitg00/agentmemory:plugin` för pluginet från GitHub-underkatalogen. |
@@ -1058,11 +1058,11 @@ Den vanliga npm-installationen inkluderar den valfria körtiden `@huggingface/tr
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP-server" height="32" /></picture></h2>
 
-54 verktyg, 6 resurser, 3 prompter och 17 skills.
+55 verktyg, 6 resurser, 3 prompter och 17 skills.
 
-> **MCP-shim kontra fullständig server:** det publicerade paketet `@agentmemory/mcp` är en tunn shim. Det exponerar hela ytan med 54 verktyg **bara när det kan nå en körande agentmemory-server** via `AGENTMEMORY_URL` (proxy-läge). Utan någon nåbar server faller shimmen tillbaka till en lokal uppsättning på 7 verktyg (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Miljövariabeln `AGENTMEMORY_TOOLS=core|all` är en flagga på *serversidan*; att sätta den i shimmens `env`-block har ingen effekt. Om du bara ser 7 verktyg i Cursor / OpenCode / Gemini CLI, starta `npx -y @agentmemory/agentmemory@latest` (eller Docker-stacken) och sätt `AGENTMEMORY_URL=http://localhost:3111`.
+> **MCP-shim kontra fullständig server:** det publicerade paketet `@agentmemory/mcp` är en tunn shim. Det exponerar hela ytan med 55 verktyg **bara när det kan nå en körande agentmemory-server** via `AGENTMEMORY_URL` (proxy-läge). Utan någon nåbar server faller shimmen tillbaka till en lokal uppsättning på 7 verktyg (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Miljövariabeln `AGENTMEMORY_TOOLS=core|all` är en flagga på *serversidan*; att sätta den i shimmens `env`-block har ingen effekt. Om du bara ser 7 verktyg i Cursor / OpenCode / Gemini CLI, starta `npx -y @agentmemory/agentmemory@latest` (eller Docker-stacken) och sätt `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 verktyg
+### 55 verktyg
 
 Tre verktygsytor, från minst till störst: `AGENTMEMORY_TOOLS=core` begränsar synligheten till 8 väsentliga verktyg (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); grundmängden nedan är registrets 14 grundläggande verktyg; standarden (`AGENTMEMORY_TOOLS=all`) exponerar alla 54.
 
@@ -1377,7 +1377,7 @@ Den fullständiga referensen finns i [`.env.example`](../.env.example): autentis
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpoints på port `3111`. REST API:et binder till `127.0.0.1` som standard. Skyddade endpoints kräver `Authorization: Bearer <secret>`, och mesh-synk-endpoints kräver en explicit satt `AGENTMEMORY_SECRET` på båda parterna.
+155 endpoints på port `3111`. REST API:et binder till `127.0.0.1` som standard. Skyddade endpoints kräver `Authorization: Bearer <secret>`, och mesh-synk-endpoints kräver en explicit satt `AGENTMEMORY_SECRET` på båda parterna.
 
 **Autentisering är aktiverad som standard.** Om `AGENTMEMORY_SECRET` inte är angiven i skalet eller i `~/.agentmemory/.env` skapar CLI:n en slumpmässig hemlighet vid första starten i `~/.agentmemory/secret` och en kopia med namnet `secret` i den valda datamappen, med filbehörigheten `0600`. Alla medföljande klienter läser den därifrån när de ansluter till en lokal server: CLI:n, viewern, hookarna under `plugin/scripts`, MCP-servern och `@agentmemory/mcp`-shimmen, konfigurationerna skrivna av `agentmemory connect` samt de medföljande integrationerna för OpenCode, Pi, OpenClaw, Hermes och filsystemsbevakaren. Den lagrade hemligheten skickas bara till loopback-URL:er (`localhost`, `127.0.0.0/8`, `::1`). En explicit `AGENTMEMORY_SECRET` har alltid företräde; fjärrklienter behöver hemligheten i sin miljö. Docker-baserad self-hosting från repot och startpunkterna i `deploy/` genererar och exporterar en egen hemlighet. För att anropa API:et för hand:
 

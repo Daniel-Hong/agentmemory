@@ -312,3 +312,11 @@ describe('storage verification process totals versus retained samples', () => {
     c.operations.health.storageDurability={};expect(c.operationsPanelHtml()).toContain('최근 표본 미확인');
   });
 });
+
+ it('shows an active attempt without implying that the previous success is this request completion',()=>{
+  const c=fixtures();const html=c.snapshotStatus({status:'running',attemptStatus:'running',lastAttemptAt:'2026-01-02T00:00:00Z',lastSuccessAt:'2026-01-01T00:00:00Z'});
+  expect(html).toContain('data-snapshot-attempt-status="running"');expect(html).toContain('중복 요청');
+ });
+ it('retains an unknown interrupted attempt instead of inferring success from a paused worker',()=>{
+  const c=fixtures();expect(c.snapshotStatus({status:'paused',attemptStatus:'unknown',lastAttemptAt:'2026-01-02T00:00:00Z',lastSuccessAt:'2026-01-01T00:00:00Z'})).toContain('data-snapshot-attempt-status="unknown"');
+ });

@@ -74,13 +74,17 @@ export function registerCompressFunction(
   async function compress(data: CompressRequest, attempt: CompressionAttempt, deadline: number): Promise<CompressResult> {
     const { sessionId, observationId } = data;
     const startMs = Date.now();
+    let phase: "preparation" | "provider" | "validation" | "commit" | "index" | "publication" | "metrics" = "preparation";
+    const timeoutError = () => Object.assign(new Error("compression_timeout"), {
+      diagnostics: { category: "compression_timeout", errorCode: "COMPRESSION_TIMEOUT" },
+    });
     async function bounded<T>(work: () => Promise<T>): Promise<T> {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new Error("compression_timeout");
+      if (remaining <= 0) throw timeoutError();
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         return await Promise.race([work(), new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("compression_timeout")), remaining);
+          timer = setTimeout(() => reject(timeoutError()), remaining);
         })]);
       } finally { clearTimeout(timer); }
     }
@@ -153,6 +157,7 @@ export function registerCompressFunction(
             else if (raw.imageData.endsWith(".gif")) mimeType = "image/gif";
           }
 
+          phase = "provider";
           imageDescription = await bounded(() => provider.describeImage!(base64Data, mimeType, VISION_DESCRIPTION_PROMPT));
           logger.info("Image described by vision model", { obsId: observationId });
         } catch {
@@ -160,6 +165,7 @@ export function registerCompressFunction(
         }
       }
 
+      phase = "preparation";
       const retainedOutput = raw.toolOutput ?? (!raw.userPrompt && !raw.assistantResponse && raw.raw && Object.keys(Object(raw.raw)).length > 0 ? raw.raw : undefined);
       const prompt = buildCompressionPrompt({
         hookType: raw.hookType,
@@ -173,6 +179,7 @@ export function registerCompressFunction(
       const structured = getEnvVar("AGENTMEMORY_OLLAMA_NATIVE_CHAT")?.toLowerCase() === "true" && provider.name.includes("openai");
       let outputDiagnostics: ReturnType<typeof safeFailureDetails> | undefined;
       const validator = (response: string) => {
+        phase = "validation";
         outputDiagnostics = undefined;
         let parsed;
         try {
@@ -188,7 +195,10 @@ export function registerCompressFunction(
       };
       const result = await compressWithRetry({
         ...provider,
-        compress: (system, user) => bounded(() => provider.compress(system, user)),
+        compress: (system, user) => {
+          phase = "provider";
+          return bounded(() => provider.compress(system, user));
+        },
       }, structured ? STRUCTURED_COMPRESSION_SYSTEM : COMPRESSION_SYSTEM, boundedEnrichmentText(prompt), validator, 1);
       if (!result.valid) {
         const failed = await fail(result.errors?.some(error => error === "xml_parse_failed" || error === "structured_parse_failed") ? "parse_failed" : "validation_failed");
@@ -206,6 +216,7 @@ export function registerCompressFunction(
         ...(raw.imageData ? { imageRef: raw.imageData } : {}),
         ...(imageDescription ? { imageDescription: stripPrivateData(imageDescription) } : {}),
       };
+      phase = "commit";
       const compressed = await withKeyedLock(`obs:${sessionId}`, async () => {
         const current = await kv.get<StoredObservation>(KV.observations(sessionId), observationId);
         if (!current || observationRevision(current) !== revision || !await matchesScope(data, current)) return null;
@@ -217,11 +228,13 @@ export function registerCompressFunction(
         await kv.set(KV.observations(sessionId), observationId, bounded);
         attempt.resultRevision = observationRevision(bounded);
         attempt.revisions.add(attempt.resultRevision);
+        phase = "index";
         indexObservation(bounded);
         return bounded;
       });
       if (!compressed) return { success: false, error: "observation_changed", skipped: true, retryable: false };
       const committedRevision = observationRevision(compressed);
+      phase = "index";
       await bounded(() => vectorIndexAddGuarded(
         observationId, sessionId, compressed.title + " " + compressed.narrative,
         { kind: "observation", logId: observationId },
@@ -233,6 +246,7 @@ export function registerCompressFunction(
           return true;
         }),
       )).catch(() => {});
+      phase = "publication";
       const published = await withKeyedLock(`obs:${sessionId}`, async () => {
         const current = await kv.get<StoredObservation>(KV.observations(sessionId), observationId);
         if (!current || observationRevision(current) !== committedRevision || !await matchesScope(data, current)) return false;
@@ -244,11 +258,14 @@ export function registerCompressFunction(
         return true;
       });
       if (!published) return { success: false, error: "observation_changed", skipped: true, retryable: false };
+      phase = "metrics";
       await metricsStore?.record("mem::compress", Date.now() - startMs, true, qualityScore).catch(() => {});
       return { success: true, compressed: withoutObservationSource(compressed), qualityScore, ...(compressed.source?.truncated ? { sourceTruncated: true } : {}) };
     } catch (error) {
-      const diagnostics = safeFailureDetails(error);
-      logger.warn("Observation retained for compression retry", { observationId, sessionId, diagnostics });
+      const safeDetails = safeFailureDetails(error);
+      const diagnostics = Object.keys(safeDetails).length ? safeDetails
+        : { category: "compression_failed", errorCode: "COMPRESSION_UNCLASSIFIED" };
+      logger.warn("Observation retained for compression retry", { diagnostics, phase, elapsedMs: Math.max(0, Date.now() - startMs) });
       const failed = await fail("compression_failed");
       return { ...failed, diagnostics, retained: true,
         ...((error as { providerUnavailable?: boolean })?.providerUnavailable

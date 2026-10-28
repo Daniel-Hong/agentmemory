@@ -2,7 +2,7 @@
   "version": "0.9.31-daniel.37",
   "facts": {
     "mcpTools": [
-      "54"
+      "55"
     ],
     "coreTools": [
       "8"
@@ -11,7 +11,7 @@
       "7"
     ],
     "restEndpoints": [
-      "154"
+      "155"
     ],
     "skills": [
       "17"
@@ -23,7 +23,7 @@
       "5400+"
     ],
     "functions": [
-      "342"
+      "345"
     ],
     "sourceFiles": [
       "270"

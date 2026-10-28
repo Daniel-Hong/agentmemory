@@ -3,7 +3,7 @@
 The plugin connects Codex to your running Agent Memory daemon through a bundled
 stdio MCP bridge. It uses the same store as your configured Claude Code client.
 It includes 17 shared skills, the daemon's enabled tools, three fixed resources,
-three resource templates, and three prompts. The default daemon exposes 54 tools;
+three resource templates, and three prompts. The default daemon exposes 55 tools;
 features such as embeddings, reflection, and team operations still need their
 normal runtime configuration. Six optional hooks provide automatic capture on
 Codex versions that support and trust them.

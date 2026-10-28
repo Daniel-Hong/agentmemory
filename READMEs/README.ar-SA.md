@@ -70,7 +70,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% retrieval R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% fewer tokens" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP tools" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP tools" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 auto hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 external DBs" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ tests passing" height="38" /></picture>
@@ -651,7 +651,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code (كتلة واحدة، الصقها)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code بدون تثبيت الإضافة (مسار MCP القائم بذاته)
@@ -740,7 +740,7 @@ agentmemory connect dsh --with-hooks
 <summary><b>OpenClaw (الصق هذا الموجّه)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -765,7 +765,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>وكيل Hermes (الصق هذا الموجّه)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -1053,11 +1053,11 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP Server" height="32" /></picture></h2>
 
-54 أداة، و6 موارد، و3 مطالبات، و17 مهارة.
+55 أداة، و6 موارد، و3 مطالبات، و17 مهارة.
 
-> **وسيط MCP (shim) في مقابل الخادم الكامل:** حزمة `@agentmemory/mcp` المنشورة هي وسيط خفيف (shim). ولا يُظهر سطح الأدوات الكامل البالغ 54 أداة **إلا عندما يستطيع الوصول إلى خادم agentmemory يعمل** عبر `AGENTMEMORY_URL` (وضع الوكيل الوسيط proxy). وإذا تعذّر الوصول إلى أي خادم، يرجع الوسيط إلى مجموعة محلية من 7 أدوات (`memory_save` و`memory_recall` و`memory_smart_search` و`memory_sessions` و`memory_export` و`memory_audit` و`memory_governance_delete`). متغير البيئة `AGENTMEMORY_TOOLS=core|all` هو راية *من جانب الخادم*؛ وضبطه في كتلة `env` الخاصة بالوسيط لا يُحدث أي أثر. إذا رأيت 7 أدوات فقط في Cursor / OpenCode / Gemini CLI، شغّل `npx -y @agentmemory/agentmemory@latest` (أو اتصل بخادم استضافة ذاتية) واضبط `AGENTMEMORY_URL=http://localhost:3111`.
+> **وسيط MCP (shim) في مقابل الخادم الكامل:** حزمة `@agentmemory/mcp` المنشورة هي وسيط خفيف (shim). ولا يُظهر سطح الأدوات الكامل البالغ 55 أداة **إلا عندما يستطيع الوصول إلى خادم agentmemory يعمل** عبر `AGENTMEMORY_URL` (وضع الوكيل الوسيط proxy). وإذا تعذّر الوصول إلى أي خادم، يرجع الوسيط إلى مجموعة محلية من 7 أدوات (`memory_save` و`memory_recall` و`memory_smart_search` و`memory_sessions` و`memory_export` و`memory_audit` و`memory_governance_delete`). متغير البيئة `AGENTMEMORY_TOOLS=core|all` هو راية *من جانب الخادم*؛ وضبطه في كتلة `env` الخاصة بالوسيط لا يُحدث أي أثر. إذا رأيت 7 أدوات فقط في Cursor / OpenCode / Gemini CLI، شغّل `npx -y @agentmemory/agentmemory@latest` (أو اتصل بخادم استضافة ذاتية) واضبط `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 أداة
+### 55 أداة
 
 ثلاث واجهات للأدوات، من الأصغر إلى الأكبر: يُقلِّص `AGENTMEMORY_TOOLS=core` مجموعة الأدوات الظاهرة إلى 8 أدوات أساسية (`memory_save` و`memory_recall` و`memory_consolidate` و`memory_smart_search` و`memory_sessions` و`memory_diagnose` و`memory_lesson_save` و`memory_reflect`)؛ وتمثل المجموعة الأساسية أدناه الأدوات التأسيسية الـ14 في السجل؛ أما الوضع الافتراضي (`AGENTMEMORY_TOOLS=all`) فيعرض جميع الأدوات الـ54.
 
@@ -1084,7 +1084,7 @@ EMBEDDING_PROVIDER=local
 </details>
 
 <details>
-<summary>الأدوات الموسَّعة (54 أداة إجمالًا، السطح الافتراضي)</summary>
+<summary>الأدوات الموسَّعة (55 أداة إجمالًا، السطح الافتراضي)</summary>
 
 | الأداة | الوصف |
 |------|-------------|
@@ -1370,7 +1370,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 نقطة نهاية على المنفذ `3111`. ترتبط REST API بـ `127.0.0.1` افتراضيًا. تتطلب نقاط النهاية المحمية ترويسة `Authorization: Bearer <secret>`، وتتطلب نقاط نهاية مزامنة mesh ضبط `AGENTMEMORY_SECRET` صريحًا على كلا الطرفين.
+155 نقطة نهاية على المنفذ `3111`. ترتبط REST API بـ `127.0.0.1` افتراضيًا. تتطلب نقاط النهاية المحمية ترويسة `Authorization: Bearer <secret>`، وتتطلب نقاط نهاية مزامنة mesh ضبط `AGENTMEMORY_SECRET` صريحًا على كلا الطرفين.
 
 **المصادقة مُفعّلة افتراضيًا.** إذا لم يُضبط `AGENTMEMORY_SECRET`، ينشئ CLI عند التشغيل الأول سرًا عشوائيًا في `~/.agentmemory/secret` بصلاحيات `0600` وينسخه أيضًا إلى مجلد البيانات المحدد. يقرأ كل عميل مضمّن هذا السر عند الاتصال بخادم محلي: CLI والعارض والخطافات تحت `plugin/scripts` وخادم MCP ووسيط `@agentmemory/mcp` والإعدادات التي يكتبها `agentmemory connect` وتكاملات OpenCode وPi وOpenClaw وHermes ومراقب نظام الملفات المضمّنة. لا يُرسل السر المحفوظ إلا إلى عناوين loopback (`localhost` و`127.0.0.0/8` و`::1`). وتكون الأولوية دائمًا لقيمة `AGENTMEMORY_SECRET` الصريحة، كما يجب ضبط السر في بيئة العملاء البعيدين. تنشئ عمليات الاستضافة الذاتية عبر Docker من المستودع ونقاط دخول [`deploy/`](../deploy/) سرها وتصدّره. لاستدعاء API يدويًا:
 

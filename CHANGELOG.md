@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — snapshot outcome and compression diagnostics
+
+- Separate persisted snapshot admission from actual completion; preserve the legacy direct synchronous function, expose read-only tracking, and keep real owner results authoritative across caller timeout and retry interruption. REST/MCP creation admission is an explicit response-contract change; no operating deployment.
+- Preserve the actual unknown cause of one operating compression failure while adding local fixed timeout/fallback diagnostics and finite phase/elapsed fields. Keep deadlines, retry/source/revision contracts and the global sanitizer unchanged. See docs/customizations/SNAPSHOT-INVOCATION-OUTCOME.md.
+
 ## Unreleased — bounded snapshot output buffering
 
 - Coalesce iterable snapshot fragments into at most 64KiB output buffers without assembling the archive string. Preserve UTF-8/binary bytes, sequential backpressure, cancellation and existing fsync/atomic-publication/cleanup boundaries. Development only; running .36 remains unchanged. See docs/customizations/SNAPSHOT-BUFFERED-PUBLICATION.md.

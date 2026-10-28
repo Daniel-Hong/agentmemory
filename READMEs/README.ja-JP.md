@@ -647,7 +647,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code(1 ブロックそのまま貼り付け)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### プラグインをインストールしない Claude Code(MCP スタンドアロン経路)
@@ -732,7 +732,7 @@ Pi は `@agentmemory/pi` パッケージとしてもインストールできま�
 <summary><b>OpenClaw(このプロンプトを貼り付ける)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -757,7 +757,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent(このプロンプトを貼り付ける)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -821,7 +821,7 @@ agentmemory のエントリは、`mcpServers` の形式を使うすべてのホ�
 | **Cline / Roo Code / Kilo Code** | Cline の MCP 設定(Settings UI → MCP Servers → Edit) | 同じ `mcpServers` ブロック。 |
 | **Devin CLI(MCP + hooks)** | `~/.config/devin/config.json` | `agentmemory connect devin` が MCP エントリをマージします。`--with-hooks` は、Devin の小文字のツールマッチャーを使った 6 つのネイティブ自動キャプチャ hooks(SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop、SessionEnd)を追加します。`devin mcp list` と devin 内の `/hooks` で確認してください。 |
 | **Devin CLI(フルプラグイン)** | `plugin/.devin-plugin/` | チェックアウトから `devin plugins install ./plugin` を実行すると、17 個の skills すべてが `/agentmemory:<skill>` スラッシュコマンドとして MCP サーバーとともに登録されます。Devin のプラグイン hooks は `SessionStart`/`SessionEnd` を発火できないため、セッション全体をキャプチャするには `connect devin --with-hooks` と組み合わせてください。 |
-| **Devin(クラウド)** | Settings → Connections → MCP servers | カスタム MCP(STDIO)を追加: コマンドは `npx`、引数は `-y @agentmemory/mcp@latest`、env にはネットワーク到達可能な agentmemory デプロイを指す `AGENTMEMORY_URL` と `AGENTMEMORY_SECRET`(クラウドセッションは localhost に到達できません — [`deploy/`](../deploy/) 参照)。シークレットは Devin Secrets に保存し、「Test listing tools」で 54 ツールすべてが表示されることを確認してください。 |
+| **Devin(クラウド)** | Settings → Connections → MCP servers | カスタム MCP(STDIO)を追加: コマンドは `npx`、引数は `-y @agentmemory/mcp@latest`、env にはネットワーク到達可能な agentmemory デプロイを指す `AGENTMEMORY_URL` と `AGENTMEMORY_SECRET`(クラウドセッションは localhost に到達できません — [`deploy/`](../deploy/) 参照)。シークレットは Devin Secrets に保存し、「Test listing tools」で 55 ツールすべてが表示されることを確認してください。 |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user`(自動マージ)。 |
 | **GitHub Copilot CLI(MCP のみ)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` が `mcpServers.agentmemory` をマージします。Copilot は次回起動時または `/mcp` で認識します。 |
 | **GitHub Copilot CLI(フルプラグイン)** | Copilot plugin install | GitHub のサブディレクトリにあるプラグインには `copilot plugin install rohitg00/agentmemory:plugin` を使用。 |
@@ -1058,13 +1058,13 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP Server" height="32" /></picture></h2>
 
-54 ツール、6 リソース、3 プロンプト、17 skills。
+55 ツール、6 リソース、3 プロンプト、17 skills。
 
-> **MCP shim とフルサーバー:** 公開されている `@agentmemory/mcp` パッケージは薄い shim です。**`AGENTMEMORY_URL` 経由で動作中の agentmemory サーバーに到達できる場合に限り**、完全な 54 ツール群を公開します(プロキシモード)。サーバーに到達できない場合、shim は 7 ツールのローカルセット(`memory_save`、`memory_recall`、`memory_smart_search`、`memory_sessions`、`memory_export`、`memory_audit`、`memory_governance_delete`)にフォールバックします。`AGENTMEMORY_TOOLS=core|all` 環境変数は*サーバー側*のフラグです — shim の `env` ブロックで設定しても効果はありません。Cursor / OpenCode / Gemini CLI で 7 ツールしか見えない場合は、`npx -y @agentmemory/agentmemory@latest`(または Docker スタック)を起動し、`AGENTMEMORY_URL=http://localhost:3111` を設定してください。
+> **MCP shim とフルサーバー:** 公開されている `@agentmemory/mcp` パッケージは薄い shim です。**`AGENTMEMORY_URL` 経由で動作中の agentmemory サーバーに到達できる場合に限り**、完全な 55 ツール群を公開します(プロキシモード)。サーバーに到達できない場合、shim は 7 ツールのローカルセット(`memory_save`、`memory_recall`、`memory_smart_search`、`memory_sessions`、`memory_export`、`memory_audit`、`memory_governance_delete`)にフォールバックします。`AGENTMEMORY_TOOLS=core|all` 環境変数は*サーバー側*のフラグです — shim の `env` ブロックで設定しても効果はありません。Cursor / OpenCode / Gemini CLI で 7 ツールしか見えない場合は、`npx -y @agentmemory/agentmemory@latest`(または Docker スタック)を起動し、`AGENTMEMORY_URL=http://localhost:3111` を設定してください。
 
-### 54 ツール
+### 55 ツール
 
-ツールの公開範囲は小さい順に 3 段階: `AGENTMEMORY_TOOLS=core` は表示を 8 個の必須ツール(`memory_save`、`memory_recall`、`memory_consolidate`、`memory_smart_search`、`memory_sessions`、`memory_diagnose`、`memory_lesson_save`、`memory_reflect`)に絞ります。下の基本セットはレジストリの基盤となる 14 ツール、デフォルト(`AGENTMEMORY_TOOLS=all`)は 54 個すべてを公開します。
+ツールの公開範囲は小さい順に 3 段階: `AGENTMEMORY_TOOLS=core` は表示を 8 個の必須ツール(`memory_save`、`memory_recall`、`memory_consolidate`、`memory_smart_search`、`memory_sessions`、`memory_diagnose`、`memory_lesson_save`、`memory_reflect`)に絞ります。下の基本セットはレジストリの基盤となる 14 ツール、デフォルト(`AGENTMEMORY_TOOLS=all`)は 55 個すべてを公開します。
 
 <details>
 <summary>基本ツール(14)</summary>
@@ -1383,7 +1383,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-ポート `3111` 上の 154 エンドポイント。REST API はデフォルトで `127.0.0.1` にバインドします。保護されたエンドポイントは `Authorization: Bearer <secret>` を要求し、mesh sync エンドポイントは両ピアで明示的に設定された `AGENTMEMORY_SECRET` を要求します。
+ポート `3111` 上の 155 エンドポイント。REST API はデフォルトで `127.0.0.1` にバインドします。保護されたエンドポイントは `Authorization: Bearer <secret>` を要求し、mesh sync エンドポイントは両ピアで明示的に設定された `AGENTMEMORY_SECRET` を要求します。
 
 認証はデフォルトで有効です。`AGENTMEMORY_SECRET` が未設定なら、CLI は初回起動時にランダムなシークレットを `~/.agentmemory/secret` に保存し、選択したデータディレクトリの `secret` にも複製します。権限は `0600` です。同梱クライアントはローカル接続時にこの共通ファイルを優先し、保存されたシークレットを送るのはループバック URL だけです。明示的な `AGENTMEMORY_SECRET` が優先され、リモート接続には環境変数で指定します。Docker デプロイは独自のシークレットを生成します。
 

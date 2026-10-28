@@ -405,13 +405,18 @@ export const V040_TOOLS: McpToolDef[] = [
   },
   {
     name: "memory_snapshot_create",
-    description: "Create a git-versioned snapshot of current memory state.",
+    description: "Request a git-versioned snapshot; admission is not completion. Poll memory_snapshot_status and match lastAttemptAt to the returned attemptAt; do not blindly retry an unconfirmed request.",
     inputSchema: {
       type: "object",
       properties: {
         message: { type: "string", description: "Snapshot description" },
       },
     },
+  },
+  {
+    name: "memory_snapshot_status",
+    description: "Read current snapshot attempt state without requesting creation. Match lastAttemptAt to the admission attemptAt; interrupted or legacy attempts may remain unknown.",
+    inputSchema:{type:"object",properties:{}},
   },
 ];
 
@@ -1029,8 +1034,8 @@ export function getAllTools(): McpToolDef[] {
 }
 
 // default switched from "core" (8 essential tools) to "all"
-// (full 54-tool surface). README and plugin manifests have always
-// advertised 54 tools "in proxy mode"; the old default left OpenCode /
+// (full 55-tool surface). README and plugin manifests have always
+// advertised 55 tools "in proxy mode"; the old default left OpenCode /
 // Claude Code users seeing 8 with no indication the other tools existed.
 // Users who want the lean essentials can still set AGENTMEMORY_TOOLS=core.
 export function getVisibleTools(): McpToolDef[] {

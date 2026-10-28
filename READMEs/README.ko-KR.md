@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% retrieval R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% fewer tokens" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP tools" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP tools" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 auto hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 external DBs" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ tests passing" height="38" /></picture>
@@ -645,7 +645,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code (블록 한 번, 붙여넣기)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### 플러그인 설치 없이 Claude Code 사용 (MCP 독립형 경로)
@@ -730,7 +730,7 @@ Pi는 `@agentmemory/pi` 패키지로도 설치할 수 있습니다. 로컬 설�
 <summary><b>OpenClaw (이 프롬프트를 붙여넣으세요)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -755,7 +755,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent (이 프롬프트를 붙여넣으세요)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -819,7 +819,7 @@ agentmemory 항목은 `mcpServers` 형태를 사용하는 모든 호스트(Curso
 | **Cline / Roo Code / Kilo Code** | Cline MCP 설정 (Settings UI → MCP Servers → Edit) | 동일한 `mcpServers` 블록. |
 | **Devin CLI (MCP + hook)** | `~/.config/devin/config.json` | `agentmemory connect devin`이 MCP 항목을 병합하고, `--with-hooks`는 Devin의 소문자 tool matcher를 사용하는 6개의 네이티브 자동 캡처 hook(SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd)을 추가합니다. `devin mcp list`와 devin 안에서 `/hooks`로 확인하십시오. |
 | **Devin CLI (전체 플러그인)** | `plugin/.devin-plugin/` | 체크아웃에서 `devin plugins install ./plugin`을 실행하면 17개의 skill 전부가 `/agentmemory:<skill>` 슬래시 명령으로, 그리고 MCP 서버가 함께 등록됩니다. Devin 플러그인 hook은 `SessionStart`/`SessionEnd`를 발생시킬 수 없으므로, 전체 세션 캡처를 위해 `connect devin --with-hooks`와 함께 사용하십시오. |
-| **Devin (클라우드)** | Settings → Connections → MCP servers | 커스텀 MCP(STDIO)를 추가하십시오: command `npx`, args `-y @agentmemory/mcp@latest`, env로 네트워크에서 도달 가능한 agentmemory 배포를 가리키는 `AGENTMEMORY_URL`과 `AGENTMEMORY_SECRET`(클라우드 세션은 localhost에 도달할 수 없습니다 — [`deploy/`](../deploy/) 참고). 시크릿은 Devin Secrets에 저장한 다음, "Test listing tools"로 54개 도구가 모두 나타나는지 확인하십시오. |
+| **Devin (클라우드)** | Settings → Connections → MCP servers | 커스텀 MCP(STDIO)를 추가하십시오: command `npx`, args `-y @agentmemory/mcp@latest`, env로 네트워크에서 도달 가능한 agentmemory 배포를 가리키는 `AGENTMEMORY_URL`과 `AGENTMEMORY_SECRET`(클라우드 세션은 localhost에 도달할 수 없습니다 — [`deploy/`](../deploy/) 참고). 시크릿은 Devin Secrets에 저장한 다음, "Test listing tools"로 55개 도구가 모두 나타나는지 확인하십시오. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (자동 병합). |
 | **GitHub Copilot CLI (MCP만)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli`가 `mcpServers.agentmemory`를 병합합니다. Copilot은 다음 실행 시 또는 `/mcp`에서 이를 인식합니다. |
 | **GitHub Copilot CLI (전체 플러그인)** | Copilot 플러그인 설치 | GitHub 서브디렉터리의 플러그인을 위해 `copilot plugin install rohitg00/agentmemory:plugin`. |
@@ -1057,13 +1057,13 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP 서버" height="32" /></picture></h2>
 
-도구 54개, 리소스 6개, 프롬프트 3개, skill 17개.
+도구 55개, 리소스 6개, 프롬프트 3개, skill 17개.
 
-> **MCP shim 대 전체 서버:** 게시된 `@agentmemory/mcp` 패키지는 얇은 shim입니다. `AGENTMEMORY_URL`을 통해 **실행 중인 agentmemory 서버에 도달할 수 있을 때만**(프록시 모드) 54개 도구 전체 표면을 노출합니다. 도달 가능한 서버가 없으면, shim은 7개 도구로 구성된 로컬 세트(`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`)로 폴백합니다. `AGENTMEMORY_TOOLS=core|all` 환경 변수는 *서버 측* 플래그입니다. shim의 `env` 블록에 설정해도 아무 효과가 없습니다. Cursor / OpenCode / Gemini CLI에서 도구가 7개만 보인다면, `npx -y @agentmemory/agentmemory@latest`(또는 Docker 스택)를 시작하고 `AGENTMEMORY_URL=http://localhost:3111`을 설정하십시오.
+> **MCP shim 대 전체 서버:** 게시된 `@agentmemory/mcp` 패키지는 얇은 shim입니다. `AGENTMEMORY_URL`을 통해 **실행 중인 agentmemory 서버에 도달할 수 있을 때만**(프록시 모드) 55개 도구 전체 표면을 노출합니다. 도달 가능한 서버가 없으면, shim은 7개 도구로 구성된 로컬 세트(`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`)로 폴백합니다. `AGENTMEMORY_TOOLS=core|all` 환경 변수는 *서버 측* 플래그입니다. shim의 `env` 블록에 설정해도 아무 효과가 없습니다. Cursor / OpenCode / Gemini CLI에서 도구가 7개만 보인다면, `npx -y @agentmemory/agentmemory@latest`(또는 Docker 스택)를 시작하고 `AGENTMEMORY_URL=http://localhost:3111`을 설정하십시오.
 
-### 54개 도구
+### 55개 도구
 
-가장 작은 것부터 가장 큰 것까지 세 가지 도구 표면이 있습니다: `AGENTMEMORY_TOOLS=core`는 가시성을 8개의 핵심 도구(`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`)로 줄이고, 아래의 기본 세트는 레지스트리의 14개 기초 도구이며, 기본값(`AGENTMEMORY_TOOLS=all`)은 54개 전부를 노출합니다.
+가장 작은 것부터 가장 큰 것까지 세 가지 도구 표면이 있습니다: `AGENTMEMORY_TOOLS=core`는 가시성을 8개의 핵심 도구(`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`)로 줄이고, 아래의 기본 세트는 레지스트리의 14개 기초 도구이며, 기본값(`AGENTMEMORY_TOOLS=all`)은 55개 전부를 노출합니다.
 
 <details>
 <summary>기본 도구 (14개)</summary>
@@ -1088,7 +1088,7 @@ EMBEDDING_PROVIDER=local
 </details>
 
 <details>
-<summary>확장 도구 (총 54개, 기본 표면)</summary>
+<summary>확장 도구 (총 55개, 기본 표면)</summary>
 
 | 도구 | 설명 |
 |------|-------------|
@@ -1382,7 +1382,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-포트 `3111`의 엔드포인트 154개. REST API는 기본적으로 `127.0.0.1`에 바인딩됩니다. 보호된 엔드포인트는 `Authorization: Bearer <secret>`을 요구하며, mesh sync 엔드포인트는 양쪽 피어 모두에 `AGENTMEMORY_SECRET`이 명시적으로 설정되어 있어야 합니다.
+포트 `3111`의 엔드포인트 155개. REST API는 기본적으로 `127.0.0.1`에 바인딩됩니다. 보호된 엔드포인트는 `Authorization: Bearer <secret>`을 요구하며, mesh sync 엔드포인트는 양쪽 피어 모두에 `AGENTMEMORY_SECRET`이 명시적으로 설정되어 있어야 합니다.
 
 인증은 기본적으로 활성화됩니다. `AGENTMEMORY_SECRET`이 없으면 CLI가 처음 시작할 때 임의의 비밀값을 `~/.agentmemory/secret`에 저장하고 선택한 데이터 디렉터리의 `secret`에도 복사합니다. 권한은 `0600`입니다. 번들 클라이언트는 로컬 연결 시 이 공통 파일을 우선하며 저장된 비밀값은 루프백 URL에만 보냅니다. 명시적인 `AGENTMEMORY_SECRET`이 우선하고 원격 클라이언트는 환경 변수로 설정해야 합니다. Docker 배포는 자체 비밀값을 생성합니다.
 

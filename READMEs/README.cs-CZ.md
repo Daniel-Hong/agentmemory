@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% retrieval R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="o 92% méně tokenů" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP nástrojů" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP nástrojů" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 automatických hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 externích databází" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ testů úspěšně proběhlo" height="38" /></picture>
@@ -649,7 +649,7 @@ Příkaz aktualizuje místní běhové prostředí a může změnit JavaScriptov
 ### Claude Code (jeden blok, vložte ho)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code bez instalace pluginu (cesta MCP-standalone)
@@ -738,7 +738,7 @@ Pi podporuje také instalovatelný balíček `@agentmemory/pi`. Lokální instal
 <summary><b>OpenClaw (vložte tento prompt)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -763,7 +763,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent (vložte tento prompt)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -828,7 +828,7 @@ Položka agentmemory je **stejný blok serveru MCP** na všech hostitelích, kte
 | **Cline / Roo Code / Kilo Code** | nastavení MCP v Cline (Settings UI → MCP Servers → Edit) | Stejný blok `mcpServers`. |
 | **Devin CLI (MCP + hooks)** | `~/.config/devin/config.json` | `agentmemory connect devin` sloučí položku MCP; `--with-hooks` přidá šest nativních hooks pro automatické zachycení (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) s malými písmeny v maticích nástrojů Devin. Ověřte pomocí `devin mcp list` a `/hooks` uvnitř devin. |
 | **Devin CLI (plný plugin)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin` z checkoutu zaregistruje všech 17 skills jako slash příkazy `/agentmemory:<skill>` plus server MCP. Hooks pluginu Devin neumí vyvolat `SessionStart`/`SessionEnd`, takže ho pro plné zachycení session kombinujte s `connect devin --with-hooks`. |
-| **Devin (cloud)** | Settings → Connections → MCP servers | Přidejte vlastní MCP (STDIO): příkaz `npx`, argumenty `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` ukazující na síťově dostupné nasazení agentmemory plus `AGENTMEMORY_SECRET` (cloudové sessions se nedostanou na localhost — viz [`deploy/`](../deploy/)). Uložte secret do Devin Secrets a pomocí „Test listing tools“ ověřte, že se objeví všech 54 nástrojů. |
+| **Devin (cloud)** | Settings → Connections → MCP servers | Přidejte vlastní MCP (STDIO): příkaz `npx`, argumenty `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` ukazující na síťově dostupné nasazení agentmemory plus `AGENTMEMORY_SECRET` (cloudové sessions se nedostanou na localhost — viz [`deploy/`](../deploy/)). Uložte secret do Devin Secrets a pomocí „Test listing tools“ ověřte, že se objeví všech 55 nástrojů. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (sloučí se automaticky). |
 | **GitHub Copilot CLI (pouze MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` sloučí `mcpServers.agentmemory`; Copilot si ji vyzvedne při dalším spuštění nebo po `/mcp`. |
 | **GitHub Copilot CLI (plný plugin)** | instalace pluginu Copilot | `copilot plugin install rohitg00/agentmemory:plugin` pro plugin z podadresáře GitHub. |
@@ -1052,11 +1052,11 @@ Běžná instalace npm obsahuje volitelný runtime `@huggingface/transformers`. 
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="Server MCP" height="32" /></picture></h2>
 
-54 nástrojů, 6 resources, 3 prompty a 17 skills.
+55 nástrojů, 6 resources, 3 prompty a 17 skills.
 
-> **Shim MCP vs plný server:** publikovaný balíček `@agentmemory/mcp` je tenký shim. Celý povrch 54 nástrojů zpřístupní **pouze když se dostane k běžícímu serveru agentmemory** přes `AGENTMEMORY_URL` (proxy režim). Když žádný server není dostupný, shim se vrátí na lokální sadu 7 nástrojů (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Proměnná prostředí `AGENTMEMORY_TOOLS=core|all` je příznak *na straně serveru*; nastavení v bloku `env` shimu nemá žádný efekt. Pokud v Cursor / OpenCode / Gemini CLI vidíte jen 7 nástrojů, spusťte `npx -y @agentmemory/agentmemory@latest` nebo se připojte k self-hostovanému serveru a nastavte `AGENTMEMORY_URL=http://localhost:3111`.
+> **Shim MCP vs plný server:** publikovaný balíček `@agentmemory/mcp` je tenký shim. Celý povrch 55 nástrojů zpřístupní **pouze když se dostane k běžícímu serveru agentmemory** přes `AGENTMEMORY_URL` (proxy režim). Když žádný server není dostupný, shim se vrátí na lokální sadu 7 nástrojů (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Proměnná prostředí `AGENTMEMORY_TOOLS=core|all` je příznak *na straně serveru*; nastavení v bloku `env` shimu nemá žádný efekt. Pokud v Cursor / OpenCode / Gemini CLI vidíte jen 7 nástrojů, spusťte `npx -y @agentmemory/agentmemory@latest` nebo se připojte k self-hostovanému serveru a nastavte `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 nástrojů
+### 55 nástrojů
 
 Tři povrchy nástrojů, od nejmenšího k největšímu: `AGENTMEMORY_TOOLS=core` omezí viditelnost na 8 nezbytných (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); základní sada níže je 14 základních nástrojů registru; výchozí nastavení (`AGENTMEMORY_TOOLS=all`) zpřístupní všech 54.
 
@@ -1369,7 +1369,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpointů na portu `3111`. REST API se ve výchozím stavu váže na `127.0.0.1`. Chráněné endpointy vyžadují `Authorization: Bearer <secret>`, a endpointy pro mesh sync vyžadují explicitně nastavené `AGENTMEMORY_SECRET` na obou stranách.
+155 endpointů na portu `3111`. REST API se ve výchozím stavu váže na `127.0.0.1`. Chráněné endpointy vyžadují `Authorization: Bearer <secret>`, a endpointy pro mesh sync vyžadují explicitně nastavené `AGENTMEMORY_SECRET` na obou stranách.
 
 **Autentizace je ve výchozím stavu zapnutá.** Pokud `AGENTMEMORY_SECRET` není nastaveno, CLI při prvním spuštění vygeneruje náhodný secret v `~/.agentmemory/secret` s oprávněním `0600` a zkopíruje jej také do vybraného datového adresáře. Všichni zabalení klienti jej načítají odtud při komunikaci s lokálním serverem: CLI, viewer, hooks v `plugin/scripts`, server MCP a shim `@agentmemory/mcp`, konfigurace zapsané pomocí `agentmemory connect` a zabalené integrace OpenCode, Pi, OpenClaw, Hermes a filesystem-watcher. Uložený secret se odesílá pouze na loopback URL (`localhost`, `127.0.0.0/8`, `::1`). Výslovně nastavená `AGENTMEMORY_SECRET` má vždy přednost a vzdálení klienti ji musí mít ve svém prostředí. Self-host nasazení Dockeru z repozitáře a entrypointy `deploy/` generují a exportují vlastní secret. Pro ruční volání API:
 

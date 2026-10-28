@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% retrieval R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% mas kaunting token" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP tool" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP tool" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 awtomatikong hook" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 panlabas na DB" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ pumapasang test" height="38" /></picture>
@@ -647,7 +647,7 @@ Ina-update nito ang local runtime at maaaring baguhin ang JavaScript dependencie
 ### Claude Code (isang block, i-paste ito)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code nang walang plugin install (MCP-standalone path)
@@ -732,7 +732,7 @@ May installable na `@agentmemory/pi` package din ang Pi. Tingnan ang [Pi guide](
 <summary><b>OpenClaw (i-paste ang prompt na ito)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -757,7 +757,7 @@ Kumpletong gabay: [`integrations/openclaw/`](../integrations/openclaw/)
 <summary><b>Hermes Agent (i-paste ang prompt na ito)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -821,7 +821,7 @@ Ang entry ng agentmemory ay ang **parehong MCP server block** sa bawat host na g
 | **Cline / Roo Code / Kilo Code** | Cline MCP settings (Settings UI → MCP Servers → Edit) | Parehong `mcpServers` block. |
 | **Devin CLI (MCP + hooks)** | `~/.config/devin/config.json` | Pinagsasama ng `agentmemory connect devin` ang MCP entry; idinadagdag ng `--with-hooks` ang anim na native na auto-capture hook (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) gamit ang lowercase na tool matcher ng Devin. Patunayan gamit ang `devin mcp list` at `/hooks` sa loob ng devin. |
 | **Devin CLI (buong plugin)** | `plugin/.devin-plugin/` | Nirerehistro ng `devin plugins install ./plugin` mula sa isang checkout ang lahat ng 17 skill bilang `/agentmemory:<skill>` slash command kasama ang MCP server. Hindi kayang paandarin ng Devin plugin hooks ang `SessionStart`/`SessionEnd`, kaya ipares ito sa `connect devin --with-hooks` para sa buong session capture. |
-| **Devin (cloud)** | Settings → Connections → MCP servers | Magdagdag ng custom na MCP (STDIO): command `npx`, args `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` na itinuturo sa isang network-reachable na agentmemory deployment kasama ang `AGENTMEMORY_SECRET` (hindi maaabot ng cloud session ang localhost — tingnan ang [`../deploy/`](../deploy/)). Itago ang secret sa Devin Secrets, pagkatapos gamitin ang "Test listing tools" para patunayan na lumalabas ang lahat ng 54 tool. |
+| **Devin (cloud)** | Settings → Connections → MCP servers | Magdagdag ng custom na MCP (STDIO): command `npx`, args `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` na itinuturo sa isang network-reachable na agentmemory deployment kasama ang `AGENTMEMORY_SECRET` (hindi maaabot ng cloud session ang localhost — tingnan ang [`../deploy/`](../deploy/)). Itago ang secret sa Devin Secrets, pagkatapos gamitin ang "Test listing tools" para patunayan na lumalabas ang lahat ng 55 tool. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (awtomatikong nag-merge). |
 | **GitHub Copilot CLI (MCP lamang)** | `~/.copilot/mcp-config.json` | Pinagsasama ng `agentmemory connect copilot-cli` ang `mcpServers.agentmemory`; kukunin ito ng Copilot sa susunod na launch o `/mcp`. |
 | **GitHub Copilot CLI (buong plugin)** | Copilot plugin install | `copilot plugin install rohitg00/agentmemory:plugin` para sa plugin mula sa GitHub subdir. |
@@ -1058,11 +1058,11 @@ Kasama sa normal na npm install ang opsyonal na `@huggingface/transformers` runt
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP Server" height="32" /></picture></h2>
 
-54 na tool, 6 na resource, 3 na prompt, at 17 na skill.
+55 na tool, 6 na resource, 3 na prompt, at 17 na skill.
 
-> **MCP shim laban sa buong server:** ang pinublish na `@agentmemory/mcp` package ay isang manipis na shim. Ilalantad nito ang buong 54-tool surface **lamang kapag kaya nitong maabot ang isang tumatakbong agentmemory server** gamit ang `AGENTMEMORY_URL` (proxy mode). Kung walang maabot na server, babalik ang shim sa isang 7-tool na lokal na set (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Ang `AGENTMEMORY_TOOLS=core|all` env var ay isang *server-side* na flag; walang epekto ang pag-set nito sa `env` block ng shim. Kung 7 tool lamang ang nakikita mo sa Cursor / OpenCode / Gemini CLI, simulan ang `npx -y @agentmemory/agentmemory@latest` (o ang Docker stack) at i-set ang `AGENTMEMORY_URL=http://localhost:3111`.
+> **MCP shim laban sa buong server:** ang pinublish na `@agentmemory/mcp` package ay isang manipis na shim. Ilalantad nito ang buong 55-tool surface **lamang kapag kaya nitong maabot ang isang tumatakbong agentmemory server** gamit ang `AGENTMEMORY_URL` (proxy mode). Kung walang maabot na server, babalik ang shim sa isang 7-tool na lokal na set (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Ang `AGENTMEMORY_TOOLS=core|all` env var ay isang *server-side* na flag; walang epekto ang pag-set nito sa `env` block ng shim. Kung 7 tool lamang ang nakikita mo sa Cursor / OpenCode / Gemini CLI, simulan ang `npx -y @agentmemory/agentmemory@latest` (o ang Docker stack) at i-set ang `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 na Tool
+### 55 na Tool
 
 Tatlong tool surface, mula sa pinakamaliit hanggang pinakamalaki: binabawasan ng `AGENTMEMORY_TOOLS=core` ang visibility sa 8 mahahalagang tool (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); ang base set sa ibaba ay ang 14 foundational tool ng registry; ang default (`AGENTMEMORY_TOOLS=all`) ay ilalantad ang lahat ng 54.
 
@@ -1379,7 +1379,7 @@ Nasa [`.env.example`](../.env.example) ang buong reference, kasama ang provider,
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 na endpoint sa port `3111`. Nagbibind ang REST API sa `127.0.0.1` bilang default. Kinakailangan ng mga protected endpoint ang `Authorization: Bearer <secret>`, at kinakailangan ng mga mesh sync endpoint ang tahasang naka-set na `AGENTMEMORY_SECRET` sa dalawang peer.
+155 na endpoint sa port `3111`. Nagbibind ang REST API sa `127.0.0.1` bilang default. Kinakailangan ng mga protected endpoint ang `Authorization: Bearer <secret>`, at kinakailangan ng mga mesh sync endpoint ang tahasang naka-set na `AGENTMEMORY_SECRET` sa dalawang peer.
 
 Naka-on ang authentication bilang default. Kapag walang `AGENTMEMORY_SECRET`, gumagawa ang CLI ng random secret sa unang start sa `~/.agentmemory/secret` at kinokopya sa `secret` ng napiling data directory, na may mode `0600`. Inuuna ng bundled clients ang canonical file sa local connection at ipinapadala lang ang naka-save na secret sa loopback URL. Mas mataas ang prayoridad ng explicit na `AGENTMEMORY_SECRET`; dapat itong itakda ng remote clients sa environment. Gumagawa ang Docker deployment ng sarili nitong secret.
 

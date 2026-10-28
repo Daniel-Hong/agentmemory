@@ -53,9 +53,8 @@ export function registerSnapshotFunction(
   snapshotDir: string,
   intervalMs = 86400000,
 ): ReturnType<typeof createSnapshotRecovery> {
-  const recovery = createSnapshotRecovery({dir:snapshotDir, intervalMs, gitExec, isPaused:backgroundPaused, create:()=>sdk.trigger({function_id:"mem::snapshot-create",payload:{}})});
-  sdk.registerFunction("mem::snapshot-create",
-    async (data?: { message?: string }) => recovery.runCreate(async () => {
+  const recovery = createSnapshotRecovery({dir:snapshotDir, intervalMs, gitExec, isPaused:backgroundPaused, create:()=>sdk.trigger({function_id:"mem::snapshot-request",payload:{}})});
+  const createSnapshot = async (data?: { message?: string }) => {
       let phase = "pin_graph";
       try {
         const kv = await pinGraphState(state);
@@ -156,8 +155,10 @@ export function registerSnapshotFunction(
         logger.error("Snapshot failed", { error: errorCode, phase, errorClass });
         return { success: false, error: errorCode, errorCode };
       }
-    }),
-  );
+  };
+  sdk.registerFunction("mem::snapshot-create",(data?:{message?:string})=>recovery.runCreate(()=>createSnapshot(data)));
+  sdk.registerFunction("mem::snapshot-request",(data?:{message?:string})=>recovery.requestCreate(()=>createSnapshot(data)));
+  sdk.registerFunction("mem::snapshot-status",async()=>{await recovery.init();return recovery.snapshot();});
 
   sdk.registerFunction("mem::snapshot-list",  async () => {
     try {

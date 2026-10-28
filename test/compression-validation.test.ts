@@ -173,7 +173,7 @@ describe("compression validation and retry", () => {
       .mockResolvedValueOnce("invalid")
       .mockRejectedValueOnce(new Error("provider unavailable"));
     const r = rig(provider);
-    expect(await r.call()).toEqual({ success: false, error: "compression_failed", retryable: true, retained: true, diagnostics: {} });
+    expect(await r.call()).toEqual({ success: false, error: "compression_failed", retryable: true, retained: true, diagnostics: { category: "compression_failed", errorCode: "COMPRESSION_UNCLASSIFIED" } });
     expect(r.stored()).toMatchObject({ ...raw, compression: { status: "failed" } });
     expect((r.stored() as CompressedObservation).compression?.status).toBe("failed");
     expect(provider.compress).toHaveBeenCalledTimes(2);

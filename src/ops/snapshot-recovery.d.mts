@@ -12,11 +12,16 @@ export function createSnapshotRecovery({ dir, intervalMs, gitExec, create, isPau
 }): {
     init: () => Promise<any>;
     runCreate: (fn: any) => Promise<any>;
+    requestCreate: (fn: any) => Promise<any>;
     start(): void;
     drain(): Promise<void>;
     stop(): Promise<void>;
     snapshot(): {
         status: string;
+        attemptStatus: string;
+        lastFinishedAttemptAt: string | null;
+        attemptErrorCode: string | null;
+        invocationError: {code:string;at:string} | null;
         lastSuccessAt: null;
         lastCommitHash: null;
         lastAttemptAt: null;

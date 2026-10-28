@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% 检索 R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="token 减少 92%" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 个 MCP 工具" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 个 MCP 工具" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 个自动 hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 个外部数据库" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ 项测试通过" height="38" /></picture>
@@ -647,7 +647,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code(一段话,直接粘贴)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code 不使用插件安装(MCP 独立路径)
@@ -732,7 +732,7 @@ Pi 也提供可安装的 `@agentmemory/pi` 包。本地安装与 npm 可用状�
 <summary><b>OpenClaw(粘贴这段提示词)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -757,7 +757,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent(粘贴这段提示词)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -821,7 +821,7 @@ Hermes、OpenClaw、Pi 和 Oh My Pi 的连接器默认安装原生集成和 skil
 | **Cline / Roo Code / Kilo Code** | Cline MCP 设置(Settings UI → MCP Servers → Edit) | 同样的 `mcpServers` 代码块。 |
 | **Devin CLI(MCP + hooks)** | `~/.config/devin/config.json` | `agentmemory connect devin` 会合并 MCP 条目;`--with-hooks` 会添加六个原生自动捕获 hooks(SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop、SessionEnd),并使用 Devin 的小写工具匹配器。用 `devin mcp list` 以及 devin 内部的 `/hooks` 验证。 |
 | **Devin CLI(完整插件)** | `plugin/.devin-plugin/` | 在 checkout 中运行 `devin plugins install ./plugin`,会把全部 17 个 skills 注册为 `/agentmemory:<skill>` 斜杠命令,并加上 MCP 服务器。Devin 的插件 hooks 无法触发 `SessionStart`/`SessionEnd`,所以要配合 `connect devin --with-hooks` 才能实现完整的会话捕获。 |
-| **Devin(云端)** | Settings → Connections → MCP servers | 添加一个自定义 MCP(STDIO):命令 `npx`,参数 `-y @agentmemory/mcp@latest`,环境变量 `AGENTMEMORY_URL` 指向一个网络可达的 agentmemory 部署,再加上 `AGENTMEMORY_SECRET`(云端会话无法访问 localhost —— 见 [`../deploy/`](../deploy/))。把密钥存进 Devin Secrets,然后用 "Test listing tools" 验证全部 54 个工具都出现了。 |
+| **Devin(云端)** | Settings → Connections → MCP servers | 添加一个自定义 MCP(STDIO):命令 `npx`,参数 `-y @agentmemory/mcp@latest`,环境变量 `AGENTMEMORY_URL` 指向一个网络可达的 agentmemory 部署,再加上 `AGENTMEMORY_SECRET`(云端会话无法访问 localhost —— 见 [`../deploy/`](../deploy/))。把密钥存进 Devin Secrets,然后用 "Test listing tools" 验证全部 55 个工具都出现了。 |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user`(自动合并)。 |
 | **GitHub Copilot CLI(仅 MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` 会合并 `mcpServers.agentmemory`;Copilot 会在下次启动或执行 `/mcp` 后拾取它。 |
 | **GitHub Copilot CLI(完整插件)** | Copilot 插件安装 | 运行 `copilot plugin install rohitg00/agentmemory:plugin` 安装来自 GitHub 子目录的插件。 |
@@ -1059,13 +1059,13 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP 服务器" height="32" /></picture></h2>
 
-54 个工具,6 个资源,3 个提示词,17 个 skills。
+55 个工具,6 个资源,3 个提示词,17 个 skills。
 
-> **MCP shim 对比完整服务器:** 已发布的 `@agentmemory/mcp` 包是一个薄 shim。**只有当它能通过 `AGENTMEMORY_URL`(代理模式)连接到一个正在运行的 agentmemory 服务器时**,它才会暴露完整的 54 工具表面。当没有可达的服务器时,shim 会回退到一个 7 工具的本地集合(`memory_save`、`memory_recall`、`memory_smart_search`、`memory_sessions`、`memory_export`、`memory_audit`、`memory_governance_delete`)。`AGENTMEMORY_TOOLS=core|all` 环境变量是一个*服务器端*标志;在 shim 的 `env` 代码块中设置它不会有任何效果。如果你在 Cursor / OpenCode / Gemini CLI 中只看到 7 个工具,启动 `npx -y @agentmemory/agentmemory@latest`(或 Docker 技术栈),并设置 `AGENTMEMORY_URL=http://localhost:3111`。
+> **MCP shim 对比完整服务器:** 已发布的 `@agentmemory/mcp` 包是一个薄 shim。**只有当它能通过 `AGENTMEMORY_URL`(代理模式)连接到一个正在运行的 agentmemory 服务器时**,它才会暴露完整的 55 工具表面。当没有可达的服务器时,shim 会回退到一个 7 工具的本地集合(`memory_save`、`memory_recall`、`memory_smart_search`、`memory_sessions`、`memory_export`、`memory_audit`、`memory_governance_delete`)。`AGENTMEMORY_TOOLS=core|all` 环境变量是一个*服务器端*标志;在 shim 的 `env` 代码块中设置它不会有任何效果。如果你在 Cursor / OpenCode / Gemini CLI 中只看到 7 个工具,启动 `npx -y @agentmemory/agentmemory@latest`(或 Docker 技术栈),并设置 `AGENTMEMORY_URL=http://localhost:3111`。
 
-### 54 个工具
+### 55 个工具
 
-三层工具表面,从小到大:`AGENTMEMORY_TOOLS=core` 把可见性收窄到 8 个核心工具(`memory_save`、`memory_recall`、`memory_consolidate`、`memory_smart_search`、`memory_sessions`、`memory_diagnose`、`memory_lesson_save`、`memory_reflect`);下方的基础集是注册表中的 14 个基础工具;默认设置(`AGENTMEMORY_TOOLS=all`)暴露全部 54 个。
+三层工具表面,从小到大:`AGENTMEMORY_TOOLS=core` 把可见性收窄到 8 个核心工具(`memory_save`、`memory_recall`、`memory_consolidate`、`memory_smart_search`、`memory_sessions`、`memory_diagnose`、`memory_lesson_save`、`memory_reflect`);下方的基础集是注册表中的 14 个基础工具;默认设置(`AGENTMEMORY_TOOLS=all`)暴露全部 55 个。
 
 <details>
 <summary>基础工具(14 个)</summary>
@@ -1090,7 +1090,7 @@ EMBEDDING_PROVIDER=local
 </details>
 
 <details>
-<summary>扩展工具(共 54 个,默认表面)</summary>
+<summary>扩展工具(共 55 个,默认表面)</summary>
 
 | 工具 | 描述 |
 |------|-------------|
@@ -1380,7 +1380,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-端口 `3111` 上有 154 个端点。REST API 默认绑定到 `127.0.0.1`。受保护的端点需要 `Authorization: Bearer <secret>`,mesh 同步端点则需要双方都显式设置 `AGENTMEMORY_SECRET`。
+端口 `3111` 上有 155 个端点。REST API 默认绑定到 `127.0.0.1`。受保护的端点需要 `Authorization: Bearer <secret>`,mesh 同步端点则需要双方都显式设置 `AGENTMEMORY_SECRET`。
 
 认证默认开启。未设置 `AGENTMEMORY_SECRET` 时，CLI 首次启动会将随机密钥保存到 `~/.agentmemory/secret`，并镜像到所选数据目录的 `secret`，权限为 `0600`。内置客户端连接本地服务器时优先读取该公共文件，只向回环 URL 发送保存的密钥。显式设置的 `AGENTMEMORY_SECRET` 优先；远程客户端需通过环境变量设置密钥。Docker 部署生成自己的密钥。
 

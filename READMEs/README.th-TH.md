@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% retrieval R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="ลด token ลง 92%" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 เครื่องมือ MCP" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 เครื่องมือ MCP" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 hook อัตโนมัติ" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="ไม่ต้องพึ่ง external DB เลย" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="ผ่านการทดสอบ 5,400+ รายการ" height="38" /></picture>
@@ -639,7 +639,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code (one block, paste it)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code without the plugin install (MCP-standalone path)
@@ -724,7 +724,7 @@ Pi รองรับแพ็กเกจ `@agentmemory/pi` ด้วย ดู
 <summary><b>OpenClaw (paste this prompt)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -749,7 +749,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent (paste this prompt)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -1049,11 +1049,11 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP Server" height="32" /></picture></h2>
 
-54 เครื่องมือ, 6 resource, 3 prompt, และ 17 skill
+55 เครื่องมือ, 6 resource, 3 prompt, และ 17 skill
 
 > **MCP shim เทียบกับ full server:** แพ็กเกจ `@agentmemory/mcp` ที่เผยแพร่อยู่เป็นแค่ shim บาง ๆ มันจะเปิดเครื่องมือครบทั้ง 54 ตัว **ก็เฉพาะเมื่อมันเชื่อมต่อไปยัง agentmemory server ที่กำลังรันอยู่ได้** ผ่าน `AGENTMEMORY_URL` (proxy mode) เมื่อไม่มี server ให้เชื่อมต่อ shim จะ fallback ไปที่ชุดเครื่องมือในเครื่อง 7 ตัว (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`) ตัวแปร env `AGENTMEMORY_TOOLS=core|all` เป็น flag ฝั่ง *server* เท่านั้น การตั้งค่ามันใน `env` block ของ shim จะไม่มีผลใด ๆ ถ้าคุณเห็นเครื่องมือเพียง 7 ตัวใน Cursor / OpenCode / Gemini CLI ให้เริ่ม `npx -y @agentmemory/agentmemory@latest` (หรือ Docker stack) และตั้งค่า `AGENTMEMORY_URL=http://localhost:3111`
 
-### 54 Tools
+### 55 Tools
 
 เครื่องมือมีสาม surface เรียงจากเล็กไปใหญ่: `AGENTMEMORY_TOOLS=core` ลดการมองเห็นเหลือ 8 เครื่องมือหลัก (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); ชุด base ด้านล่างคือ 14 เครื่องมือพื้นฐานของ registry; ค่า default (`AGENTMEMORY_TOOLS=all`) เปิดทั้ง 54 ตัว
 
@@ -1368,7 +1368,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpoint บนพอร์ต `3111` REST API จะ bind กับ `127.0.0.1` โดย default endpoint ที่ป้องกันไว้ต้องมี `Authorization: Bearer <secret>` และ endpoint ของ mesh sync ต้องตั้งค่า `AGENTMEMORY_SECRET` ไว้อย่างชัดเจนทั้งสองฝั่ง
+155 endpoint บนพอร์ต `3111` REST API จะ bind กับ `127.0.0.1` โดย default endpoint ที่ป้องกันไว้ต้องมี `Authorization: Bearer <secret>` และ endpoint ของ mesh sync ต้องตั้งค่า `AGENTMEMORY_SECRET` ไว้อย่างชัดเจนทั้งสองฝั่ง
 
 เปิดการยืนยันตัวตนตามค่าเริ่มต้น หากไม่ตั้ง `AGENTMEMORY_SECRET` CLI จะสร้างรหัสลับสุ่มครั้งแรกที่ `~/.agentmemory/secret` และคัดลอกไปยัง `secret` ในไดเรกทอรีข้อมูลที่เลือก โดยใช้สิทธิ์ `0600` ไคลเอนต์ที่รวมมาจะอ่านไฟล์หลักนี้ก่อนเมื่อเชื่อมต่อในเครื่อง และส่งรหัสลับที่บันทึกไว้เฉพาะ URL แบบ loopback ค่า `AGENTMEMORY_SECRET` ที่ระบุเองมีลำดับความสำคัญสูงกว่า ไคลเอนต์ระยะไกลต้องตั้งผ่าน environment ส่วน Docker สร้างรหัสลับของตนเอง
 

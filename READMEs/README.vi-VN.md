@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% retrieval R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% fewer tokens" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP tools" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP tools" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 auto hooks" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 external DBs" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ tests passing" height="38" /></picture>
@@ -647,7 +647,7 @@ Lệnh cập nhật runtime cục bộ và có thể cập nhật phụ thuộc 
 ### Claude Code (một block, dán vào)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code không cài plugin (đường MCP độc lập)
@@ -732,7 +732,7 @@ Pi cũng hỗ trợ gói `@agentmemory/pi`. Xem [hướng dẫn Pi](../integrati
 <summary><b>OpenClaw (dán prompt này)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -757,7 +757,7 @@ Hướng dẫn đầy đủ: [`integrations/openclaw/`](../integrations/openclaw
 <summary><b>Hermes Agent (dán prompt này)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -821,7 +821,7 @@ Entry của agentmemory là **cùng một block MCP server** trên mọi host d�
 | **Cline / Roo Code / Kilo Code** | Cline MCP settings (Settings UI → MCP Servers → Edit) | Cùng block `mcpServers`. |
 | **Devin CLI (MCP + hooks)** | `~/.config/devin/config.json` | `agentmemory connect devin` gộp entry MCP; `--with-hooks` thêm sáu hook auto-capture gốc (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) với các tool matcher chữ thường của Devin. Kiểm tra bằng `devin mcp list` và `/hooks` trong devin. |
 | **Devin CLI (plugin đầy đủ)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin` từ một checkout đăng ký toàn bộ 17 skill dưới dạng slash command `/agentmemory:<skill>` cùng với MCP server. Hook plugin của Devin không thể bắn `SessionStart`/`SessionEnd`, nên hãy kết hợp với `connect devin --with-hooks` để capture session đầy đủ. |
-| **Devin (cloud)** | Settings → Connections → MCP servers | Thêm một MCP tùy chỉnh (STDIO): command `npx`, args `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` chỉ tới một deployment agentmemory có thể truy cập qua network cùng `AGENTMEMORY_SECRET` (các session cloud không thể chạm tới localhost — xem [`../deploy/`](../deploy/)). Lưu secret trong Devin Secrets, sau đó dùng "Test listing tools" để xác nhận cả 54 tool đều xuất hiện. |
+| **Devin (cloud)** | Settings → Connections → MCP servers | Thêm một MCP tùy chỉnh (STDIO): command `npx`, args `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` chỉ tới một deployment agentmemory có thể truy cập qua network cùng `AGENTMEMORY_SECRET` (các session cloud không thể chạm tới localhost — xem [`../deploy/`](../deploy/)). Lưu secret trong Devin Secrets, sau đó dùng "Test listing tools" để xác nhận cả 55 tool đều xuất hiện. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (tự gộp). |
 | **GitHub Copilot CLI (chỉ MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` gộp `mcpServers.agentmemory`; Copilot sẽ nhận ở lần khởi chạy kế tiếp hoặc `/mcp`. |
 | **GitHub Copilot CLI (plugin đầy đủ)** | Copilot plugin install | `copilot plugin install rohitg00/agentmemory:plugin` để lấy plugin từ subdir GitHub. |
@@ -1058,13 +1058,13 @@ Lần cài npm thông thường đã bao gồm runtime tùy chọn `@huggingface
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP Server" height="32" /></picture></h2>
 
-54 tool, 6 resource, 3 prompt, và 17 skill.
+55 tool, 6 resource, 3 prompt, và 17 skill.
 
-> **MCP shim so với server đầy đủ:** package `@agentmemory/mcp` đã publish là một shim mỏng. Nó chỉ phơi ra toàn bộ 54 tool **khi nó có thể chạm tới một agentmemory server đang chạy** qua `AGENTMEMORY_URL` (chế độ proxy). Khi không có server nào tiếp cận được, shim sẽ lùi về một bộ 7 tool cục bộ (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Biến môi trường `AGENTMEMORY_TOOLS=core|all` là một flag *phía server*; đặt nó trong block `env` của shim không có tác dụng gì. Nếu bạn chỉ thấy 7 tool trong Cursor / OpenCode / Gemini CLI, hãy khởi động `npx -y @agentmemory/agentmemory@latest` (hoặc Docker stack) và đặt `AGENTMEMORY_URL=http://localhost:3111`.
+> **MCP shim so với server đầy đủ:** package `@agentmemory/mcp` đã publish là một shim mỏng. Nó chỉ phơi ra toàn bộ 55 tool **khi nó có thể chạm tới một agentmemory server đang chạy** qua `AGENTMEMORY_URL` (chế độ proxy). Khi không có server nào tiếp cận được, shim sẽ lùi về một bộ 7 tool cục bộ (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Biến môi trường `AGENTMEMORY_TOOLS=core|all` là một flag *phía server*; đặt nó trong block `env` của shim không có tác dụng gì. Nếu bạn chỉ thấy 7 tool trong Cursor / OpenCode / Gemini CLI, hãy khởi động `npx -y @agentmemory/agentmemory@latest` (hoặc Docker stack) và đặt `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 Tool
+### 55 Tool
 
-Ba mức hiển thị tool, từ nhỏ tới lớn: `AGENTMEMORY_TOOLS=core` thu hẹp hiển thị xuống 8 tool thiết yếu (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); bộ cơ bản dưới đây là 14 tool nền tảng của registry; mặc định (`AGENTMEMORY_TOOLS=all`) phơi ra toàn bộ 54 tool.
+Ba mức hiển thị tool, từ nhỏ tới lớn: `AGENTMEMORY_TOOLS=core` thu hẹp hiển thị xuống 8 tool thiết yếu (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); bộ cơ bản dưới đây là 14 tool nền tảng của registry; mặc định (`AGENTMEMORY_TOOLS=all`) phơi ra toàn bộ 55 tool.
 
 <details>
 <summary>Tool cơ bản (14)</summary>
@@ -1379,7 +1379,7 @@ Tham chiếu đầy đủ ở [`.env.example`](../.env.example), gồm nhà cung
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpoint trên port `3111`. REST API bind vào `127.0.0.1` theo mặc định. Các endpoint được bảo vệ cần `Authorization: Bearer <secret>`, và các endpoint mesh sync cần `AGENTMEMORY_SECRET` được đặt rõ ràng trên cả hai phía.
+155 endpoint trên port `3111`. REST API bind vào `127.0.0.1` theo mặc định. Các endpoint được bảo vệ cần `Authorization: Bearer <secret>`, và các endpoint mesh sync cần `AGENTMEMORY_SECRET` được đặt rõ ràng trên cả hai phía.
 
 Xác thực bật mặc định. Nếu chưa đặt `AGENTMEMORY_SECRET`, CLI tạo bí mật ngẫu nhiên lần đầu tại `~/.agentmemory/secret` và sao chép vào `secret` trong thư mục dữ liệu đã chọn, với quyền `0600`. Client đi kèm ưu tiên tệp chính này khi kết nối cục bộ và chỉ gửi bí mật đã lưu đến URL loopback. `AGENTMEMORY_SECRET` đặt tường minh luôn được ưu tiên; client từ xa phải đặt qua biến môi trường. Triển khai Docker tạo bí mật riêng.
 

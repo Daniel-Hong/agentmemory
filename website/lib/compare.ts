@@ -64,7 +64,7 @@ export const AGENTMEMORY: Record<RowKey, Fact> = {
     src: README,
   },
   integrations: {
-    value: "25 agents, with native plugins for Claude Code, Codex CLI, Copilot CLI, Cursor and others, 54 MCP tools and a REST API.",
+    value: "25 agents, with native plugins for Claude Code, Codex CLI, Copilot CLI, Cursor and others, 55 MCP tools and a REST API.",
     src: `${REPO_URL}#works-with-every-agent`,
   },
   retrieval: {
@@ -237,7 +237,7 @@ export const COMPETITORS: Competitor[] = [
     differ: [
       "claude-mem compresses observations with Claude through the Claude Agent SDK, so every compression is a model call. agentmemory stores observations as captured and works with no model at all; an LLM is optional and only used for consolidation if you add one.",
       "claude-mem uses SQLite plus a Chroma vector database. agentmemory runs on a local iii Worker Compose runtime with file-backed state by default and local embeddings, and adds a knowledge graph and four memory tiers with decay.",
-      "Both capture through hooks. agentmemory also ships native plugins for Codex CLI, Cursor, Copilot CLI and others, 54 MCP tools, a REST API, and a release gate that checks crash recovery on every publish.",
+      "Both capture through hooks. agentmemory also ships native plugins for Codex CLI, Cursor, Copilot CLI and others, 55 MCP tools, a REST API, and a release gate that checks crash recovery on every publish.",
     ],
     chooseThem: [
       "You live in Claude Code and want AI-written summaries of every session.",

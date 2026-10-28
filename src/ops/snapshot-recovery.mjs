@@ -55,8 +55,8 @@ export async function publishSnapshotFile(dir,name,content,{signal}={}){
 // This is a partial application export; Lessons, source cursors and retries are not restored by the legacy format.
 export function createSnapshotRecovery({dir,intervalMs,gitExec,create,isPaused=()=>false,now=Date.now,setTimer=setTimeout,clearTimer=clearTimeout}){
  const metadataName='.snapshot-schedule.json';
- let state={version:1,lastSuccessAt:null,lastCommitHash:null,lastAttemptAt:null,nextAttemptAt:0,failures:0,lastErrorCode:null};
- let initialized=false,closed=false,timer=null,activeTick=null,activeCreate=null,initializing=null,nextCheckAt=null,initError=null;
+ let state={version:1,lastSuccessAt:null,lastCommitHash:null,lastAttemptAt:null,lastFinishedAttemptAt:null,lastFinishedErrorCode:null,nextAttemptAt:0,failures:0,lastErrorCode:null};
+ let initialized=false,closed=false,timer=null,activeTick=null,activeCreate=null,initializing=null,nextCheckAt=null,initError=null,lastOwner=null,invocationError=null;
  const errorCode=e=>typeof e?.code==='string'&&/^[A-Z0-9_]+$/.test(e.code)?e.code:'SNAPSHOT_FAILED';
  const retryDelay=()=>Math.min(15*60*1000,60*1000*2**Math.min(state.failures,4));
  const save=()=>publishSnapshotFile(dir,metadataName,JSON.stringify(state)+'\n');
@@ -71,6 +71,8 @@ export function createSnapshotRecovery({dir,intervalMs,gitExec,create,isPaused=(
     if(saved.version!==1||!Number.isFinite(saved.nextAttemptAt)||saved.nextAttemptAt<0||!Number.isInteger(saved.failures)||saved.failures<0||
        (saved.lastSuccessAt!==null&&!Number.isFinite(Date.parse(saved.lastSuccessAt)))||
        (saved.lastAttemptAt!==null&&!Number.isFinite(Date.parse(saved.lastAttemptAt)))||
+       (saved.lastFinishedAttemptAt!==undefined&&saved.lastFinishedAttemptAt!==null&&!Number.isFinite(Date.parse(saved.lastFinishedAttemptAt)))||
+       (saved.lastFinishedErrorCode!==undefined&&saved.lastFinishedErrorCode!==null&&!/^[A-Z0-9_]+$/.test(saved.lastFinishedErrorCode))||
        (saved.lastCommitHash!==null&&!/^[0-9a-f]{40}$/i.test(saved.lastCommitHash))||
        (saved.lastErrorCode!==null&&!/^[A-Z0-9_]+$/.test(saved.lastErrorCode)))throw Object.assign(Error('invalid_snapshot_schedule'),{code:'SNAPSHOT_METADATA_INVALID'});
     state={...state,...saved};
@@ -97,35 +99,47 @@ export function createSnapshotRecovery({dir,intervalMs,gitExec,create,isPaused=(
   nextCheckAt=new Date(now()+delay).toISOString();
   timer=setTimer(()=>{timer=null;void tick();},delay);timer?.unref?.();
  }
- async function failed(e){
+ async function failed(e,attemptAt){
+  if(attemptAt){state.lastFinishedAttemptAt=attemptAt;state.lastFinishedErrorCode=errorCode(e);}
   state.lastErrorCode=errorCode(e);state.failures=Math.min(state.failures+1,16);state.nextAttemptAt=now()+retryDelay();
   if(initialized)try{await save();}catch{state.lastErrorCode='SNAPSHOT_METADATA_WRITE_FAILED';}
  }
- async function runCreate(fn){
+ async function runCreate(fn,onAdmitted){
   if(closed||isPaused())return{success:false,deferred:true,reason:closed?'snapshot_stopped':'background_paused'};
   if(activeCreate)return{success:false,deferred:true,reason:'snapshot_in_progress'};
+  lastOwner={};let attemptAt=null;
   activeCreate=(async()=>{
    try{
     await init();
-    state.lastAttemptAt=new Date(now()).toISOString();state.nextAttemptAt=now()+retryDelay();
+    attemptAt=new Date(now()).toISOString();state.lastAttemptAt=attemptAt;state.lastFinishedAttemptAt=null;state.lastFinishedErrorCode=null;state.nextAttemptAt=now()+retryDelay();
     await save(); // Persist admission cooldown before exporting, including across a crash/reboot.
+    onAdmitted?.({attemptAt:state.lastAttemptAt});
     const result=await fn();
     if(result?.success!==true||(!result.snapshot?.commitHash&&!result.commitHash))throw Object.assign(Error('snapshot_failed'),{code:result?.errorCode||'SNAPSHOT_FAILED'});
     state.lastSuccessAt=new Date(now()).toISOString();state.lastCommitHash=result.snapshot?.commitHash||result.commitHash;
+    state.lastFinishedAttemptAt=attemptAt;state.lastFinishedErrorCode=null;
     state.failures=0;state.lastErrorCode=null;state.nextAttemptAt=0;
     await save();return result;
    }catch(e){
-    await failed(e);
+    await failed(e,attemptAt);
     return{success:false,error:state.lastErrorCode,errorCode:state.lastErrorCode};
    }
   })();
   try{return await activeCreate;}finally{activeCreate=null;}
  }
+ function requestCreate(fn){
+  return new Promise(resolve=>{
+   let admitted=false;
+   void runCreate(fn,details=>{admitted=true;resolve({accepted:true,completed:false,...details});})
+    .then(result=>{if(!admitted)resolve(result);},()=>{if(!admitted)resolve({success:false,errorCode:'SNAPSHOT_REQUEST_UNCONFIRMED'});});
+  });
+ }
  async function tick(){
   if(closed||activeTick)return;
   activeTick=(async()=>{
-   try{await init();if(!isPaused()&&now()>=due())await create();}
-   catch(e){if(initialized)await failed(e);else initError=errorCode(e);}
+   let previousOwner=lastOwner;
+   try{await init();previousOwner=lastOwner;if(activeCreate){await activeCreate;return;}if(!isPaused()&&now()>=due()){await create();if(activeCreate)await activeCreate;}}
+   catch(e){invocationError={code:errorCode(e),at:new Date(now()).toISOString()};if(activeCreate)await activeCreate;else if(lastOwner===previousOwner&&initialized)await failed(e);else if(!initialized)initError=errorCode(e);}
   })();
   try{await activeTick;}finally{
    activeTick=null;
@@ -133,10 +147,10 @@ export function createSnapshotRecovery({dir,intervalMs,gitExec,create,isPaused=(
   }
  }
  return {
-  init,runCreate,
+  init,runCreate,requestCreate,
   start(){schedule(0);},
   async drain(){if(activeTick)await activeTick;if(activeCreate)await activeCreate;if(initializing)await initializing;},
   async stop(){closed=true;if(timer)clearTimer(timer);timer=null;nextCheckAt=null;if(activeTick)await activeTick;if(activeCreate)await activeCreate;},
-  snapshot(){return{status:closed?'stopped':initError?'error':activeCreate?'running':!initialized?'queued':isPaused()?'paused':state.lastErrorCode?'retrying':now()>=due()?'queued':'current',lastSuccessAt:state.lastSuccessAt,lastCommitHash:state.lastCommitHash,lastAttemptAt:state.lastAttemptAt,lastErrorCode:initError||state.lastErrorCode,failures:state.failures,nextAttemptAt:state.nextAttemptAt?new Date(state.nextAttemptAt).toISOString():null,nextCheckAt,intervalMs,format:'partial-application-export'};}
+  snapshot(){return{status:closed?'stopped':initError?'error':activeCreate?'running':!initialized?'queued':isPaused()?'paused':state.lastErrorCode?'retrying':now()>=due()?'queued':'current',attemptStatus:activeCreate?'running':initError?'unknown':!state.lastAttemptAt?'not_started':state.lastFinishedAttemptAt!==state.lastAttemptAt?'unknown':state.lastFinishedErrorCode?'failed':'succeeded',lastFinishedAttemptAt:state.lastFinishedAttemptAt,attemptErrorCode:state.lastFinishedAttemptAt===state.lastAttemptAt?state.lastFinishedErrorCode:null,invocationError,lastSuccessAt:state.lastSuccessAt,lastCommitHash:state.lastCommitHash,lastAttemptAt:state.lastAttemptAt,lastErrorCode:initError||state.lastErrorCode,failures:state.failures,nextAttemptAt:state.nextAttemptAt?new Date(state.nextAttemptAt).toISOString():null,nextCheckAt,intervalMs,format:'partial-application-export'};}
  };
 }

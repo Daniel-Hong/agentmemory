@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95,2 % hakutarkkuus R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92 % vähemmän tokeneita" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 MCP-työkalua" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 MCP-työkalua" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 automaattista hookia" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 ulkoista tietokantaa" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ testiä läpäisty" height="38" /></picture>
@@ -649,7 +649,7 @@ Komento päivittää paikallisen ympäristön ja voi muuttaa työtilan JavaScrip
 ### Claude Code (yksi lohko, liitä se)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code ilman pluginin asennusta (itsenäinen MCP-reitti)
@@ -828,7 +828,7 @@ agentmemory-merkintä on **sama MCP-palvelinlohko** jokaisessa isännässä, jok
 | **Cline / Roo Code / Kilo Code** | Clinen MCP-asetukset (Settings-käyttöliittymä → MCP Servers → Edit) | Sama `mcpServers`-lohko. |
 | **Devin CLI (MCP + hookit)** | `~/.config/devin/config.json` | `agentmemory connect devin` yhdistää MCP-merkinnän; `--with-hooks` lisää kuusi natiivia automaattitallennushookia (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) Devinin pienaakkosisilla työkalusovittimilla. Vahvista komennolla `devin mcp list` ja `/hooks` devinin sisällä. |
 | **Devin CLI (täysi plugin)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin` checkoutista rekisteröi kaikki 17 taitoa `/agentmemory:<skill>`-pikakomentoina sekä MCP-palvelimen. Devinin plugin-hookit eivät voi laukaista `SessionStart`/`SessionEnd`-tapahtumia, niin yhdistä se komentoon `connect devin --with-hooks` täyden istuntotallennuksen saamiseksi. |
-| **Devin (pilvi)** | Settings → Connections → MCP servers | Lisää mukautettu MCP (STDIO): komento `npx`, argumentit `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` osoittamassa verkon tavoittamaan agentmemory-käyttöönottoon, plus `AGENTMEMORY_SECRET` (pilvi-istunnot eivät tavoita localhostia — katso [`deploy/`](../deploy/)). Tallenna salaisuus Devin Secretsiin, käytä sitten "Test listing tools" -toimintoa vahvistaaksesi, että kaikki 54 työkalua näkyvät. |
+| **Devin (pilvi)** | Settings → Connections → MCP servers | Lisää mukautettu MCP (STDIO): komento `npx`, argumentit `-y @agentmemory/mcp@latest`, env `AGENTMEMORY_URL` osoittamassa verkon tavoittamaan agentmemory-käyttöönottoon, plus `AGENTMEMORY_SECRET` (pilvi-istunnot eivät tavoita localhostia — katso [`deploy/`](../deploy/)). Tallenna salaisuus Devin Secretsiin, käytä sitten "Test listing tools" -toimintoa vahvistaaksesi, että kaikki 55 työkalua näkyvät. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (yhdistää automaattisesti). |
 | **GitHub Copilot CLI (vain MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` yhdistää `mcpServers.agentmemory`; Copilot ottaa sen käyttöön seuraavalla käynnistyksellä tai `/mcp`-komennolla. |
 | **GitHub Copilot CLI (täysi plugin)** | Copilot-pluginin asennus | `copilot plugin install rohitg00/agentmemory:plugin` GitHub-alikansion pluginille. |
@@ -1052,11 +1052,11 @@ Normaali npm-asennus sisältää valinnaisen `@huggingface/transformers`-ajonaik
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP-palvelin" height="32" /></picture></h2>
 
-54 työkalua, 6 resurssia, 3 kehotetta ja 17 taitoa.
+55 työkalua, 6 resurssia, 3 kehotetta ja 17 taitoa.
 
-> **MCP-shim vs. täysi palvelin:** julkaistu `@agentmemory/mcp`-paketti on ohut shim. Se paljastaa täyden 54 työkalun pinnan **vain kun se tavoittaa käynnissä olevan agentmemory-palvelimen** `AGENTMEMORY_URL`:n kautta (proxy-tila). Kun palvelinta ei tavoiteta, shim palaa 7 työkalun paikalliseen settiin (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). `AGENTMEMORY_TOOLS=core|all`-ympäristömuuttuja on *palvelinpuolen* lippu; sen asettaminen shimin `env`-lohkossa ei vaikuta mihinkään. Jos näet vain 7 työkalua Cursorissa / OpenCodessa / Gemini CLI:ssä, käynnistä `npx -y @agentmemory/agentmemory@latest` (tai muodosta yhteys itse ylläpitämääsi palvelimeen) ja aseta `AGENTMEMORY_URL=http://localhost:3111`.
+> **MCP-shim vs. täysi palvelin:** julkaistu `@agentmemory/mcp`-paketti on ohut shim. Se paljastaa täyden 55 työkalun pinnan **vain kun se tavoittaa käynnissä olevan agentmemory-palvelimen** `AGENTMEMORY_URL`:n kautta (proxy-tila). Kun palvelinta ei tavoiteta, shim palaa 7 työkalun paikalliseen settiin (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). `AGENTMEMORY_TOOLS=core|all`-ympäristömuuttuja on *palvelinpuolen* lippu; sen asettaminen shimin `env`-lohkossa ei vaikuta mihinkään. Jos näet vain 7 työkalua Cursorissa / OpenCodessa / Gemini CLI:ssä, käynnistä `npx -y @agentmemory/agentmemory@latest` (tai muodosta yhteys itse ylläpitämääsi palvelimeen) ja aseta `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 työkalua
+### 55 työkalua
 
 Kolme työkalupintaa, pienimmästä suurimpaan: `AGENTMEMORY_TOOLS=core` karsii näkyvyyden 8 olennaisimpaan (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); alla oleva perussetti on rekisterin 14 perustyökalua; oletus (`AGENTMEMORY_TOOLS=all`) paljastaa kaikki 54.
 
@@ -1369,7 +1369,7 @@ Täydellinen [`.env.example`](../.env.example) kattaa palveluntarjoajat, tallenn
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 endpointia portissa `3111`. REST-rajapinta sitoutuu oletuksena osoitteeseen `127.0.0.1`. Suojatut endpointit vaativat `Authorization: Bearer <secret>`, ja mesh-synkronointiendpointit vaativat nimenomaisesti asetetun `AGENTMEMORY_SECRET`-arvon molemmilla vertaisilla.
+155 endpointia portissa `3111`. REST-rajapinta sitoutuu oletuksena osoitteeseen `127.0.0.1`. Suojatut endpointit vaativat `Authorization: Bearer <secret>`, ja mesh-synkronointiendpointit vaativat nimenomaisesti asetetun `AGENTMEMORY_SECRET`-arvon molemmilla vertaisilla.
 
 **Autentikointi on oletuksena päällä.** Jos `AGENTMEMORY_SECRET` puuttuu, CLI luo ensimmäisellä käynnistyksellä satunnaisen salaisuuden tiedostoon `~/.agentmemory/secret` oikeuksilla `0600` ja kopioi sen myös valittuun datahakemistoon. Kaikki mukana toimitetut asiakkaat lukevat salaisuuden sieltä käyttäessään paikallista palvelinta: CLI, katseluohjelma, `plugin/scripts`-hakemiston hookit, MCP-palvelin ja `@agentmemory/mcp`-shim, `agentmemory connect` -komennon luomat asetukset sekä mukana toimitetut OpenCode-, Pi-, OpenClaw-, Hermes- ja filesystem-watcher-integraatiot. Tallennettu salaisuus lähetetään vain loopback-osoitteisiin (`localhost`, `127.0.0.0/8`, `::1`). Nimenomainen `AGENTMEMORY_SECRET` voittaa aina, ja etäasiakkaiden on asetettava salaisuus ympäristöönsä. Repositorion Docker-itseylläpitokäyttöönotot ja `deploy/`-entrypointit luovat ja vievät oman salaisuutensa. Rajapinnan manuaalinen kutsu:
 

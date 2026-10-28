@@ -2780,11 +2780,12 @@ export function registerApiTriggers(
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
       try {
-        const result = await sdk.trigger({ function_id: "mem::snapshot-create", payload: req.body || {},
-         });
-        return { status_code: 201, body: result };
+        if(req.body?.message!==undefined&&typeof req.body.message!=="string")return{status_code:400,body:{error:"message must be a string"}};
+        const result = await sdk.trigger<{message?:string},{accepted?:boolean;success?:boolean;deferred?:boolean;reason?:string}>({ function_id: "mem::snapshot-request", payload: { ...(req.body?.message===undefined?{}:{message:req.body.message}) } });
+        const status=result?.accepted===true||result?.reason==="snapshot_in_progress"?202:result?.deferred===true?409:result?.success===true?201:503;
+        return { status_code:status,headers:{"Cache-Control":"no-store"}, body:{...result,...(status===202?{completed:false,statusUrl:"/agentmemory/snapshot/status"}:status===503&&!result?{completed:false,errorCode:"SNAPSHOT_REQUEST_UNCONFIRMED",retryable:false,statusUrl:"/agentmemory/snapshot/status"}:{})} };
       } catch {
-        return { status_code: 404, body: { error: "Snapshots not enabled" } };
+        return { status_code:503,headers:{"Cache-Control":"no-store"},body:{completed:false,errorCode:"SNAPSHOT_REQUEST_UNCONFIRMED",retryable:false,statusUrl:"/agentmemory/snapshot/status"} };
       }
     },
   );
@@ -2793,6 +2794,13 @@ export function registerApiTriggers(
     function_id: "api::snapshot-create",
     config: { api_path: "/agentmemory/snapshot/create", http_method: "POST" },
   });
+
+  sdk.registerFunction("api::snapshot-status",async(req:HttpRequest):Promise<Response>=>{
+    const denied=checkAuth(req,secret);if(denied)return denied;
+    try{return{status_code:200,headers:{"Cache-Control":"no-store"},body:{snapshotRecovery:await sdk.trigger({function_id:"mem::snapshot-status",payload:{}})}};}
+    catch{return{status_code:503,headers:{"Cache-Control":"no-store"},body:{errorCode:"SNAPSHOT_STATUS_UNAVAILABLE"}};}
+  });
+  sdk.registerTrigger({type:"http",function_id:"api::snapshot-status",config:{api_path:"/agentmemory/snapshot/status",http_method:"GET"}});
 
   sdk.registerFunction("api::snapshot-restore", 
     async (req: HttpRequest<{ commitHash: string }>): Promise<Response> => {

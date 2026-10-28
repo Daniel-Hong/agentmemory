@@ -672,12 +672,12 @@ export function registerMcpEndpoints(
 
           case "memory_snapshot_create": {
             try {
-              const result = await sdk.trigger({ function_id: "mem::snapshot-create", payload: {
-                message: args.message as string,
-              } });
+              if(args.message!==undefined&&typeof args.message!=="string")return{status_code:400,body:{error:"Invalid snapshot arguments"}};
+              const result = await sdk.trigger<{message?:string},{success?:boolean;deferred?:boolean}>({ function_id:"mem::snapshot-request", payload:{...(typeof args.message==="string"?{message:args.message}:{})} });
               return {
                 status_code: 200,
                 body: {
+                  isError:result?.success===false&&!result?.deferred,
                   content: [
                     { type: "text", text: JSON.stringify(result, null, 2) },
                   ],
@@ -690,12 +690,20 @@ export function registerMcpEndpoints(
                   content: [
                     {
                       type: "text",
-                      text: "Snapshots not enabled. Set SNAPSHOT_ENABLED=true",
+                      text: JSON.stringify({completed:false,errorCode:"SNAPSHOT_REQUEST_UNCONFIRMED",retryable:false,statusTool:"memory_snapshot_status"}),
                     },
                   ],
+                  isError:true,
                 },
               };
             }
+          }
+
+          case "memory_snapshot_status": {
+            try{
+              const state=await sdk.trigger({function_id:"mem::snapshot-status",payload:{}});
+              return{status_code:200,body:{content:[{type:"text",text:JSON.stringify(state)}]}};
+            }catch{return{status_code:200,body:{isError:true,content:[{type:"text",text:JSON.stringify({errorCode:"SNAPSHOT_STATUS_UNAVAILABLE"})}]}};}
           }
 
           case "memory_action_create": {

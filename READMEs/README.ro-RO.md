@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% regăsire R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% mai puțini tokeni" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 de instrumente MCP" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 de instrumente MCP" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 hook-uri automate" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 baze de date externe" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ teste trecute" height="38" /></picture>
@@ -649,7 +649,7 @@ Comanda actualizează mediul local și poate modifica dependențele JavaScript d
 ### Claude Code (un singur bloc, lipește-l)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code fără instalarea plugin-ului (cale MCP independentă)
@@ -738,7 +738,7 @@ Pi acceptă și pachetul instalabil `@agentmemory/pi`. Instalarea locală și di
 <summary><b>OpenClaw (lipește acest prompt)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -763,7 +763,7 @@ Ghid complet: [`integrations/openclaw/`](../integrations/openclaw/)
 <summary><b>Hermes Agent (lipește acest prompt)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -828,7 +828,7 @@ Intrarea agentmemory este **același bloc de server MCP** pe fiecare host care f
 | **Cline / Roo Code / Kilo Code** | Setările MCP din Cline (interfața de Settings → MCP Servers → Edit) | Același bloc `mcpServers`. |
 | **Devin CLI (MCP + hook-uri)** | `~/.config/devin/config.json` | `agentmemory connect devin` îmbină intrarea MCP; `--with-hooks` adaugă șase hook-uri native de captare automată (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd), cu matcher-ele de instrumente scrise cu litere mici specifice lui Devin. Verifică cu `devin mcp list` și `/hooks` în interiorul devin. |
 | **Devin CLI (plugin complet)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin`, rulat dintr-un checkout, înregistrează toate cele 17 skill-uri ca comenzi slash `/agentmemory:<skill>`, plus serverul MCP. Hook-urile de plugin din Devin nu pot declanșa `SessionStart`/`SessionEnd`, așa că asociază-l cu `connect devin --with-hooks` pentru captarea completă a sesiunii. |
-| **Devin (cloud)** | Settings → Connections → MCP servers | Adaugă un MCP personalizat (STDIO): comanda `npx`, argumente `-y @agentmemory/mcp@latest`, variabila de mediu `AGENTMEMORY_URL` care indică un deployment agentmemory accesibil din rețea, plus `AGENTMEMORY_SECRET` (sesiunile din cloud nu pot accesa localhost — vezi [`deploy/`](../deploy/)). Stochează secretul în Devin Secrets, apoi folosește „Test listing tools” pentru a verifica că apar toate cele 54 de instrumente. |
+| **Devin (cloud)** | Settings → Connections → MCP servers | Adaugă un MCP personalizat (STDIO): comanda `npx`, argumente `-y @agentmemory/mcp@latest`, variabila de mediu `AGENTMEMORY_URL` care indică un deployment agentmemory accesibil din rețea, plus `AGENTMEMORY_SECRET` (sesiunile din cloud nu pot accesa localhost — vezi [`deploy/`](../deploy/)). Stochează secretul în Devin Secrets, apoi folosește „Test listing tools” pentru a verifica că apar toate cele 55 de instrumente. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (se îmbină automat). |
 | **GitHub Copilot CLI (doar MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` îmbină `mcpServers.agentmemory`; Copilot îl detectează la următoarea pornire sau după `/mcp`. |
 | **GitHub Copilot CLI (plugin complet)** | Instalare plugin Copilot | `copilot plugin install rohitg00/agentmemory:plugin` pentru plugin-ul din subdirectorul GitHub. |
@@ -1046,11 +1046,11 @@ Instalarea npm normală include runtime-ul opțional `@huggingface/transformers`
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="Server MCP" height="32" /></picture></h2>
 
-54 de instrumente, 6 resurse, 3 prompturi și 17 skill-uri.
+55 de instrumente, 6 resurse, 3 prompturi și 17 skill-uri.
 
-> **Shim MCP vs server complet:** pachetul publicat `@agentmemory/mcp` este un shim minimal. Expune suprafața completă de 54 de instrumente **doar atunci când poate accesa un server agentmemory în funcțiune**, prin `AGENTMEMORY_URL` (mod proxy). Când niciun server nu este accesibil, shim-ul trece la un set local de 7 instrumente (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Variabila de mediu `AGENTMEMORY_TOOLS=core|all` este un flag *pe partea de server*; setarea ei în blocul `env` al shim-ului nu are niciun efect. Dacă vezi doar 7 instrumente în Cursor / OpenCode / Gemini CLI, pornește `npx -y @agentmemory/agentmemory@latest` (sau conectează-te la un server self-hosted) și setează `AGENTMEMORY_URL=http://localhost:3111`.
+> **Shim MCP vs server complet:** pachetul publicat `@agentmemory/mcp` este un shim minimal. Expune suprafața completă de 55 de instrumente **doar atunci când poate accesa un server agentmemory în funcțiune**, prin `AGENTMEMORY_URL` (mod proxy). Când niciun server nu este accesibil, shim-ul trece la un set local de 7 instrumente (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Variabila de mediu `AGENTMEMORY_TOOLS=core|all` este un flag *pe partea de server*; setarea ei în blocul `env` al shim-ului nu are niciun efect. Dacă vezi doar 7 instrumente în Cursor / OpenCode / Gemini CLI, pornește `npx -y @agentmemory/agentmemory@latest` (sau conectează-te la un server self-hosted) și setează `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 de instrumente
+### 55 de instrumente
 
 Trei suprafețe de instrumente, de la cea mai mică la cea mai mare: `AGENTMEMORY_TOOLS=core` reduce vizibilitatea la 8 instrumente esențiale (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); setul de bază de mai jos reprezintă cele 14 instrumente fundamentale ale registrului; implicit (`AGENTMEMORY_TOOLS=all`) sunt expuse toate cele 54.
 
@@ -1363,7 +1363,7 @@ Referința completă [`.env.example`](../.env.example) include furnizori, filtre
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 de endpoint-uri pe portul `3111`. API-ul REST se leagă implicit la `127.0.0.1`. Endpoint-urile protejate necesită `Authorization: Bearer <secret>`, iar endpoint-urile de sincronizare mesh necesită un `AGENTMEMORY_SECRET` setat explicit pe ambii parteneri (peers).
+155 de endpoint-uri pe portul `3111`. API-ul REST se leagă implicit la `127.0.0.1`. Endpoint-urile protejate necesită `Authorization: Bearer <secret>`, iar endpoint-urile de sincronizare mesh necesită un `AGENTMEMORY_SECRET` setat explicit pe ambii parteneri (peers).
 
 **Autentificarea este activată implicit.** Dacă `AGENTMEMORY_SECRET` nu este setat, CLI-ul generează la prima pornire un secret aleatoriu în `~/.agentmemory/secret`, cu permisiuni `0600`, și îl copiază și în directorul de date selectat. Toți clienții incluși îl citesc de acolo când comunică cu un server local: CLI-ul, vizualizatorul, hook-urile din `plugin/scripts`, serverul MCP și shim-ul `@agentmemory/mcp`, configurațiile scrise de `agentmemory connect` și integrările incluse OpenCode, Pi, OpenClaw, Hermes și filesystem-watcher. Secretul stocat este trimis doar către URL-uri loopback (`localhost`, `127.0.0.0/8`, `::1`). Un `AGENTMEMORY_SECRET` explicit are întotdeauna prioritate, iar clienții la distanță trebuie să seteze secretul în mediul lor. Implementările Docker self-host pornite din repository și entrypoint-urile `deploy/` își generează și exportă propriul secret. Pentru a apela API-ul manual:
 

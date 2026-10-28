@@ -2573,7 +2573,9 @@
       var status = snapshot.enabled === false ? 'disabled' : snapshot.status;
       var label = ({current:'정상',running:'생성 중',queued:'생성 대기',retrying:'재시도 대기',paused:'일시정지 됨',disabled:'꺼짐',error:'오류 · 점검 필요',stopped:'종료됨'})[status] || '미확인';
       function date(value) { var d = new Date(value); return value && !isNaN(d.getTime()) ? d.toLocaleString() : '미확인'; }
-      return '<p class="hnote" data-snapshot-status="'+esc(status || 'unknown')+'">스냅샷: '+esc(label)+' · 마지막 생성 '+esc(date(snapshot.lastSuccessAt))+' · 다음 점검 '+esc(date(snapshot.nextCheckAt))+(snapshot.nextAttemptAt ? ' · 다음 재시도 '+esc(date(snapshot.nextAttemptAt)) : '')+'<br>부분 내보내기(전체 데이터 백업 아님)</p>';
+      var attempt = snapshot.attemptStatus || (status === 'running' ? 'running' : 'unknown');
+      var attemptLabel = ({running:'생성 중 · 종료 확인 전 중복 요청하지 마세요',succeeded:'완료 확인',failed:'실패',not_started:'시도 없음',unknown:'결과 미확인'})[attempt] || '결과 미확인';
+      return '<p class="hnote" data-snapshot-status="'+esc(status || 'unknown')+'" data-snapshot-attempt-status="'+esc(attempt)+'">스냅샷: '+esc(label)+' · 이번 시도 '+esc(date(snapshot.lastAttemptAt))+' · '+esc(attemptLabel)+' · 마지막 생성 '+esc(date(snapshot.lastSuccessAt))+' · 다음 점검 '+esc(date(snapshot.nextCheckAt))+(snapshot.nextAttemptAt ? ' · 다음 재시도 '+esc(date(snapshot.nextAttemptAt)) : '')+'<br>부분 내보내기(전체 데이터 백업 아님)</p>';
     }
     function storageDurabilityHtml(durability) {
       if (durability && durability.completion === 'sdk') return '<section aria-label="저장 완료 기준"><h4>저장 완료 기준: SDK 응답</h4><p class="hnote">순정 수준의 SDK 완료를 사용합니다. 디스크 재읽기·fsync 확정 증명은 제공하지 않습니다. 갑작스러운 종료 시 최근 변경이 남지 않을 수 있습니다. 기존 원본과 복구 이력은 보존하며 디스크 확정 영수증과 격리 자동복구는 사용할 수 없습니다.</p></section>';

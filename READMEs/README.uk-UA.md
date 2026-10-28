@@ -68,7 +68,7 @@
 <p align="center">
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-recall.svg"><img src="../assets/tags/stat-recall.svg" alt="95.2% точність пошуку R@5" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tokens.svg"><img src="../assets/tags/stat-tokens.svg" alt="92% менше токенів" height="38" /></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="54 інструменти MCP" height="38" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tools.svg"><img src="../assets/tags/stat-tools.svg" alt="55 інструменти MCP" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-hooks.svg"><img src="../assets/tags/stat-hooks.svg" alt="12 автоматичних хуків" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-deps.svg"><img src="../assets/tags/stat-deps.svg" alt="0 зовнішніх БД" height="38" /></picture>
   <picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/stat-tests.svg"><img src="../assets/tags/stat-tests.svg" alt="5,400+ тестів пройдено" height="38" /></picture>
@@ -649,7 +649,7 @@ npx -y @agentmemory/agentmemory@latest upgrade
 ### Claude Code (один блок, вставте як є)
 
 ```text
-Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 54 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
+Install agentmemory: run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server. Then run `/plugin marketplace add rohitg00/agentmemory` and `/plugin install agentmemory` — the plugin registers all 12 hooks, 17 skills, AND auto-wires the `@agentmemory/mcp` stdio server via its `.mcp.json`, so you get 55 MCP tools (memory_smart_search, memory_save, memory_sessions, memory_governance_delete, etc.) without any extra config step. Verify with `curl http://localhost:3111/agentmemory/health`. The real-time viewer is at http://localhost:3113. Keyless mode disables vectors: `memory_recall` uses BM25, and `memory_smart_search` can also use existing structural graph data. Set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` and restart to opt into on-device semantic recall.
 ```
 
 #### Claude Code без встановлення плагіна (автономний шлях MCP)
@@ -738,7 +738,7 @@ Pi також підтримує пакет `@agentmemory/pi`. Локальне 
 <summary><b>OpenClaw (вставте цей промпт)</b></summary>
 
 ```text
-Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 54 memory tools:
+Install agentmemory for OpenClaw. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to my OpenClaw MCP config so agentmemory is available with all 55 memory tools:
 
 {
   "mcpServers": {
@@ -763,7 +763,7 @@ Restart OpenClaw. Verify with `curl http://localhost:3111/agentmemory/health`. O
 <summary><b>Hermes Agent (вставте цей промпт)</b></summary>
 
 ```text
-Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 54 memory tools:
+Install agentmemory for Hermes. Run `npx -y @agentmemory/agentmemory@latest` in a separate terminal to start the memory server on localhost:3111. Then add this to ~/.hermes/config.yaml so Hermes can use agentmemory as an MCP server with all 55 memory tools:
 
 mcp_servers:
   agentmemory:
@@ -828,7 +828,7 @@ npx skills add rohitg00/agentmemory -y -a '*'   # install to every installed age
 | **Cline / Roo Code / Kilo Code** | Налаштування MCP Cline (Settings UI → MCP Servers → Edit) | Той самий блок `mcpServers`. |
 | **Devin CLI (MCP + хуки)** | `~/.config/devin/config.json` | `agentmemory connect devin` об'єднує запис MCP; `--with-hooks` додає шість нативних хуків автозахоплення (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd) із відповідниками інструментів Devin у нижньому регістрі. Перевірте за допомогою `devin mcp list` та `/hooks` усередині devin. |
 | **Devin CLI (повний плагін)** | `plugin/.devin-plugin/` | `devin plugins install ./plugin` з checkout реєструє всі 17 скілів як слеш-команди `/agentmemory:<skill>` разом із MCP-сервером. Хуки плагіна Devin не можуть викликати `SessionStart`/`SessionEnd`, тому поєднуйте це з `connect devin --with-hooks` для повного захоплення сесії. |
-| **Devin (хмара)** | Settings → Connections → MCP servers | Додайте власний MCP (STDIO): команда `npx`, аргументи `-y @agentmemory/mcp@latest`, змінна середовища `AGENTMEMORY_URL`, що вказує на доступне в мережі розгортання agentmemory, плюс `AGENTMEMORY_SECRET` (хмарні сесії не можуть дістатися localhost — див. [`../deploy/`](../deploy/)). Збережіть секрет у Devin Secrets, потім скористайтеся «Test listing tools», щоб перевірити появу всіх 54 інструментів. |
+| **Devin (хмара)** | Settings → Connections → MCP servers | Додайте власний MCP (STDIO): команда `npx`, аргументи `-y @agentmemory/mcp@latest`, змінна середовища `AGENTMEMORY_URL`, що вказує на доступне в мережі розгортання agentmemory, плюс `AGENTMEMORY_SECRET` (хмарні сесії не можуть дістатися localhost — див. [`../deploy/`](../deploy/)). Збережіть секрет у Devin Secrets, потім скористайтеся «Test listing tools», щоб перевірити появу всіх 55 інструментів. |
 | **Gemini CLI** | `~/.gemini/settings.json` | `gemini mcp add agentmemory npx -y @agentmemory/mcp --scope user` (об'єднує автоматично). |
 | **GitHub Copilot CLI (лише MCP)** | `~/.copilot/mcp-config.json` | `agentmemory connect copilot-cli` об'єднує `mcpServers.agentmemory`; Copilot підхоплює це під час наступного запуску або через `/mcp`. |
 | **GitHub Copilot CLI (повний плагін)** | Встановлення плагіна Copilot | `copilot plugin install rohitg00/agentmemory:plugin` для плагіна з підкаталогу GitHub. |
@@ -1052,11 +1052,11 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="mcp-server"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-mcp.svg"><img src="../assets/tags/section-mcp.svg" alt="MCP-сервер" height="32" /></picture></h2>
 
-54 інструменти, 6 ресурсів, 3 промпти та 17 скілів.
+55 інструменти, 6 ресурсів, 3 промпти та 17 скілів.
 
-> **MCP-шим проти повного сервера:** опублікований пакет `@agentmemory/mcp` — це тонкий шим. Він надає повну поверхню з 54 інструментів **лише тоді, коли може дістатися запущеного сервера agentmemory** через `AGENTMEMORY_URL` (режим проксі). Якщо жоден сервер недоступний, шим переходить на локальний набір із 7 інструментів (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Змінна середовища `AGENTMEMORY_TOOLS=core|all` — це прапорець *на боці сервера*; встановлення його в блоці `env` шима не має ефекту. Якщо ви бачите лише 7 інструментів у Cursor / OpenCode / Gemini CLI, запустіть `npx -y @agentmemory/agentmemory@latest` (або стек Docker) і встановіть `AGENTMEMORY_URL=http://localhost:3111`.
+> **MCP-шим проти повного сервера:** опублікований пакет `@agentmemory/mcp` — це тонкий шим. Він надає повну поверхню з 55 інструментів **лише тоді, коли може дістатися запущеного сервера agentmemory** через `AGENTMEMORY_URL` (режим проксі). Якщо жоден сервер недоступний, шим переходить на локальний набір із 7 інструментів (`memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, `memory_export`, `memory_audit`, `memory_governance_delete`). Змінна середовища `AGENTMEMORY_TOOLS=core|all` — це прапорець *на боці сервера*; встановлення його в блоці `env` шима не має ефекту. Якщо ви бачите лише 7 інструментів у Cursor / OpenCode / Gemini CLI, запустіть `npx -y @agentmemory/agentmemory@latest` (або стек Docker) і встановіть `AGENTMEMORY_URL=http://localhost:3111`.
 
-### 54 інструменти
+### 55 інструменти
 
 Три поверхні інструментів, від найменшої до найбільшої: `AGENTMEMORY_TOOLS=core` обмежує видимість до 8 основних (`memory_save`, `memory_recall`, `memory_consolidate`, `memory_smart_search`, `memory_sessions`, `memory_diagnose`, `memory_lesson_save`, `memory_reflect`); базовий набір нижче — це 14 фундаментальних інструментів реєстру; типовий режим (`AGENTMEMORY_TOOLS=all`) надає всі 54.
 
@@ -1369,7 +1369,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-154 ендпоінтів на порту `3111`. REST API за замовчуванням прив'язується до `127.0.0.1`. Захищені ендпоінти вимагають `Authorization: Bearer <secret>`, а ендпоінти синхронізації mesh вимагають явно встановленого `AGENTMEMORY_SECRET` на обох сторонах.
+155 ендпоінтів на порту `3111`. REST API за замовчуванням прив'язується до `127.0.0.1`. Захищені ендпоінти вимагають `Authorization: Bearer <secret>`, а ендпоінти синхронізації mesh вимагають явно встановленого `AGENTMEMORY_SECRET` на обох сторонах.
 
 **Автентифікацію ввімкнено типово.** Якщо `AGENTMEMORY_SECRET` не задано, під час першого запуску CLI створює випадковий секрет у `~/.agentmemory/secret` з правами `0600` і копіює його також у вибраний каталог даних. Вбудовані клієнти читають його звідти для локального сервера; secret надсилається лише на loopback URL (`localhost`, `127.0.0.0/8`, `::1`). Віддалені клієнти мають отримати secret через власне середовище. Docker self-host і `deploy/` створюють власні секрети. Щоб викликати API вручну:
 
