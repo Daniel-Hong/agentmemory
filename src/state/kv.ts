@@ -249,11 +249,11 @@ export class StateKV {
     }, { value: null })
   }
 
-  async list<T = unknown>(scope: string): Promise<T[]> {
+  async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation' }): Promise<T[]> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
     if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope)
-    if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope)
+    if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope, { consistency: options?.observationConsistency })
     const values = await this.sdk.trigger<{ scope: string }, T[]>({
       function_id: 'state::list',
       payload: { scope },

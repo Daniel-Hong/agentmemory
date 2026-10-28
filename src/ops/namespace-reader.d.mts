@@ -5,6 +5,7 @@ export interface NamespaceReadInfo {
   complete:boolean;
 }
 export interface NamespaceReadOptions {
+  consistency?:'current-path'|'opened-generation';
   keys?:Set<string>;
   onEntry?:(key:string,value:unknown)=>unknown;
   chunkSize?:number;

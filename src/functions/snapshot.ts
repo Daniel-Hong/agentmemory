@@ -76,7 +76,7 @@ export function registerSnapshotFunction(
         const observations: Record<string, unknown[]> = {};
         phase = "read_observations";
         for (const session of sessions) {
-          const obs = await kv.list(KV.observations(session.id));
+          const obs = await kv.list(KV.observations(session.id), { observationConsistency: "opened-generation" });
           if (obs.length > 0) {
             observations[session.id] = obs;
           }

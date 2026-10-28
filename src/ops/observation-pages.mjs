@@ -115,12 +115,12 @@ export function createObservationReader({storePath,kv}){
   else if(session&&session.observationCount!==rows.length+(removed.get(scope)?.size||0))throw fail('observation_index_not_ready_retry');
   return rows;
  }
- async function list(scope){
+ async function list(scope,{consistency='current-path'}={}){
   const rows=new Map();
   // Internal callers need complete rows; stream the file rather than amplify it into one SDK request per row.
   for(let attempt=0;;attempt++){
    rows.clear();
-   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{withReadChunk:bulkRead,onEntry:(key,value)=>{
+   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{consistency,withReadChunk:bulkRead,onEntry:(key,value)=>{
     if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
     if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
     rows.set(key,value);

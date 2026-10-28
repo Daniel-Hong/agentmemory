@@ -375,4 +375,14 @@ describe("snapshot-restore bounds graph provenance", () => {
     expect(n!.name).toBe("src/hot.ts");
     expect(n!.sourceObservationIds).toEqual(bloatedIds("obs", 250).slice(-32));
   });
+  it("opts only snapshot observation lists into opened-generation consistency", async () => {
+    const kv = mockKV(), sdk = mockSdk();
+    await kv.set(KV.sessions,"ses_1",{id:"ses_1"});
+    registerSnapshotFunction(sdk as never,kv as never,"/tmp/agentmemory-snapshots");
+    const original = kv.list; const calls: Array<{scope: string; options: unknown}> = [];
+    kv.list = async (scope: string, options?: unknown) => { calls.push({scope, options}); return original(scope); };
+    expect((await sdk.trigger("mem::snapshot-create", {})).success).toBe(true);
+    expect(calls.find(call => call.scope === KV.observations("ses_1"))?.options).toEqual({observationConsistency:"opened-generation"});
+    expect(calls.filter(call => !call.scope.startsWith("mem:obs:")).every(call => call.options === undefined)).toBe(true);
+  });
 });

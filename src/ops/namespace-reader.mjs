@@ -4,10 +4,13 @@ import {createReadProgress} from './read-progress.mjs';
 const fail=code=>Object.assign(Error(code),{code});
 const white=char=>char===' '||char==='\n'||char==='\r'||char==='\t';
 const signature=value=>[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');
+const contentSignature=value=>[value.dev,value.ino,value.size,value.mtimeNs].join(':');
+const sameOpenedGeneration=(before,after)=>signature(before)===signature(after)||(contentSignature(before)===contentSignature(after)&&before.nlink>after.nlink&&after.nlink===0n);
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,withReadChunk,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,withReadChunk,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity,consistency='current-path'}={}){
+  if(!['current-path','opened-generation'].includes(consistency))throw fail('state_namespace_consistency_invalid');
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
   if(withReadChunk!==undefined&&typeof withReadChunk!=='function')throw fail('state_namespace_chunk_coordinator_invalid');
   if(!Number.isSafeInteger(checkIntervalBytes)||checkIntervalBytes<0)throw fail('state_namespace_check_interval_invalid');
@@ -90,10 +93,13 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       if(checkIntervalBytes&&bytesRead-lastSignatureCheck>=checkIntervalBytes){
         signal?.throwIfAborted();
         progress('stat',{bytesRead});
-        const opened=signature(await handle.stat({bigint:true}));
-        let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
+        const openedStat=await handle.stat({bigint:true}),opened=signature(openedStat);
+        let current;
+        if(consistency==='current-path'){
+          try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
+        }
         signal?.throwIfAborted();
-        if(before!==opened||opened!==current)throw fail('state_namespace_changed');
+        if(consistency==='opened-generation'?!sameOpenedGeneration(beforeStat,openedStat):before!==opened||opened!==current)throw fail('state_namespace_changed');
         lastSignatureCheck=bytesRead;progress('processing',{bytesRead});
       }
       const rawText=chunk.toString('latin1'),delimiter=/["\\]/g,structural=/["{}\[\]]/g;
@@ -122,9 +128,13 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       if(complete)break;
     }
     progress('stat',{bytesRead});
-    const after=signature(await handle.stat({bigint:true}));
-    let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
-    if(before!==after||after!==current)throw fail('state_namespace_changed');
+    const afterStat=await handle.stat({bigint:true}),after=signature(afterStat);
+    if(consistency==='opened-generation'){
+      if(!sameOpenedGeneration(beforeStat,afterStat))throw fail('state_namespace_changed');
+    }else{
+      let current;try{current=signature(await stat(path,{bigint:true}));}catch(error){if(error.code==='ENOENT')throw fail('state_namespace_changed');throw error;}
+      if(before!==after||after!==current)throw fail('state_namespace_changed');
+    }
     if(!prefixComplete||state!=='done')throw fail('state_namespace_incomplete');
     complete=true;
     return{values,entries,bytesRead,maxEntryChars,signature:after};

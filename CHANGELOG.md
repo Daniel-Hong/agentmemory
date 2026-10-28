@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — snapshot observation generation read
+
+- Snapshot observation exports can finish a complete opened namespace generation after normal atomic replacement; default lists and durability certificates retain current-path verification. In-place changes, corrupt/incomplete input, cancellation and pending overlay/deletion checks remain enforced. No write/receipt/guard/timeout changes.
+- Final validation: focused90 and full5386 tests passed (13 pre-existing conditional skips); build/skills/docs passed. An earlier full run reproduced the existing disk-certificate timeout; this separate unresolved race is retained in the report. Whole-repo typecheck still has baseline diagnostics. Production .34 remains paused and unmodified; export success and serializer/memory limits remain unverified.
+
+
 ## Unreleased
 
 - Bind SDK predecessor shutdown to both reviewed SDK contracts, protected installed code and effective service commands, with fresh pinned process identities retained through receipt/exit checks. Keep disk predecessors strict, false disk claims rejected and stopped-only post-start recovery unchanged. Development guard copy only; see docs/customizations/SDK-PREDECESSOR-SHUTDOWN.md.
