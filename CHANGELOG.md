@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve bounded snapshot failure phase, known reader codes and Error/TypeError/RangeError classification without recording messages, paths or contents. Publication, fsync, Git and retry policy remain unchanged. Development diagnostic candidate only; production root cause remains unconfirmed. See docs/customizations/SNAPSHOT-FAILURE-DIAGNOSTICS.md.
+
 - Prepare an explicit native engine0.22.1 lifecycle without Compose/download fallback, bundle the SDK0.25 server dependency closure, and distinguish SDK completion from disk verification in the development release/rollback kit. Preserve SDK originals and stop code-only downgrades before any incompatible old writer starts. Repair child HOME isolation in hook tests. No operating installation or guard change.
 
 - Preserve repeated capture envelopes without overwriting originals, restore background drain admission for reboot-requeued originals, reuse old-server responses without duplicate POST, and include safe session projections in Viewer recent-observation lookup. Baseline 4fd isolated full regression: 5,332 passed, 13 pre-existing conditional cases skipped; operating installation remains separate.
@@ -40,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.34] — 2026-10-28
 ## [0.9.31-daniel.33] — 2026-10-27
 ## [0.9.31-daniel.1] — 2026-10-27
 ## [0.9.31] — 2026-10-25
@@ -333,6 +336,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.34]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.33...v0.9.31-daniel.34
 [0.9.31-daniel.33]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.1...v0.9.31-daniel.33
 [0.9.31-daniel.1]: https://github.com/rohitg00/agentmemory/compare/v0.9.31...v0.9.31-daniel.1
 [0.9.31]: https://github.com/rohitg00/agentmemory/compare/v0.9.30...v0.9.31

@@ -55,18 +55,26 @@ export function registerSnapshotFunction(
   const recovery = createSnapshotRecovery({dir:snapshotDir, intervalMs, gitExec, isPaused:backgroundPaused, create:()=>sdk.trigger({function_id:"mem::snapshot-create",payload:{}})});
   sdk.registerFunction("mem::snapshot-create",
     async (data?: { message?: string }) => recovery.runCreate(async () => {
-      const kv = await pinGraphState(state);
+      let phase = "pin_graph";
       try {
+        const kv = await pinGraphState(state);
+        phase = "prepare_repository";
         await ensureGitRepo(snapshotDir);
         const ts = new Date().toISOString();
 
+        phase = "read_sessions";
         const sessions = await kv.list<Session>(KV.sessions);
+        phase = "read_memories";
         const memories = await kv.list<Memory>(KV.memories);
+        phase = "read_graph_nodes";
         const graphNodes = await kv.list<GraphNode>(KV.graphNodes);
+        phase = "read_graph_edges";
         const graphEdges = await kv.list<GraphEdge>(KV.graphEdges);
+        phase = "read_access";
         const accessLogs = await kv.list<AccessLogExport>(KV.accessLog);
 
         const observations: Record<string, unknown[]> = {};
+        phase = "read_observations";
         for (const session of sessions) {
           const obs = await kv.list(KV.observations(session.id));
           if (obs.length > 0) {
@@ -74,7 +82,7 @@ export function registerSnapshotFunction(
           }
         }
 
-        const state = {
+        const exportState = {
           version: VERSION,
           timestamp: ts,
           sessions,
@@ -85,20 +93,29 @@ export function registerSnapshotFunction(
           accessLogs,
         };
 
-        await publishSnapshotFile(snapshotDir, "state.json", JSON.stringify(state, null, 2));
+        phase = "serialize";
+        const content = JSON.stringify(exportState, null, 2);
+        phase = "publish";
+        await publishSnapshotFile(snapshotDir, "state.json", content);
+        phase = "git_add";
         await gitExec(snapshotDir, ["add", "--", "state.json"]);
 
         const message = data?.message || `Snapshot ${ts}`;
+        phase = "git_commit";
         try {
           await gitExec(snapshotDir, ["commit", "-m", message, "--only", "--", "state.json"]);
         } catch (commitErr) {
+          phase = "git_diff";
           const changed = await gitExec(snapshotDir, ["diff", "HEAD", "--name-only", "--", "state.json"]);
           if (!changed) {
+            phase = "git_head";
             return { success: true, message: "No changes to snapshot", commitHash: await gitExec(snapshotDir, ["rev-parse", "HEAD"]) };
           }
+          phase = "git_commit";
           throw commitErr;
         }
 
+        phase = "git_head";
         const commitHash = await gitExec(snapshotDir, ["rev-parse", "HEAD"]);
 
         const meta: SnapshotMeta = {
@@ -117,6 +134,7 @@ export function registerSnapshotFunction(
           },
         };
 
+        phase = "audit";
         await safeAudit(kv, "export", "mem::snapshot-create", [meta.id], {
           commitHash,
           stats: meta.stats,
@@ -125,9 +143,13 @@ export function registerSnapshotFunction(
         logger.info("Snapshot created", { commitHash });
         return { success: true, snapshot: meta };
       } catch (err) {
-        const code = (err as { code?: unknown })?.code;
-        const errorCode = typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "SNAPSHOT_FAILED";
-        logger.error("Snapshot failed", { error: errorCode });
+        const failure = err as { code?: unknown; message?: unknown };
+        const code = failure?.code ?? (failure?.message === "graph_mutation_uncertain" ? "graph_mutation_uncertain" : undefined);
+        const knownReadCodes = new Set(["state_namespace_changed", "state_namespace_corrupt", "state_namespace_incomplete", "state_namespace_shape", "state_namespace_duplicate", "state_namespace_utf8", "observation_exceeds_page_budget", "invalid_observation_record", "graph_mutation_uncertain"]);
+        const errorCode = typeof code === "string" && /^[A-Z0-9_]{1,80}$/.test(code) ? code
+          : typeof code === "string" && knownReadCodes.has(code) ? code.toUpperCase() : "SNAPSHOT_FAILED";
+        const errorClass = err instanceof RangeError ? "RangeError" : err instanceof TypeError ? "TypeError" : "Error";
+        logger.error("Snapshot failed", { error: errorCode, phase, errorClass });
         return { success: false, error: errorCode, errorCode };
       }
     }),

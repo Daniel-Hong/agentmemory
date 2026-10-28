@@ -25,6 +25,7 @@ vi.mock("node:fs", () => ({
 }));
 
 import { readFileSync } from "node:fs";
+import { logger } from "../src/logger.js";
 import { lstat } from "node:fs/promises";
 import { registerSnapshotFunction } from "../src/functions/snapshot.js";
 import { currentAuditScope } from "./helpers/mocks.js";
@@ -128,6 +129,53 @@ describe("Snapshot Functions", () => {
     expect(result.snapshot.message).toBe("Test snapshot");
     expect(result.snapshot.stats.sessions).toBe(1);
     expect(result.snapshot.stats.memories).toBe(1);
+  });
+
+  it("keeps a known lowercase read failure and its phase without source details", async () => {
+    const list = kv.list;
+    kv.list = async scope => {
+      if (scope === KV.observations("ses_1")) throw Object.assign(Error("private body and path"), { code: "state_namespace_changed" });
+      return list(scope);
+    };
+    expect(await sdk.trigger("mem::snapshot-create", {})).toMatchObject({ success: false, errorCode: "STATE_NAMESPACE_CHANGED" });
+    expect(logger.error).toHaveBeenCalledWith("Snapshot failed", { error: "STATE_NAMESPACE_CHANGED", phase: "read_observations", errorClass: "Error" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("private body and path");
+  });
+
+  it("identifies a serialization RangeError without allocating a large fixture or logging its message", async () => {
+    await kv.set(KV.memories, "range", { toJSON() { throw new RangeError("private serialization detail"); } });
+    expect(await sdk.trigger("mem::snapshot-create", {})).toMatchObject({ success: false, errorCode: "SNAPSHOT_FAILED" });
+    expect(logger.error).toHaveBeenCalledWith("Snapshot failed", { error: "SNAPSHOT_FAILED", phase: "serialize", errorClass: "RangeError" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("private serialization detail");
+  });
+
+  it("redacts unknown codes and TypeError messages during an observation read", async () => {
+    const list = kv.list;
+    kv.list = async scope => {
+      if (scope === KV.observations("ses_1")) throw Object.assign(new TypeError("private source"), { code: "private_source_identifier" });
+      return list(scope);
+    };
+    expect(await sdk.trigger("mem::snapshot-create", {})).toMatchObject({ success: false, errorCode: "SNAPSHOT_FAILED" });
+    expect(logger.error).toHaveBeenCalledWith("Snapshot failed", { error: "SNAPSHOT_FAILED", phase: "read_observations", errorClass: "TypeError" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("private_source");
+  });
+
+  it("records graph pinning failure without exposing the invalid generation", async () => {
+    await kv.set(KV.graphControl, "generation", "private-invalid-generation");
+    expect(await sdk.trigger("mem::snapshot-create", {})).toMatchObject({ success: false, errorCode: "SNAPSHOT_FAILED" });
+    expect(logger.error).toHaveBeenCalledWith("Snapshot failed", { error: "SNAPSHOT_FAILED", phase: "pin_graph", errorClass: "Error" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("private-invalid-generation");
+  });
+
+  it.each([
+    { scope: KV.graphNodes, error: Error("graph_mutation_uncertain"), expected: "GRAPH_MUTATION_UNCERTAIN", phase: "read_graph_nodes" },
+    { scope: KV.observations("ses_1"), error: Object.assign(Error("private malformed bytes"), { code: "state_namespace_utf8" }), expected: "STATE_NAMESPACE_UTF8", phase: "read_observations" },
+  ])("preserves known reader classification $expected", async ({ scope, error, expected, phase }) => {
+    const list = kv.list;
+    kv.list = async current => { if (current === scope) throw error; return list(current); };
+    expect(await sdk.trigger("mem::snapshot-create", {})).toMatchObject({ success: false, errorCode: expected });
+    expect(logger.error).toHaveBeenCalledWith("Snapshot failed", { error: expected, phase, errorClass: "Error" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("private malformed bytes");
   });
 
   it("snapshot-list returns snapshots from git log", async () => {
