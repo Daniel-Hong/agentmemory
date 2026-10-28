@@ -2,6 +2,10 @@ import { describe, it, expect, afterEach } from "vitest";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
+import {mkdtempSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {isolatedHookEnv,assertIsolatedHookPaths} from "./helpers/isolated-hook-env.js";
+import {spawnSync} from "node:child_process";
 
 const HOOKS_DIR = join(import.meta.dirname, "..", "plugin", "scripts");
 
@@ -10,19 +14,28 @@ function runHook(
   stdin: string,
   env: Record<string, string>,
 ): Promise<{ exitCode: number | null }> {
-  return new Promise((resolve, reject) => {
+  const home = mkdtempSync(join(tmpdir(), 'am-hook-child-'));
+  let childEnv: NodeJS.ProcessEnv;
+  try {
+    childEnv = isolatedHookEnv(home, env);
+    const probe = spawnSync(process.execPath, ['-e', "const out={nativeHome:require('node:os').homedir()};for(const k of ['HOME','USERPROFILE','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','AGENTMEMORY_HOME','AGENTMEMORY_RUNTIME_DIR','AGENTMEMORY_DATA_DIR','AGENTMEMORY_ENV_FILE','AGENTMEMORY_CAPTURE_SPOOL_DIR'])out[k]=process.env[k];process.stdout.write(JSON.stringify(out));"], { env: childEnv, cwd: home, encoding: 'utf8' });
+    if (probe.error || probe.status !== 0) throw Error('test_child_preflight_failed');
+    assertIsolatedHookPaths(home, JSON.parse(probe.stdout));
+  } catch (error) {
+    rmSync(home, {recursive:true,force:true});
+    throw error;
+  }
+  return new Promise<{ exitCode: number | null }>((resolve, reject) => {
     const child = spawn(process.execPath, [join(HOOKS_DIR, scriptName)], {
-      env: {
-        PATH: process.env["PATH"] ?? "",
-        ...env,
-      },
+      env: childEnv,
+      cwd: home,
       stdio: ["pipe", "ignore", "ignore"],
     });
     child.on("error", reject);
     child.on("close", (exitCode) => resolve({ exitCode }));
     child.stdin.write(stdin);
     child.stdin.end();
-  });
+  }).finally(() => rmSync(home, {recursive:true,force:true}));
 }
 
 describe("post-tool-use hook — capture filter", () => {

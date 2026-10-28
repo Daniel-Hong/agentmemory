@@ -38,6 +38,7 @@ DEFAULT_PATHS = {
     'private': '/var/lib/agentmemory-updates/private/release-kits',
     'public_state': '/var/lib/agentmemory-updates/public/release-kit-state', 'rootfs': '/',
     'archives': '/home/daniel/.agentmemory-code-archives',
+    'shared_spool': '/home/daniel/.local/share/agentmemory/capture-spool',
 }
 ROOT_ASSETS = {
     '/usr/local/libexec/agentmemory-update-request': 0o755,
@@ -51,6 +52,16 @@ ROOT_ASSETS = {
 def require(value, code):
     if not value:
         raise RuntimeError(code)
+
+
+def require_shutdown_receipt(receipt, worker, completion=None):
+    require(completion in (None, 'sdk-v1'), 'SHUTDOWN_PROTOCOL_UNSUPPORTED')
+    durability = receipt.get('durability')
+    require(isinstance(durability, dict) and receipt.get('pid') == worker and receipt.get('errorCode') is None and type(durability.get('mutationFailures')) is int and durability['mutationFailures'] == 0, 'SHUTDOWN_NOT_VERIFIED')
+    if completion == 'sdk-v1':
+        require(receipt.get('completed') is True and receipt.get('verified') is False and durability.get('completion') == 'sdk' and durability.get('completed') is True and durability.get('synced') is False, 'SHUTDOWN_NOT_VERIFIED')
+    else:
+        require(receipt.get('verified') is True and durability.get('synced') is True and durability.get('completion') in (None, 'disk'), 'SHUTDOWN_NOT_VERIFIED')
 
 
 def sha(path):
@@ -207,9 +218,10 @@ class Runtime:
         self.system = system or System()
         trusted(self.root, owner, self.anchor)
         self.kit = read_json(self.root / 'kit.json')
+        require('shutdownCompletion' not in self.kit or self.kit['shutdownCompletion'] == 'sdk-v1', 'SHUTDOWN_PROTOCOL_UNSUPPORTED')
         require(self.kit.get('executionClosureReviewed') is True and bool(self.kit.get('reviewedBy', '').strip()), 'ADMINISTRATOR_REVIEW_REQUIRED')
         require(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,79}', self.kit['id']) is not None, 'INVALID_CANDIDATE')
-        require(re.fullmatch(r'0\.9\.30-daniel\.[1-9][0-9]*', self.kit['version']) is not None and re.fullmatch('[a-f0-9]{40}', self.kit['sourceCommit']) is not None, 'INVALID_VERSION')
+        require(re.fullmatch(r'0\.9\.(?:30|31)-daniel\.[1-9][0-9]*', self.kit['version']) is not None and re.fullmatch('[a-f0-9]{40}', self.kit['sourceCommit']) is not None, 'INVALID_VERSION')
         for name, digest in self.kit['files'].items():
             require(Path(name).name == name and not name.startswith('.'), 'UNSAFE_KIT_PATH')
             trusted(self.root / name, owner, self.anchor)
@@ -219,6 +231,9 @@ class Runtime:
         self.baseline = read_json(self.root / 'baseline.json')
         require(self.release['sourceCommit'] == self.kit['sourceCommit'] and self.release['packageVersion'] == self.kit['version'] and sha(self.root / 'package.tgz') == self.kit['packageSha256'], 'CANDIDATE_IDENTITY_MISMATCH')
         require(self.release['artifactHashes'] == self.release['verificationFiles'], 'ARTIFACT_TABLE_MISMATCH')
+        self.sdk_native_compat = False
+        if self.kit.get('shutdownCompletion') == 'sdk-v1':
+            self.sdk_native_compat = self.candidate_manifest()['agentmemoryCompatibility'].get('nativeEngineCompatibility') == '0.22.1'
         compatibility = {name: digest for name, digest in self.release['packageFiles'].items() if name.startswith('plugin/scripts/codex-compat/')}
         self.client_changes = {}
         transition = self.kit.get('clientTransition')
@@ -226,6 +241,8 @@ class Runtime:
             require(len(compatibility) == 13 and compatibility == self.baseline['compatibilityFiles'], 'CLIENT_COMPATIBILITY_CHANGED')
         else:
             allowed = {'plugin/scripts/codex-compat/_capture.mjs', 'plugin/scripts/codex-compat/manifest.json'}
+            if self.kit.get('shutdownCompletion') == 'sdk-v1':
+                allowed.add('plugin/scripts/codex-compat/long-session-hook-client.mjs')
             previous = self.baseline['compatibilityFiles']
             require(len(compatibility) == 13 and set(compatibility) == set(previous) and {name for name in compatibility if compatibility[name] != previous[name]} == allowed, 'CLIENT_COMPATIBILITY_CHANGED')
             require(isinstance(transition, dict) and set(transition) == {'version', 'files'} and type(transition['version']) is int and transition['version'] == 1 and isinstance(transition['files'], dict) and set(transition['files']) == allowed, 'CLIENT_TRANSITION_INVALID')
@@ -298,7 +315,10 @@ class Runtime:
         return ('#!/bin/sh\nexec /usr/bin/python3 -I -B ' + str(self.public / 'kit-runtime.py') + (' --preserve\n' if preserve else ' --guard\n')).encode()
 
     def dropin_bytes(self):
-        return ('[Service]\nExecStart=\nExecStart=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' --data-dir ' + str(self.paths['data']) + '\nExecStop=\nExecStop=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' stop\nExecStartPre=\nExecStartPre=/usr/bin/python3 -I -B ' + str(self.public / 'kit-runtime.py') + ' --guard\nEnvironment="AGENTMEMORY_FEEDBACK_DIR=' + str(self.paths['feedback']) + '"\nEnvironment="AGENTMEMORY_RECEIPT_DIR=' + str(self.receipt.parent) + '"\n').encode()
+        native = ' --native-compat' if self.sdk_native_compat else ''
+        native_stop = native + ' --data-dir ' + str(self.paths['data']) if self.sdk_native_compat else ''
+        native_env = ('Environment="AGENTMEMORY_NATIVE_III_BIN=' + str(self.paths['engine']) + '"\nEnvironment="AGENTMEMORY_III_CONFIG=' + str(self.paths['data'] / 'iii-config.yaml') + '"\n') if self.sdk_native_compat else ''
+        return ('[Service]\nExecStart=\nExecStart=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' --data-dir ' + str(self.paths['data']) + native + '\nExecStop=\nExecStop=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' stop' + native_stop + '\nExecStartPre=\nExecStartPre=/usr/bin/python3 -I -B ' + str(self.public / 'kit-runtime.py') + ' --guard\nEnvironment="AGENTMEMORY_FEEDBACK_DIR=' + str(self.paths['feedback']) + '"\nEnvironment="AGENTMEMORY_RECEIPT_DIR=' + str(self.receipt.parent) + '"\n' + native_env).encode()
 
     def post_files(self):
         result = dict(self.baseline['protectedFiles'])
@@ -445,8 +465,7 @@ class Runtime:
             atomic(name, source.read_bytes(), mode)
         verify_map({name:item['after'] for name,item in self.client_changes.items()})
 
-    def verify_dependency_reuse(self):
-        current = read_json(self.paths['legacy'] / 'package.json')
+    def candidate_manifest(self):
         with tarfile.open(self.root / 'package.tgz') as archive:
             members = [member for member in archive if member.name == 'package/package.json']
             require(len(members) == 1 and members[0].isfile() and members[0].size <= 65536, 'PACKAGE_MANIFEST_INVALID')
@@ -455,9 +474,30 @@ class Runtime:
         proposed = json.loads(content)
         profile = proposed.get('agentmemoryCompatibility')
         if 'agentmemoryCompatibility' in proposed:
-            require(isinstance(profile, dict) and set(profile) == {'backgroundControlVersion', 'automaticMemoryRecovery'} and type(profile['backgroundControlVersion']) is int and profile['backgroundControlVersion'] == 2 and type(profile['automaticMemoryRecovery']) is bool, 'BACKGROUND_CONTROL_PROFILE_INVALID')
+            legacy = {'backgroundControlVersion', 'automaticMemoryRecovery'}
+            sdk = legacy | {'storageCompletion'}
+            native = sdk | {'nativeEngineCompatibility'}
+            require(isinstance(profile, dict) and set(profile) in (legacy, sdk, native, native | {'serverDependencyMode'}), 'BACKGROUND_CONTROL_PROFILE_INVALID')
+            require(type(profile['backgroundControlVersion']) is int and profile['backgroundControlVersion'] == 2 and type(profile['automaticMemoryRecovery']) is bool, 'BACKGROUND_CONTROL_PROFILE_INVALID')
+            require(('storageCompletion' not in profile or profile['storageCompletion'] == 'sdk-v1') and ('nativeEngineCompatibility' not in profile or profile['nativeEngineCompatibility'] == '0.22.1') and ('serverDependencyMode' not in profile or profile['serverDependencyMode'] == 'bundled-sdk0.25-v1'), 'BACKGROUND_CONTROL_PROFILE_INVALID')
+        if self.kit.get('shutdownCompletion') == 'sdk-v1':
+            require(isinstance(profile, dict) and profile.get('storageCompletion') == 'sdk-v1', 'SDK_PACKAGE_CAPABILITY_REQUIRED')
+        return proposed
+
+    def verify_server_bundle(self):
+        self.integrity.verify_server_bundle(self.root / 'package.tgz', self.release['packageFiles'])
+
+    def verify_dependency_reuse(self):
+        current = read_json(self.paths['legacy'] / 'package.json')
+        proposed = self.candidate_manifest()
+        profile = proposed.get('agentmemoryCompatibility')
         self.candidate_background_control_version = 1 if profile is None else profile['backgroundControlVersion']
         self.candidate_automatic_memory_recovery = None if profile is None else profile['automaticMemoryRecovery']
+        bundled = isinstance(profile, dict) and profile.get('serverDependencyMode') == 'bundled-sdk0.25-v1'
+        if bundled:
+            require(self.kit.get('shutdownCompletion') == 'sdk-v1', 'DEPENDENCY_REUSE_NOT_COMPATIBLE')
+            self.integrity.verify_sdk_package_contract(current, proposed, self.root / 'package.tgz', self.release['packageFiles'])
+            return
         require(all(proposed.get(field, {}) == current.get(field, {}) for field in ('dependencies', 'optionalDependencies', 'engines')), 'DEPENDENCY_REUSE_NOT_COMPATIBLE')
 
     def previous_release_paths(self, directory):
@@ -556,6 +596,7 @@ class Runtime:
         self.record('preflight_verified')
 
     def stop(self):
+        self.system.verify_identity()
         self.stop_requested = True
         self.certified_stopped = False
         worker = int((self.paths['runtime'] / 'worker.pid').read_text())
@@ -569,7 +610,7 @@ class Runtime:
         receipt = read_json(self.paths['runtime'] / 'shutdown-receipt.json')
         timestamp = datetime.datetime.fromisoformat(receipt['at'].replace('Z', '+00:00')).timestamp()
         require(math.isfinite(timestamp) and started <= timestamp <= ended, 'SHUTDOWN_RECEIPT_STALE')
-        require(receipt.get('pid') == worker and receipt.get('verified') is True and receipt.get('durability', {}).get('synced') is True and receipt['durability'].get('mutationFailures') == 0, 'SHUTDOWN_NOT_VERIFIED')
+        require_shutdown_receipt(receipt, worker, self.kit.get('shutdownCompletion') if self.start_attempted else None)
         require(all(not self.system.alive(pid) for pid in {worker, engine, main}), 'SHUTDOWN_PROCESS_REMAINS')
         self.stop_receipt = receipt
         self.certified_stopped = True
@@ -609,6 +650,96 @@ class Runtime:
                         os.unlink(temporary)
             require(sha(destination) == sha(source), 'BACKUP_READBACK_FAILED')
 
+    def user_shared_source_root(self):
+        require(os.geteuid() == self.uid, 'USER_PHASE_REQUIRED')
+        source = self.paths['shared_spool']
+        require(source.is_absolute() and '..' not in source.parts and not source.is_symlink() and not any(p.is_symlink() for p in source.parents), 'SHARED_SOURCE_UNSAFE')
+        if source.exists():
+            require(source.is_dir() and source.stat().st_uid == self.uid and not source.stat().st_mode & 0o022, 'SHARED_SOURCE_UNSAFE')
+        return source
+
+    def user_shared_source_snapshot(self):
+        source = self.user_shared_source_root()
+        directory = Path(tempfile.mkdtemp(prefix='.sdk-source-', dir=self.paths['runtime']))
+        try:
+            record = self.queues.snapshot_queue(source, directory / 'snapshot') if source.exists() else None
+            return {'directory': str(directory), 'record': record}
+        except BaseException:
+            shutil.rmtree(directory)
+            raise
+
+    def backup_shared_source(self):
+        saved = run_as_user(self.user_shared_source_snapshot, self.uid, self.gid)
+        directory = Path(saved['directory'])
+        require(directory.parent == self.paths['runtime'] and directory.name.startswith('.sdk-source-'), 'SHARED_SOURCE_UNSAFE')
+        trusted(directory, self.uid, self.paths['runtime'])
+        try:
+            record = saved['record']
+            if record is not None:
+                self.copy_shared_source(directory, record)
+                require(self.file_hashes(self.backup / 'shared-spool') == {name: row['sha256'] for name, row in record['files'].items()}, 'BACKUP_READBACK_MISMATCH')
+            self.shared_source_snapshot = record
+            run_as_user(self.user_verify_shared_source, self.uid, self.gid)
+            emit(self.backup / 'shared-source.json', {'snapshot': record, 'liveSourceModified': False})
+        finally:
+            run_as_user(lambda: directory.unlink() if directory.is_symlink() else shutil.rmtree(directory), self.uid, self.gid)
+
+    def copy_shared_source(self, directory, record):
+        # Pin every directory: the user may rename staging paths after review.
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        with contextlib.ExitStack() as stack:
+            base = os.open(self.paths['runtime'], flags); stack.callback(os.close, base)
+            stage = os.open(directory.name, flags, dir_fd=base); stack.callback(os.close, stage)
+            source = os.open('snapshot', flags, dir_fd=stage); stack.callback(os.close, source)
+            for descriptor in (base, stage, source):
+                info = os.fstat(descriptor)
+                require(info.st_uid == self.uid and not info.st_mode & 0o022, 'SHARED_SOURCE_UNSAFE')
+            target = self.backup / 'shared-spool'; target.mkdir(mode=0o700)
+            for name, row in record['files'].items():
+                relative = Path(name)
+                require(relative.parts and not relative.is_absolute() and '..' not in relative.parts and type(row['bytes']) is int and row['bytes'] >= 0, 'SHARED_SOURCE_UNSAFE')
+                with contextlib.ExitStack() as entry:
+                    parent = source
+                    for part in relative.parts[:-1]:
+                        parent = os.open(part, flags, dir_fd=parent); entry.callback(os.close, parent)
+                        info = os.fstat(parent)
+                        require(info.st_uid == self.uid and not info.st_mode & 0o022, 'SHARED_SOURCE_UNSAFE')
+                    descriptor = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                    with os.fdopen(descriptor, 'rb') as stream:
+                        info = os.fstat(stream.fileno())
+                        require(stat.S_ISREG(info.st_mode) and info.st_uid == self.uid and info.st_size == row['bytes'], 'SHARED_SOURCE_UNSAFE')
+                        destination = target / relative; destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        with destination.open('xb') as output:
+                            os.chmod(destination, 0o600)
+                            remaining = row['bytes']
+                            while remaining:
+                                block = stream.read(min(remaining, 1024 * 1024)); require(block, 'SHARED_SOURCE_CHANGED')
+                                output.write(block); remaining -= len(block)
+                            output.flush(); os.fsync(output.fileno())
+
+    def user_verify_shared_source(self):
+        source = self.user_shared_source_root()
+        record = self.shared_source_snapshot
+        if record is None:
+            return {'preserved': True}
+        for name, row in record['files'].items():
+            relative = Path(name)
+            require(not relative.is_absolute() and '..' not in relative.parts, 'SHARED_SOURCE_UNSAFE')
+            path = source / relative
+            require(path.is_file() and not path.is_symlink() and not any(p.is_symlink() for p in path.parents), 'SHARED_SOURCE_CHANGED')
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                require(stat.S_ISREG(os.fstat(descriptor).st_mode), 'SHARED_SOURCE_CHANGED')
+                remaining, digest = row['bytes'], hashlib.sha256()
+                while remaining:
+                    block = os.read(descriptor, min(remaining, 1024 * 1024))
+                    require(block, 'SHARED_SOURCE_CHANGED')
+                    remaining -= len(block); digest.update(block)
+                require(digest.hexdigest() == row['sha256'], 'SHARED_SOURCE_CHANGED')
+            finally:
+                os.close(descriptor)
+        return {'preserved': True}
+
     def backup_latest(self):
         self.paths['backup'].mkdir(mode=0o700, parents=True, exist_ok=True)
         trusted(self.paths['backup'], self.owner, self.anchor)
@@ -624,6 +755,8 @@ class Runtime:
         for index, name in enumerate(self.baseline['protectedFiles']):
             self.copy_private(Path(name), self.backup / 'protected' / str(index))
         require(self.queues.stopped_hashes(self.paths['data'], self) == self.before_data, 'COLD_DATA_CHANGED')
+        if self.kit.get('shutdownCompletion') == 'sdk-v1':
+            self.backup_shared_source()
         emit(self.backup / 'backup.json', {'normalShutdown': self.stop_receipt, 'dataHashes': self.before_data, 'activeQueueSnapshots': snapshots, 'liveDataRewound': False})
         self.record('latest_private_backup_verified')
 
@@ -693,6 +826,8 @@ class Runtime:
         self.record('ready_to_start')
 
     def verify_data(self):
+        if self.kit.get('shutdownCompletion') == 'sdk-v1':
+            run_as_user(self.user_verify_shared_source, self.uid, self.gid)
         before = self.backup / 'data/state_store.db'
         current = self.paths['data'] / 'state_store.db'
         for path in before.glob('*.bin'):
@@ -812,6 +947,8 @@ class Runtime:
 
     def restore_previous_service(self):
         require(self.certified_stopped, 'SHUTDOWN_NOT_VERIFIED')
+        # Code hashes prove only restored code; old workers cannot consume SDK inbox state.
+        require(not (self.start_attempted and self.kit.get('shutdownCompletion') == 'sdk-v1'), 'SDK_ROLLBACK_RESTART_REFUSED')
         require(not self.start_attempted or self.candidate_background_control_version < 2 or self.previous_recovery_compatible, 'BACKGROUND_CONTROL_ROLLBACK_INCOMPATIBLE')
         if self.start_attempted and self.candidate_background_control_version >= 2:
             self.verify_previous_recovery_files()
@@ -868,13 +1005,13 @@ class Runtime:
         require(isinstance(budget, dict) and type(budget.get('attempts')) is int and 0 <= budget['attempts'] <= 3 and type(budget.get('nextAttemptAt')) in (int, float) and math.isfinite(budget['nextAttemptAt']) and budget['nextAttemptAt'] >= 0, 'RECOVERY_CONTROL_UNVERIFIED')
         return {'holds': sorted(holds), 'recovery': {'attempts': budget['attempts'], 'nextAttemptAt': budget['nextAttemptAt']}}
 
-    def require_stopped(self, receipt):
+    def require_stopped(self, receipt, *, completion=None):
         self.system.verify_identity()
         require(self.system.inactive() and self.system.main_pid() == 0, 'RECOVERY_SERVICE_NOT_STOPPED')
         worker = int((self.paths['runtime'] / 'worker.pid').read_text())
         engine = int((self.paths['runtime'] / 'iii.pid').read_text())
         require(min(worker, engine) > 0 and worker != engine and not self.system.alive(worker) and not self.system.alive(engine), 'RECOVERY_PROCESS_REMAINS')
-        require(receipt.get('pid') == worker and receipt.get('verified') is True and receipt.get('durability', {}).get('synced') is True and receipt['durability'].get('mutationFailures') == 0, 'SHUTDOWN_NOT_VERIFIED')
+        require_shutdown_receipt(receipt, worker, completion)
 
     def stopped_recovery_snapshot(self, failed_root):
         allowed = (self.paths['public'], self.paths['private'].parent.parent / 'vault')
@@ -888,6 +1025,7 @@ class Runtime:
         require(self.baseline['receiptIdentity'].get('applied') is True and all(previous.get(key) == value for key, value in self.baseline['receiptIdentity'].items()), 'BASELINE_RECEIPT_CHANGED')
         self.reviewed_public();failed.reviewed_public()
         self.verify_dependency_reuse()
+        require(failed.kit.get('shutdownCompletion') != 'sdk-v1' or self.kit.get('shutdownCompletion') == 'sdk-v1', 'SDK_RECOVERY_PACKAGE_REQUIRED')
         require(self.candidate_background_control_version == 2 and self.candidate_automatic_memory_recovery is False, 'RECOVERY_PROFILE_REQUIRED')
         failed.guard(allow_staged=True)
         transaction = failed.work / 'transaction.json'
@@ -900,7 +1038,7 @@ class Runtime:
         timestamp = datetime.datetime.fromisoformat(receipt['at'].replace('Z', '+00:00')).timestamp()
         ended = datetime.datetime.fromisoformat(state['at'].replace('Z', '+00:00')).timestamp()
         require(math.isfinite(timestamp) and timestamp <= ended, 'SHUTDOWN_RECEIPT_STALE')
-        self.require_stopped(receipt)
+        self.require_stopped(receipt, completion=failed.kit.get('shutdownCompletion'))
         return {'version': 1, 'recoveryKit': str(self.root), 'recoveryKitSha256': sha(self.root / 'kit.json'), 'failedKit': str(failed_root), 'failedKitSha256': sha(failed_root / 'kit.json'), 'failedTransactionSha256': sha(transaction), 'shutdownReceiptSha256': sha(shutdown), 'dataHashes': self.queues.stopped_hashes(self.paths['data'], self), 'failedCode': failed.post_files(), 'control': self.recovery_control()}
 
     def prepare_stopped_recovery(self, failed_root, output):
@@ -1002,13 +1140,14 @@ class Runtime:
                     rollback_verified = True
                 except BaseException as rollback_failure:
                     rollback_error = str(rollback_failure) if str(rollback_failure) in ('BACKGROUND_CONTROL_ROLLBACK_INCOMPATIBLE', 'SHUTDOWN_NOT_VERIFIED', 'PROTECTED_FILE_CHANGED', 'PROTECTED_PATH_CHANGED', 'PREVIOUS_RELEASE_FILE_SET_CHANGED') else 'ROLLBACK_UNVERIFIED'
-            if self.certified_stopped and (not self.stage_attempted or rollback_verified):
+            sdk_started = self.start_attempted and self.kit.get('shutdownCompletion') == 'sdk-v1'
+            if self.certified_stopped and not sdk_started and (not self.stage_attempted or rollback_verified):
                 try:
                     self.restore_previous_service()
                     recovery = 'restored'
                 except BaseException:
                     recovery = 'restore_failed'
-            safe_errors = {'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED', 'BACKGROUND_CONTROL_PROFILE_INVALID', 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED', 'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
+            safe_errors = {'BACKGROUND_CONTROL_FORMAT_UNSUPPORTED', 'BACKGROUND_CONTROL_PROFILE_INVALID', 'BACKGROUND_CONTROL_DOWNGRADE_REFUSED', 'INSTALL_PATH_NOT_WRITABLE', 'USER_TRANSITION_REFUSED', 'DEPENDENCY_REUSE_NOT_COMPATIBLE', 'SDK_BUNDLE_CLOSURE_REQUIRED', 'SDK_BUNDLE_UNVERIFIED', 'BACKUP_READBACK_FAILED', 'PACKAGE_HASH_MISMATCH', 'SHUTDOWN_NOT_VERIFIED', 'COLD_DATA_CHANGED', 'USER_PHASE_FAILED', 'ROOT_ASSET_CHANGED', 'PROTECTED_FILE_CHANGED'}
             code = str(error) if str(error) in safe_errors else 'UPDATE_FAILED'
             self.record('failed', failedPhase=failed_phase, errorCode=code, recoveryStatus=recovery, codeRollbackVerified=rollback_verified, rollbackErrorCode=rollback_error, shutdownCertified=self.certified_stopped, shutdownReceiptSha256=sha(self.paths['runtime'] / 'shutdown-receipt.json') if self.certified_stopped else None, inspectionRequired=recovery not in ('not_needed', 'restored'))
             raise

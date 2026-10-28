@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NATIVE_COMPAT_VERSION } from "../src/cli/native-compat.js";
 import { isStorageWorkCompleted } from "../src/ops/storage-completion.mjs";
 import { readFileSync } from "node:fs";
 import { transpileModule, ScriptTarget, ModuleKind } from "typescript";
@@ -11,7 +12,7 @@ function fixture({ running = false, verified = false, missingReceipt = false, wo
   const p = { intro: vi.fn(), outro: vi.fn(), log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() }, spinner: () => ({ start: vi.fn(), stop: vi.fn() }) };
   let generatedReceiptAt: string | undefined;
   const dependencies = {
-    p, isStorageWorkCompleted, args: [], IS_WINDOWS: false, SHUTDOWN_HARD_EXIT_MS: 6000,
+    p, isStorageWorkCompleted, NATIVE_COMPAT_VERSION, args: [], IS_WINDOWS: false, SHUTDOWN_HARD_EXIT_MS: 6000,
     assertRuntimePortOwnership: vi.fn(async () => {}), getRestPort: () => 3111,
     readEngineState: () => ({ kind: "native" }), isEngineRunning: async () => running,
     findEnginePidsByPort: () => running ? [202] : [], readEnginePidfile: () => running ? 202 : null, readWorkerPidfile: () => 101,

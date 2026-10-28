@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import {isStorageWorkCompleted} from './ops/storage-completion.mjs';
 
 import {
@@ -14,6 +15,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -63,6 +65,7 @@ import {
   runtimeConfigPath,
   redactCredentialUrls,
 } from "./cli/engine-launch.js";
+import { nativeCompatOptions, nativeCompatIdentityMatches, nativeCompatWorkerIdentityMatches, nativeCompatCleanupAction, renderNativeCompatConfig, NATIVE_COMPAT_VERSION, type NativeCompatWorkerIdentity } from "./cli/native-compat.js";
 import { runtimeMetadataPath } from "./runtime-paths.js";
 import { createStartupStderrCapture } from "./cli/startup-stderr.js";
 import {
@@ -248,6 +251,7 @@ Options:
   --verbose, -v      Show engine stderr, boot log, and diagnostic info
   --reset            Wipe ~/.agentmemory/preferences.json and re-run onboarding
   --tools all|core   Tool visibility (default: all = ${ALL_TOOLS_COUNT} tools; core = ${CORE_TOOLS_COUNT} essentials)
+  --native-compat    Use installed native iii-engine 0.22.1 (requires explicit binary/config)
   --no-engine        Skip auto-starting iii-engine
   --port <N>         Override REST port (default: 3111). Viewer (N+2) and
                      iii engine (N+46023) derive from N for side-by-side instances.
@@ -627,6 +631,13 @@ type ComposeEngineState = {
 
 type NativeEngineState = {
   kind: "native";
+  compatVersion?: "0.22.1";
+  processStart?: string;
+  workerIdentity?: NativeCompatWorkerIdentity;
+  flushWaitMs?: number;
+  enginePort?: number;
+  streamPort?: number;
+  viewerPort?: number;
   configPath: string;
   cwd?: string;
   attached?: boolean;
@@ -808,6 +819,13 @@ async function startWorkerForEngineState(background = false): Promise<void> {
     if (startupWorkerFailure) throw startupWorkerFailure;
     if (engineStartupFailed()) throw new Error("iii-engine exited before the agentmemory worker became ready.");
     throw new Error(startupTimeoutMessage("worker", timeoutMs));
+  }
+  const state = readEngineState();
+  if (state?.kind === "native" && state.compatVersion) {
+    const ownedPid = importedStartupWorker ? process.pid : spawnedStartupWorker?.pid;
+    if (!ownedPid || readWorkerPidfile() !== ownedPid) throw new Error("Native compatibility worker PID is not the tracked startup worker; state was preserved.");
+    state.workerIdentity = nativeWorkerIdentity(ownedPid);
+    writeFileSync(engineStatePath(), JSON.stringify(state), "utf8");
   }
   finishStartup();
 }
@@ -1008,6 +1026,7 @@ type StartupFailure = {
 let startupFailure: StartupFailure | null = null;
 let activeStartupStderr = createStartupStderrCapture();
 let spawnedNativeEngine: ChildProcess | null = null;
+let spawnedNativeEngineState: NativeEngineState | null = null;
 let spawnedComposeDaemon: ChildProcess | null = null;
 let composeStartupCompleted = false;
 let importedStartupWorker = false;
@@ -1023,7 +1042,12 @@ function beginStartup(): void {
   const unregister = registerStartupCleanup(cleanupFailedStartup);
   const interrupt = async (exitCode: number): Promise<void> => {
     startupInterrupted = true;
-    process.exit(await runStartupCleanup(exitCode).catch(() => exitCode));
+    const result = await runStartupCleanup(exitCode).catch(() => exitCode);
+    if (args.includes("--native-compat") && importedStartupWorker) {
+      process.exitCode = result;
+      return;
+    }
+    process.exit(result);
   };
   const onInterrupt = () => { void interrupt(130); };
   const onTerminate = () => { void interrupt(143); };
@@ -1043,6 +1067,15 @@ function engineStartupFailed(): boolean {
 
 async function cleanupFailedStartup(): Promise<void> {
   engineReadinessDeadline = null;
+  if (args.includes("--native-compat")) {
+    const child = spawnedNativeEngine;
+    const running = Boolean(child && child.exitCode === null && child.signalCode === null);
+    const exact = Boolean(child?.pid && spawnedNativeEngineState && nativeCompatPidMatches(child.pid, spawnedNativeEngineState));
+    if (nativeCompatCleanupAction(running, importedStartupWorker || spawnedStartupWorker !== null, exact) === "preserve") {
+      p.log.warn("Native startup cleanup could not verify worker drain or engine ownership; processes and lifecycle state were preserved.");
+      return;
+    }
+  }
   if (importedStartupWorker && readWorkerPidfile() === process.pid) clearWorkerPidfile();
   const worker = spawnedStartupWorker;
   spawnedStartupWorker = null;
@@ -1063,10 +1096,14 @@ async function cleanupFailedStartup(): Promise<void> {
   const child = spawnedNativeEngine;
   spawnedNativeEngine = null;
   if (!child || typeof child.pid !== "number") return;
-  if (!IS_WINDOWS) {
+  if (child.exitCode === null && child.signalCode === null && !IS_WINDOWS) {
     try { process.kill(-child.pid, "SIGTERM"); } catch {}
   }
   if (child.exitCode === null && child.signalCode === null) {
+    if (args.includes("--native-compat") && (!spawnedNativeEngineState || !nativeCompatPidMatches(child.pid, spawnedNativeEngineState))) {
+      p.log.warn("Native startup engine identity changed before signaling; lifecycle state was preserved.");
+      return;
+    }
     const stopped = await signalAndWait(child.pid, "SIGTERM", 3000);
     if (!stopped) {
       p.log.warn(`Started engine pid ${child.pid} survived shutdown; lifecycle state was preserved.`);
@@ -1283,7 +1320,89 @@ function pickCompatibleIii(candidates: Array<string | null | undefined>): string
   return null;
 }
 
+function nativeProcessStart(pid: number): string {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  return stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19] ?? "";
+}
+
+function nativeWorkerIdentity(pid: number): NativeCompatWorkerIdentity {
+  const processStart = nativeProcessStart(pid);
+  const identity = { pid, processStart, executable: readlinkSync(`/proc/${pid}/exe`), argvSha256: createHash("sha256").update(JSON.stringify(readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean))).digest("hex") };
+  if (nativeProcessStart(pid) !== processStart) throw new Error("Native worker process changed while capturing identity.");
+  return identity;
+}
+
+function nativeCompatWorkerMatches(state: NativeEngineState): boolean {
+  try {
+    const pid = readWorkerPidfile();
+    return Boolean(pid && nativeCompatWorkerIdentityMatches(state.workerIdentity, pid, nativeWorkerIdentity(pid)));
+  } catch { return false; }
+}
+
+function nativeCompatPidMatches(pid: number, state: NativeEngineState): boolean {
+  try {
+    return nativeCompatIdentityMatches(state, readlinkSync(`/proc/${pid}/exe`),
+      readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean), nativeProcessStart(pid));
+  } catch { return false; }
+}
+
+function assertNativeCompatStartupOwnership(): void {
+  const previous = readEngineState();
+  if (previous?.kind === "native" && previous.compatVersion && previous.workerIdentity) {
+    const pinned = previous.workerIdentity;
+    let sameWorker = false;
+    try { sameWorker = nativeCompatWorkerIdentityMatches(pinned, pinned.pid, nativeWorkerIdentity(pinned.pid)); } catch {}
+    if (sameWorker) throw new Error("Unresolved prior lifecycle has a live pinned native worker; no process was started and state was preserved.");
+  }
+  if (existsSync(engineStatePath()) || existsSync(enginePidfilePath()) || existsSync(workerPidfilePath())) {
+    throw new Error("Unresolved prior lifecycle evidence must be reconciled before native startup; no process was started and state was preserved.");
+  }
+}
+
+async function startNativeCompat(): Promise<boolean> {
+  const options = nativeCompatOptions(args, process.env)!;
+  assertNativeCompatStartupOwnership();
+  if (platform() !== "linux") throw new Error("Native 0.22.1 compatibility currently requires Linux process identity checks.");
+  if (getStateBackend() !== "file") throw new Error("Native compatibility requires file_based storage.");
+  const binPath = realpathSync(options.binPath);
+  if (iiiBinVersion(binPath) !== NATIVE_COMPAT_VERSION) throw new Error("Explicit native binary must report iii-engine 0.22.1; no installer or Compose fallback is allowed.");
+  const previous = readEngineState();
+  const previousPid = readEnginePidfile();
+  const workerPid = readWorkerPidfile();
+  if ((previousPid && pidAlive(previousPid)) || (workerPid && pidAlive(workerPid)) || previous?.kind === "compose" || previous?.kind === "docker") {
+    throw new Error("Existing runtime ownership must be stopped explicitly before native compatibility startup.");
+  }
+  const ports = { restPort: getRestPort(), streamPort: getRestPort() + 1, viewerPort: getConfiguredViewerPort(), enginePort: getEnginePort() };
+  const rendered = renderNativeCompatConfig(readFileSync(options.configPath, "utf8"), dataDirResolution.dataDir, ports);
+  await assertComposePortsFree(Object.values(ports));
+  const configPath = runtimeConfigPath(dataDirResolution.dataDir);
+  mkdirSync(dirname(configPath), { recursive: true });
+  mkdirSync(dirname(engineStatePath()), { recursive: true });
+  if (resolve(options.configPath) === resolve(configPath)) throw new Error("Native compatibility requires a separate seed config; the engine may publish its runtime config.");
+  writeFileSync(configPath, rendered, "utf8");
+  process.env["III_ENGINE_URL"] = `ws://127.0.0.1:${ports.enginePort}`;
+  activeStartupStderr = createStartupStderrCapture();
+  const child = spawn(binPath, ["--config", configPath, "--no-update-check"], {
+    cwd: dirname(options.configPath), detached: true, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env },
+  });
+  spawnedNativeEngine = child;
+  child.stderr?.on("data", (chunk: Buffer) => activeStartupStderr.append(chunk));
+  child.on("error", (error) => { startupFailure = { kind: "engine-crashed", stderr: redactCredentialUrls(error.message), binary: binPath }; });
+  child.on("exit", (code, signal) => { startupFailure = { kind: "engine-crashed", stderr: redactCredentialUrls(activeStartupStderr.text()) || `Native engine exited (${signal ?? code}).`, binary: binPath }; });
+  await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  const pid = child.pid!;
+  const state: NativeEngineState = { kind: "native", compatVersion: NATIVE_COMPAT_VERSION, processStart: nativeProcessStart(pid), flushWaitMs: engineFlushWaitMs("file", [rendered]), binPath, configPath, cwd: dirname(options.configPath), ...ports };
+  spawnedNativeEngineState = state;
+  if (!nativeCompatPidMatches(pid, state)) throw new Error("Native engine process identity could not be verified.");
+  writeFileSync(enginePidfilePath(), String(pid), "utf8");
+  writeFileSync(engineStatePath(), JSON.stringify(state), "utf8");
+  engineReadinessDeadline = startupDeadline(startupTimeouts().engineMs);
+  child.unref();
+  return true;
+}
+
 async function startEngine(): Promise<boolean> {
+  if (nativeCompatOptions(args, process.env)) return startNativeCompat();
   startupFailure = null;
   engineReadinessDeadline = null;
   let stateBackendKind: "file" | "redis";
@@ -1544,6 +1663,8 @@ async function reconcilePersistedComposeEngine(): Promise<boolean> {
 }
 
 async function main() {
+  const nativeCompat = nativeCompatOptions(args, process.env);
+  if (nativeCompat) assertNativeCompatStartupOwnership();
   startupTimeouts();
   await assertRuntimePortOwnership();
   // Booting a second instance next to a live daemon registers a duplicate
@@ -1603,14 +1724,14 @@ async function main() {
     return;
   }
 
-  if (await reconcilePersistedComposeEngine()) {
+  if (!nativeCompat && await reconcilePersistedComposeEngine()) {
     await startWorkerForEngineState();
     await maybeOfferGlobalInstall();
     printReadyHint();
     return;
   }
 
-  if (await isEngineRunning() || await waitForPersistedNativeEngine()) {
+  if (!nativeCompat && (await isEngineRunning() || await waitForPersistedNativeEngine())) {
     if (IS_VERBOSE) p.log.success("iii-engine is running");
     // Prefer the binary path persisted at launch time over whatever's on
     // PATH now. PATH lookups misfire when a global iii install gets added
@@ -2121,6 +2242,8 @@ function buildDoctorEffects(): DoctorEffects {
         const candidates = new Set<number>();
         if (pidfilePid) candidates.add(pidfilePid);
         for (const pid of portPids) candidates.add(pid);
+        const state = readEngineState();
+        if (state?.kind === "native" && state.compatVersion) return { ok: false, message: "Use agentmemory stop to drain and verify the native compatibility lifecycle first." };
         let allStopped = true;
         for (const pid of candidates) {
           const ok = await signalAndWait(pid, "SIGTERM", 3000);
@@ -2917,6 +3040,7 @@ async function signalAndWait(
   pid: number,
   initialSignal: NodeJS.Signals,
   timeoutMs: number,
+  noEscalation = false,
 ): Promise<boolean> {
   try {
     process.kill(pid, initialSignal);
@@ -2936,6 +3060,8 @@ async function signalAndWait(
     await new Promise((r) => setTimeout(r, 200));
   }
   if (!pidAlive(pid)) return true;
+  const state = readEngineState();
+  if (noEscalation || args.includes("--native-compat") || (state?.kind === "native" && state.compatVersion === NATIVE_COMPAT_VERSION)) return false;
   try {
     process.kill(pid, "SIGKILL");
   } catch (err) {
@@ -2950,13 +3076,13 @@ async function signalAndWait(
 // Shared worker-reap: SIGTERM with a grace window sized for the worker's
 // shutdown flush (index snapshots land via the engine, so the worker must
 // die before the engine does, with time to commit).
-async function waitForEngineFlush(): Promise<void> {
+async function waitForEngineFlush(minimumWaitMs = 0): Promise<void> {
   let stateBackend: "file" | "redis" = "file";
   try {
     stateBackend = getStateBackend();
   } catch {}
   const composeState = readEngineState();
-  if (composeState?.kind === "compose") {
+  if (composeState?.kind === "compose" && minimumWaitMs === 0) {
     const isolatedRuntime = dataDirResolution.dataDir !== join(homedir(), ".agentmemory");
     await new Promise((resolve) => setTimeout(resolve, getStateBackend() === "redis" || isolatedRuntime ? 0 : 3500));
     return;
@@ -2968,7 +3094,8 @@ async function waitForEngineFlush(): Promise<void> {
       configTexts.push(readFileSync(path, "utf-8"));
     } catch {}
   }
-  const waitMs = engineFlushWaitMs(stateBackend, configTexts);
+  const waitMs = Math.max(minimumWaitMs, engineFlushWaitMs(stateBackend, configTexts),
+    composeState?.kind === "native" && composeState.compatVersion ? composeState.flushWaitMs ?? 0 : 0);
   if (waitMs <= 0) return;
   const s = p.spinner();
   s.start(`Waiting ${(waitMs / 1000).toFixed(1)}s for iii-engine to write state to disk...`);
@@ -2976,11 +3103,11 @@ async function waitForEngineFlush(): Promise<void> {
   s.stop("iii-engine state flush window passed");
 }
 
-async function stopWorkerPid(pid: number, graceMs: number): Promise<boolean> {
+async function stopWorkerPid(pid: number, graceMs: number, noEscalation = false): Promise<boolean> {
   const s = p.spinner();
   s.start(`Stopping agentmemory worker (pid ${pid})... [draining storage work]`);
   const startedAt = Date.now();
-  const stopped = await signalAndWait(pid, "SIGTERM", Math.max(graceMs,600000));
+  const stopped = await signalAndWait(pid, "SIGTERM", Math.max(graceMs,600000), noEscalation);
   const stoppedAt = Date.now();
   let verified = false;
   try {
@@ -2999,6 +3126,8 @@ type NativeRemovalStopResult =
   | { ok: false; reason: string };
 
 async function stopNativeEngineForRemoval(): Promise<NativeRemovalStopResult> {
+  const state = readEngineState();
+  if (state?.kind === "native" && state.compatVersion) return { ok: false, reason: "Run agentmemory stop to drain and verify native compatibility before removal." };
   const port = getRestPort();
   const workerPid = readWorkerPidfile();
   const enginePids = new Set<number>(findEnginePidsByPort(port));
@@ -3095,6 +3224,13 @@ function findEnginePidsByPort(port: number): number[] {
 
 async function runStop(): Promise<void> {
   const savedState = readEngineState();
+  if (savedState?.kind === "native" && Object.hasOwn(savedState, "compatVersion") && savedState.compatVersion !== NATIVE_COMPAT_VERSION) {
+    throw new Error("Unsupported native compatibility lifecycle version; no process was signaled and state was preserved.");
+  }
+  const nativeState = savedState?.kind === "native" && savedState.compatVersion === NATIVE_COMPAT_VERSION ? savedState : null;
+  if (args.includes("--native-compat") && (savedState?.kind !== "native" || savedState.compatVersion !== NATIVE_COMPAT_VERSION)) {
+    throw new Error("Explicit native stop requires valid compatibility lifecycle state; no process was signaled and state was preserved.");
+  }
   if (savedState?.kind === "docker") {
     p.intro("agentmemory stop");
     p.log.error(legacyDockerStateMessage(savedState));
@@ -3108,7 +3244,7 @@ async function runStop(): Promise<void> {
   await assertRuntimePortOwnership();
   p.intro("agentmemory stop");
   const port = getRestPort();
-  const state = readEngineState();
+  const state = savedState;
   const running = await isEngineRunning();
   const force = args.includes("--force");
 
@@ -3152,6 +3288,14 @@ async function runStop(): Promise<void> {
     return;
   }
 
+  const compatState = savedState;
+  if (compatState?.kind === "native" && compatState.compatVersion) {
+    if (!nativeCompatWorkerMatches(compatState)) throw new Error("Native compatibility worker identity is absent or changed; no process was signaled and runtime state was preserved.");
+    const pid = readEnginePidfile();
+    if (!pid || !nativeCompatPidMatches(pid, compatState) || compatState.restPort !== getRestPort() || compatState.enginePort !== getEnginePort()) {
+      throw new Error("Native compatibility process identity or ports do not match; runtime state was preserved.");
+    }
+  }
   const portPids = findEnginePidsByPort(port);
   const pidfilePid = readEnginePidfile();
   // read the worker pid up front so the engine-down branch
@@ -3168,7 +3312,7 @@ async function runStop(): Promise<void> {
       return;
     }
     if (workerPid !== null && portPids.length === 0 && pidfilePid === null) {
-      const ok = await stopWorkerPid(workerPid, SHUTDOWN_HARD_EXIT_MS + 1000);
+      const ok = await stopWorkerPid(workerPid, SHUTDOWN_HARD_EXIT_MS + 1000, Boolean(nativeState));
       if (!ok) {
         p.log.error("Worker shutdown was not verified. With the engine unavailable, persistence is uncertain. Runtime metadata and data were preserved.");
         process.exit(1);
@@ -3194,6 +3338,9 @@ async function runStop(): Promise<void> {
   const candidates = new Set<number>();
   if (pidfilePid) candidates.add(pidfilePid);
   for (const pid of portPids) candidates.add(pid);
+  if (compatState?.kind === "native" && compatState.compatVersion && [...candidates].some((pid) => !nativeCompatPidMatches(pid, compatState))) {
+    throw new Error("Native compatibility listener ownership changed; no process was signaled and runtime state was preserved.");
+  }
 
   // stop must also reap the agentmemory worker process
   // (`node dist/index.mjs`). If only the engine is killed, the worker can
@@ -3219,17 +3366,19 @@ async function runStop(): Promise<void> {
   // persists. Worker SIGTERM grace bumped 3s -> 5s to give a large
   // index a real chance to commit before the engine goes away.
   for (const pid of workerCandidates) {
-    if (!(await stopWorkerPid(pid, SHUTDOWN_HARD_EXIT_MS + 1000))) {
+    if (compatState?.kind === "native" && compatState.compatVersion && !nativeCompatWorkerMatches(compatState)) throw new Error("Native worker ownership changed before signaling; runtime state was preserved.");
+    if (!(await stopWorkerPid(pid, SHUTDOWN_HARD_EXIT_MS + 1000, Boolean(nativeState)))) {
       p.log.error("Worker shutdown was not verified. Refusing to stop iii-engine; runtime metadata and data were preserved.");
       process.exit(1);
     }
   }
   if (workerCandidates.size > 0 && [...candidates].some((pid) => !workerCandidates.has(pid))) {
-    await waitForEngineFlush();
+    await waitForEngineFlush(nativeState?.flushWaitMs ?? 0);
   }
   const skippedForeign: Array<{ pid: number; comm: string }> = [];
   for (const pid of candidates) {
     if (workerCandidates.has(pid)) continue;
+    if (compatState?.kind === "native" && compatState.compatVersion && !nativeCompatPidMatches(pid, compatState)) throw new Error("Native engine ownership changed before signaling; runtime state was preserved.");
     // Last-line guard against a stale/poisoned pidfile or a port-forward
     // holding :port — signaling its process could stop unrelated services.
     const comm = pidCommand(pid);
@@ -3239,7 +3388,7 @@ async function runStop(): Promise<void> {
     }
     const s = p.spinner();
     s.start(`Stopping iii-engine (pid ${pid})...`);
-    const ok = await signalAndWait(pid, "SIGTERM", 3000);
+    const ok = await signalAndWait(pid, "SIGTERM", 3000, Boolean(nativeState));
     s.stop(ok ? `Stopped pid ${pid}` : `Failed to stop pid ${pid}`);
     if (!ok) allStopped = false;
   }
@@ -3666,5 +3815,9 @@ const handler = commands[first] ?? (first && !first.startsWith("-") ? unknownCom
 handler().catch(async (err) => {
   p.log.error(err instanceof Error ? err.message : String(err));
   const exitCode = await runStartupCleanup(1).catch(() => 1);
+  if (args.includes("--native-compat") && importedStartupWorker) {
+    process.exitCode = exitCode;
+    return;
+  }
   process.exit(exitCode);
 });

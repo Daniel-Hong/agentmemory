@@ -46,6 +46,7 @@ const shared = {
   // optionalDependency in package.json so users can install it only when
   // they enable local embeddings / CLIP / reranker.
   deps: {
+    alwaysBundle: [/^iii-sdk(?:\/|$)/, /^@iii-dev\/helpers(?:\/|$)/, /^yaml(?:\/|$)/, /^json5(?:\/|$)/],
     neverBundle: [
       "@huggingface/transformers",
       "@anthropic-ai/claude-agent-sdk",

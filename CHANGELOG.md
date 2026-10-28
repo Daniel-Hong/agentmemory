@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Preserve repeated capture envelopes without overwriting originals, restore background drain admission for reboot-requeued originals, reuse old-server responses without duplicate POST, and include safe session projections in Viewer recent-observation lookup. Final isolated full regression: 5,332 passed, 13 existing opt-in cases excluded; operating installation remains separate.
+- Prepare an explicit native engine0.22.1 lifecycle without Compose/download fallback, bundle the SDK0.25 server dependency closure, and distinguish SDK completion from disk verification in the development release/rollback kit. Preserve SDK originals and stop code-only downgrades before any incompatible old writer starts. Repair child HOME isolation in hook tests. No operating installation or guard change.
+
+- Preserve repeated capture envelopes without overwriting originals, restore background drain admission for reboot-requeued originals, reuse old-server responses without duplicate POST, and include safe session projections in Viewer recent-observation lookup. Baseline 4fd isolated full regression: 5,332 passed, 13 pre-existing conditional cases skipped; operating installation remains separate.
 
 - Add explicit selected SDK-source restoration through existing verified writer ownership and per-record gates. Keep local originals on every outcome, refuse legacy/history/tombstone conflicts, share inbox admission, preserve session lifecycle and old recovery budgets, and track interrupted work through drain. No automatic replay or operating activation.
 

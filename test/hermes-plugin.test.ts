@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {isolatedHookEnv} from "./helpers/isolated-hook-env.js";
 import { execFileSync, spawnSync } from "node:child_process";
 
 const PYTHON = execFileSync("python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).trim();
@@ -68,14 +71,17 @@ describe("Hermes plugin manifest", () => {
   });
 
   it("satisfies native provider runtime and credential contracts", () => {
+    const home = mkdtempSync(join(tmpdir(), "am-hermes-child-"));
+    try {
     const result = spawnSync(PYTHON, ["test/hermes-provider-contracts.py", "-v"], {
       encoding: "utf8",
       timeout: 60_000,
-      env: { PATH: process.env.PATH, PYTHONDONTWRITEBYTECODE: "1" },
+      env: isolatedHookEnv(home, {PYTHONDONTWRITEBYTECODE: "1"}),
     });
     const diagnostics = [result.error?.message, result.signal, result.stderr, result.stdout]
       .filter(Boolean)
       .join("\n");
     expect(result.status, diagnostics).toBe(0);
+    } finally { rmSync(home, {recursive:true,force:true}); }
   }, 70_000);
 });

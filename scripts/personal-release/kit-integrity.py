@@ -2,6 +2,8 @@
 from pathlib import Path
 import hashlib
 import json
+import re
+import tarfile
 from urllib.parse import unquote, quote
 
 
@@ -106,6 +108,8 @@ def verify(before_data, current_data, *, allow_background_hold=False):
             # Recovery deliberately changes only the admission hold; all prior values remain in its private backup.
             record = new.get('manual-pause')
             require(isinstance(record, dict) and record.get('paused') is True and record.get('resumePending') is not True, 'RECOVERY_BACKGROUND_NOT_HELD')
+            previous = old.get('manual-pause', {})
+            require(isinstance(previous, dict) and set(previous.get('holds', [])).issubset(record.get('holds', [])) and retained({k: v for k, v in previous.items() if k not in ('paused', 'resumePending', 'holds')}, record), 'RECOVERY_BACKGROUND_HOLDS_CHANGED')
             require(retained({k: v for k, v in old.items() if k != 'manual-pause'}, {k: v for k, v in new.items() if k != 'manual-pause'}), 'ORIGINAL_STATE_NOT_PRESERVED')
         elif scope.startswith('mem:obs:'):
             for key, row in old.items():
@@ -115,6 +119,9 @@ def verify(before_data, current_data, *, allow_background_hold=False):
                 raw += 1
         elif scope == 'mem:capture:inbox':
             for key,row in old.items():
+                if row.get('storageCompletion') == 'sdk':
+                    require(key in new and retained(row, new[key]), 'SDK_CAPTURE_EVIDENCE_CHANGED')
+                    continue
                 if key in new:
                     for field in ('key','eventId','eventSource','sessionId','observationId','payload','acceptedAt'):
                         if field in row: require(new[key].get(field)==row[field],'CAPTURE_EVIDENCE_CHANGED')
@@ -146,3 +153,79 @@ def verify(before_data, current_data, *, allow_background_hold=False):
         require(isinstance(metadata, dict) and metadata.get('v') == 3, 'VECTOR_MIGRATION_NOT_COMPLETED')
     require(all(actual.get(key) == row for key, row in expected.items()), 'VECTOR_VALUE_OR_SESSION_CHANGED')
     return {'verified': True, 'checkedNamespaces': checked, 'unchangedNamespaces': unchanged, 'comparedChangedObservations': raw, 'preservedVectors': len(expected), 'originalsPreserved': True, 'dataRewound': False}
+
+
+def verify_server_bundle(package_path, package_files):
+    try:
+        _verify_server_bundle(package_path, package_files)
+    except (ValueError, TypeError, KeyError, RecursionError, tarfile.TarError, OSError):
+        raise RuntimeError('SDK_BUNDLE_UNVERIFIED') from None
+
+
+def _verify_server_bundle(package_path, package_files):
+    name = 'dist/server-sdk-bundle.json'
+    table = package_files
+    require(name in table, 'SDK_BUNDLE_CLOSURE_REQUIRED')
+    inventory = {path: digest for path, digest in table.items() if path.startswith('dist/') and Path(path).suffix in ('.js', '.mjs', '.cjs')}
+    require(bool(inventory), 'SDK_BUNDLE_UNVERIFIED')
+    def forbidden(specifier):
+        return specifier.startswith('@opentelemetry') or any(specifier == root or specifier.startswith(root + '/') for root in ('iii-sdk', '@iii-dev/helpers', 'yaml', 'json5'))
+    def decode_literal(token):
+        text = token[1:-1]
+        text = re.sub(r'\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|u\{([0-9a-fA-F]{1,6})\})', lambda match: chr(int(next(value for value in match.groups() if value is not None), 16)), text)
+        return re.sub(r'\\(.)', r'\1', re.sub(r'\\\r?\n', '', text))
+    def scan_literals(text, depth=0):
+        tokens = []
+        pattern = r'''(?P<skip>\s+|//[^\r\n]*|/\*.*?\*/)|(?P<string>'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)|(?P<identifier>[A-Za-z_$][\w$]*)|(?P<punctuation>.)'''
+        for token in re.finditer(pattern, text, re.DOTALL):
+            if token.lastgroup != 'skip':
+                tokens.append((token.lastgroup, token.group()))
+        for index, (kind, value) in enumerate(tokens):
+            if kind == 'string':
+                if depth < 2:
+                    scan_literals(decode_literal(value), depth + 1)
+                continue
+            if kind != 'identifier':
+                continue
+            target = index + 1
+            if value == 'from':
+                pass
+            elif value == 'import' or re.fullmatch(r'(?:__)?require(?:[$_]?\d+)?', value):
+                if target < len(tokens) and tokens[target][1] == '(':
+                    target += 1
+            else:
+                continue
+            if target < len(tokens) and tokens[target][0] == 'string':
+                require(not forbidden(decode_literal(tokens[target][1])), 'SDK_BUNDLE_UNVERIFIED')
+    with tarfile.open(package_path) as archive:
+        members = archive.getmembers()
+        runtime_members = [member.name[8:] for member in members if member.name.startswith('package/dist/') and Path(member.name).suffix in ('.js', '.mjs', '.cjs')]
+        require(set(runtime_members) == set(inventory) and len(runtime_members) == len(inventory), 'SDK_BUNDLE_UNVERIFIED')
+        def bound_bytes(path):
+            selected = [member for member in members if member.name == 'package/' + path]
+            require(len(selected) == 1 and selected[0].isfile() and selected[0].size <= 64 * 1024 * 1024, 'SDK_BUNDLE_UNVERIFIED')
+            content = archive.extractfile(selected[0]).read()
+            require(hashlib.sha256(content).hexdigest() == table[path], 'SDK_BUNDLE_UNVERIFIED')
+            return content
+        closure = json.loads(bound_bytes(name))
+        require(isinstance(closure, dict) and set(closure) == {'version', 'mode', 'bundledPackages', 'files', 'externalSpecifiers'} and type(closure.get('version')) is int and closure['version'] == 1 and closure.get('mode') == 'bundled-sdk0.25-v1', 'SDK_BUNDLE_UNVERIFIED')
+        require(closure['bundledPackages'] == {'iii-sdk': '0.25.0', '@iii-dev/helpers': '0.25.0', 'yaml': '2.8.1', 'json5': '2.2.3'} and closure['files'] == inventory, 'SDK_BUNDLE_UNVERIFIED')
+        imports = closure['externalSpecifiers']
+        require(isinstance(imports, dict) and set(imports) == set(inventory), 'SDK_BUNDLE_UNVERIFIED')
+        for path in inventory:
+            require(isinstance(imports[path], list) and all(isinstance(item, str) and not forbidden(item) for item in imports[path]), 'SDK_BUNDLE_UNVERIFIED')
+            # Independent literal check of reviewed compiler output, not a JS semantic sandbox.
+            scan_literals(bound_bytes(path).decode('utf-8'))
+
+
+def verify_sdk_package_contract(current, proposed, package_path, package_files):
+    profile = proposed.get('agentmemoryCompatibility')
+    fields = {'backgroundControlVersion', 'automaticMemoryRecovery', 'storageCompletion', 'nativeEngineCompatibility', 'serverDependencyMode'}
+    require(isinstance(profile, dict) and set(profile) == fields and type(profile.get('backgroundControlVersion')) is int and profile['backgroundControlVersion'] == 2 and type(profile.get('automaticMemoryRecovery')) is bool and profile.get('storageCompletion') == 'sdk-v1' and profile.get('nativeEngineCompatibility') == '0.22.1' and profile.get('serverDependencyMode') == 'bundled-sdk0.25-v1', 'SDK_PACKAGE_CAPABILITY_REQUIRED')
+    verify_server_bundle(package_path, package_files)
+    require(all(proposed.get(field, {}) == current.get(field, {}) for field in ('optionalDependencies', 'engines')), 'DEPENDENCY_REUSE_NOT_COMPATIBLE')
+    old, new = current.get('dependencies', {}), proposed.get('dependencies', {})
+    if old == new:
+        return
+    allowed = {'iii-sdk': '0.25.0', '@iii-dev/helpers': '0.25.0', 'yaml': '^2.8.1', 'json5': '^2.2.3'}
+    require(isinstance(old, dict) and isinstance(new, dict) and all(new.get(key) == value for key, value in allowed.items()) and old.get('iii-sdk') == old.get('@iii-dev/helpers') == '0.22.1' and 'yaml' not in old and 'json5' not in old and {key: value for key, value in old.items() if key not in allowed} == {key: value for key, value in new.items() if key not in allowed}, 'DEPENDENCY_REUSE_NOT_COMPATIBLE')

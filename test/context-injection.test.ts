@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import {mkdtempSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {isolatedHookEnv,assertIsolatedHookPaths} from "./helpers/isolated-hook-env.js";
+import {spawnSync} from "node:child_process";
 
 const HOOKS_DIR = join(import.meta.dirname, "..", "plugin", "scripts");
 
@@ -19,19 +23,25 @@ function runHook(
   exitCode: number | null;
   tookMs: number;
 }> {
-  return new Promise((resolve, reject) => {
+  const home = mkdtempSync(join(tmpdir(), 'am-hook-child-'));
+  let childEnv: NodeJS.ProcessEnv;
+  try {
+    childEnv = isolatedHookEnv(home, env);
+    const probe = spawnSync(process.execPath, ['-e', "const out={nativeHome:require('node:os').homedir()};for(const k of ['HOME','USERPROFILE','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','AGENTMEMORY_HOME','AGENTMEMORY_RUNTIME_DIR','AGENTMEMORY_DATA_DIR','AGENTMEMORY_ENV_FILE','AGENTMEMORY_CAPTURE_SPOOL_DIR'])out[k]=process.env[k];process.stdout.write(JSON.stringify(out));"], { env: childEnv, cwd: home, encoding: 'utf8' });
+    if (probe.error || probe.status !== 0) throw Error('test_child_preflight_failed');
+    assertIsolatedHookPaths(home, JSON.parse(probe.stdout));
+  } catch (error) {
+    rmSync(home, {recursive:true,force:true});
+    throw error;
+  }
+  return new Promise<{stdout:string;stderr:string;exitCode:number|null;tookMs:number}>((resolve, reject) => {
     const start = Date.now();
     const child = spawn(
       process.execPath,
       [join(HOOKS_DIR, scriptName)],
       {
-        env: {
-          // Start from a clean slate — don't leak test-runner env into
-          // the hook. Only pass PATH and anything explicitly set by the
-          // test case.
-          PATH: process.env["PATH"] ?? "",
-          ...env,
-        },
+        env: childEnv,
+        cwd: home,
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
@@ -51,7 +61,7 @@ function runHook(
 
     child.stdin.write(stdin);
     child.stdin.end();
-  });
+  }).finally(() => rmSync(home, {recursive:true,force:true}));
 }
 
 describe("pre-tool-use hook — context injection gate", () => {
@@ -61,8 +71,7 @@ describe("pre-tool-use hook — context injection gate", () => {
       tool_name: "Read",
       tool_input: { file_path: "src/foo.ts" },
     });
-    // No AGENTMEMORY_* env vars at all — simulates a fresh Claude Pro
-    // install with no ~/.agentmemory/.env overrides.
+    // Context injection is unset, with storage and config isolated from the real home.
     const result = await runHook("pre-tool-use.mjs", payload, {});
     expect(result.stdout).toBe("");
     expect(result.exitCode).toBe(0);

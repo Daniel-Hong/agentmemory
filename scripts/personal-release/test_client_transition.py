@@ -23,9 +23,10 @@ class ClientTransitionTests(base.TransactionTests):
         self.baseline['protectedFiles'].update({str(self.client_root/name):digest for name,digest in self.baseline['compatibilityFiles'].items()})
         self.transition = {'version':1,'files':{name:{'before':self.baseline['compatibilityFiles'][name],'after':self.runtime.hashlib.sha256(self.new[name]).hexdigest()} for name in self.new if self.new[name]!=self.old[name]}}
 
-    def issue(self, transition=True, replacement=None, revision=8, automatic=None):
+    def issue(self, transition=True, replacement=None, revision=8, automatic=None, sdk=False):
         manifest={'version':f'0.9.30-daniel.{revision}'}
         if automatic is not None:manifest['agentmemoryCompatibility']={'backgroundControlVersion':2,'automaticMemoryRecovery':automatic}
+        if sdk: manifest['agentmemoryCompatibility']={**manifest.get('agentmemoryCompatibility',{}),'storageCompletion':'sdk-v1','nativeEngineCompatibility':'0.22.1'}
         files={'package.json':json.dumps(manifest).encode(), 'dist/cli.mjs':b'// fixture', **(replacement or self.new)}
         package=self.root/'client-package.tgz'
         with tarfile.open(package,'w:gz') as saved:
@@ -33,6 +34,7 @@ class ClientTransitionTests(base.TransactionTests):
                 info=tarfile.TarInfo('package/'+name);info.size=len(data);saved.addfile(info,io.BytesIO(data))
         release={'sourceCommit':'c'*40,'packageVersion':manifest['version'],'packageFiles':{n:self.runtime.hashlib.sha256(v).hexdigest() for n,v in files.items()},'artifactHashes':{},'verificationFiles':{}}
         metadata={'id':f'client-release-{revision}','version':release['packageVersion'],'sourceCommit':release['sourceCommit'],'packageSha256':self.runtime.sha(package),'changeSummary':'synthetic two-file client transition','tests':['synthetic']}
+        if sdk:metadata['shutdownCompletion']='sdk-v1'
         if transition:metadata['clientTransition']=copy.deepcopy(self.transition)
         draft=self.root/('client-draft-'+str(len(list(self.root.glob('client-draft-*')))))
         self.prepare.prepare(package,release,self.baseline,metadata,draft)
@@ -57,6 +59,25 @@ class ClientTransitionTests(base.TransactionTests):
     def test_third_file_is_never_authorized_by_the_two_file_manifest(self):
         extra={**self.new,'plugin/scripts/codex-compat/long-session-hook-client.mjs':b'not allowed'}
         with self.assertRaisesRegex(RuntimeError,'CLIENT_COMPATIBILITY_CHANGED'):self.issue(replacement=extra)
+
+    def test_sdk_capable_package_permits_exact_three_file_client_transition(self):
+        name='plugin/scripts/codex-compat/long-session-hook-client.mjs'
+        self.new[name]=b'new-sdk-client'
+        self.transition['files'][name]={'before':self.baseline['compatibilityFiles'][name],'after':self.runtime.hashlib.sha256(self.new[name]).hexdigest()}
+        tx=self.issue(automatic=False,sdk=True)
+        self.assertEqual(set(tx.client_changes),{str(self.client_root/name) for name in self.transition['files']})
+        rendered=tx.dropin_bytes().decode()
+        tx.verify_dependency_reuse()
+        self.assertIn(' --native-compat',rendered)
+        self.assertIn(' stop --native-compat --data-dir '+str(self.paths['data'])+'\n',rendered)
+        self.assertIn('AGENTMEMORY_NATIVE_III_BIN='+str(self.paths['engine']),rendered)
+        self.assertIn('AGENTMEMORY_III_CONFIG='+str(self.paths['data']/'iii-config.yaml'),rendered)
+
+    def test_sdk_transition_still_rejects_a_fourth_client_file(self):
+        for name in ('plugin/scripts/codex-compat/long-session-hook-client.mjs','plugin/scripts/codex-compat/hook0.mjs'):
+            self.new[name]=b'changed'
+            self.transition['files'][name]={'before':self.baseline['compatibilityFiles'][name],'after':self.runtime.hashlib.sha256(self.new[name]).hexdigest()}
+        with self.assertRaisesRegex(RuntimeError,'CLIENT_COMPATIBILITY_CHANGED'): self.issue(automatic=False,sdk=True)
 
     def test_wrong_before_hash_and_outside_client_root_are_refused(self):
         self.transition['files'][next(iter(self.transition['files']))]['before']='0'*64
@@ -94,13 +115,21 @@ class ClientTransitionTests(base.TransactionTests):
         import subprocess
         tx=self.issue();client=Path(__file__).resolve().parents[2]/'integrations/codex-compat/long-session-hook-client.mjs'
         queue=self.paths['runtime']/'hook-outbox'
-        js="import {HookClient} from "+json.dumps(client.as_uri())+"; let calls=0;globalThis.fetch=async()=>{calls++;throw Error('unexpected network')};const client=new HookClient({dir:"+json.dumps(str(queue))+",url:'http://127.0.0.1:1'});await client.enqueue('/agentmemory/observe',{eventId:'synthetic-lock',sessionId:'fixture',project:'fixture',hookType:'post_tool_use',timestamp:'2026-10-21T00:00:00Z',data:{synthetic:true}});console.log(JSON.stringify({flushed:await client.flush(),calls}));"
+        setup="import {HookClient} from "+json.dumps(client.as_uri())+"; let calls=0;const client=new HookClient({dir:"+json.dumps(str(queue))+",url:'http://127.0.0.1:1'});const body={eventId:'synthetic-lock',sessionId:'fixture',project:'fixture',hookType:'post_tool_use',timestamp:'2026-10-21T00:00:00Z',data:{synthetic:true}};"
+        js=setup+"globalThis.fetch=async()=>{calls++;throw Error('unexpected network')};let error;try{await client.enqueue('/agentmemory/observe',body)}catch(e){error=e.message}console.log(JSON.stringify({error,flushed:await client.flush(),calls}));"
         with tx.client_exclusion():
             result=subprocess.run(['/usr/bin/node','--input-type=module','-e',js],capture_output=True,text=True,timeout=10)
-            self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(result.stdout),{'flushed':False,'calls':0})
+            self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(result.stdout),{'error':'capture_queue_busy','flushed':False,'calls':0})
+            self.assertEqual(list(queue.glob('*.json')),[])
             result=subprocess.run(['/usr/bin/node',str(client),'--drain',str(queue),'http://127.0.0.1:1'],capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(len(list(queue.glob('*.json'))),1)
+        js=setup+"globalThis.fetch=async()=>{calls++;return {ok:true,status:200,json:async()=>({completion:'sdk',completed:true,durable:false,eventId:body.eventId})}};await client.enqueue('/agentmemory/observe',body);console.log(JSON.stringify({flushed:await client.flush(),again:await client.flush(),calls}));"
+        result=subprocess.run(['/usr/bin/node','--input-type=module','-e',js],capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(result.stdout),{'flushed':True,'again':True,'calls':1})
+        self.assertEqual(list(queue.glob('*.json')),[])
+        retained=list((queue/'accepted-originals').glob('*.json'))
+        self.assertEqual(len(retained),1)
+        self.assertEqual(json.loads(retained[0].read_text())['body']['data'],{'synthetic':True})
 
     def test_stopped_recovery_preserves_new_client_pair_and_hold_budget_then_duplicate_is_readonly(self):
         tx=self.issue(automatic=True);self.system.inactive=lambda:self.system.stopped;self.system.main_pid=lambda:0 if self.system.stopped else 103
