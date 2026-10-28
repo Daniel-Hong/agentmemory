@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased — Viewer initial snapshot recovery
+
+- Show a failed initial snapshot query explicitly in Overview/Health while retaining independently queried operations metadata. Retry missing/failed snapshots on the existing refresh timer even with live SSE, respect refresh OFF, and share overlapping snapshot requests. No operating deployment or backend/storage behavior change. See docs/customizations/VIEWER-INITIAL-SNAPSHOT-RECOVERY.md.
+- Coalesce overlapping ordinary observation lists for the same file and SDK mutation revision while preserving independent mutable results, pending overlays and current-path/opened-generation separation. No completed cache or change to SDK/disk completion contracts. The parsed result is shared only during the read; independent caller results still require memory per consumer. Operating performance and the originating SDK mutation failure remain unverified.
+
 ## Unreleased — snapshot outcome and compression diagnostics
 
 - Separate persisted snapshot admission from actual completion; preserve the legacy direct synchronous function, expose read-only tracking, and keep real owner results authoritative across caller timeout and retry interruption. REST/MCP creation admission is an explicit response-contract change; no operating deployment.

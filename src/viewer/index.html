@@ -2419,30 +2419,36 @@
     }
 
     async function loadSnapshot(retried) {
-      var resetSeq = state.graph.resetSeq;
-      var snap = await apiGet('viewer/snapshot');
-      if (resetSeq !== state.graph.resetSeq) return retried ? false : loadSnapshot(true);
-      store.snapshotError = !snap;
-      renderConnection();
-      if (!snap) {
+      if (store.snapshotRequest) return store.snapshotRequest;
+      var request = (async function readSnapshot(retried) {
+        var resetSeq = state.graph.resetSeq;
+        var snap = await apiGet('viewer/snapshot');
+        if (resetSeq !== state.graph.resetSeq) return retried ? false : readSnapshot(true);
+        store.snapshotError = !snap;
+        renderConnection();
+        if (!snap) {
+          updateFooter();
+          markDirty(['dashboard', 'health']);
+          if (state.activeTab === 'health' || state.activeTab === 'dashboard') renderTab(state.activeTab);
+          return false;
+        }
+        var graphBefore = store.graph && store.graph.updatedAt;
+        var reconnect = !!store.snapshotAt;
+        noteGraphGeneration(snap.graph);
+        applySnapshot(store, snap);
+        renderConnection();
+        renderFlagsChip();
+        renderFlagsPanel();
+        updateCountBadges();
         updateFooter();
-        markDirty(['dashboard', 'health']);
-        if (state.activeTab === 'health' || state.activeTab === 'dashboard') renderTab(state.activeTab);
-        return false;
-      }
-      var graphBefore = store.graph && store.graph.updatedAt;
-      var reconnect = !!store.snapshotAt;
-      noteGraphGeneration(snap.graph);
-      applySnapshot(store, snap);
-      renderConnection();
-      renderFlagsChip();
-      renderFlagsPanel();
-      updateCountBadges();
-      updateFooter();
-      markDirty(['dashboard', 'health', 'graph']);
-      if (reconnect && state.graph.loaded && (!store.graph || store.graph.updatedAt !== graphBefore)) scheduleGraphReload();
-      if (!tabRendered[state.activeTab] || state.activeTab === 'dashboard' || state.activeTab === 'health') renderTab(state.activeTab);
-      return true;
+        markDirty(['dashboard', 'health', 'graph']);
+        if (reconnect && state.graph.loaded && (!store.graph || store.graph.updatedAt !== graphBefore)) scheduleGraphReload();
+        if (!tabRendered[state.activeTab] || state.activeTab === 'dashboard' || state.activeTab === 'health') renderTab(state.activeTab);
+        return true;
+      })(retried);
+      store.snapshotRequest = request;
+      try { return await request; }
+      finally { if (store.snapshotRequest === request) store.snapshotRequest = null; }
     }
 
     function applySnapshot(s, snap) {
@@ -2852,7 +2858,7 @@
         operations.refreshTimer = null;
         if (!autoRefresh.enabled) return;
         if (!document.hidden) {
-          if (conn.state !== 'live') await loadSnapshot();
+          if (conn.state !== 'live' || !store.snapshot || store.snapshotError) await loadSnapshot();
           if (['health','dashboard'].includes(state.activeTab)) await loadOperations();
         }
         scheduleOperationsRefresh();
@@ -2985,10 +2991,14 @@
       return status === 'healthy' ? 'healthy' : status === 'degraded' ? 'degraded' : status === 'critical' ? 'critical' : '';
     }
 
+    function snapshotUnavailableHtml() {
+      return '<div class="card" role="status"><h2>화면 상태 조회 실패</h2><p>실시간 연결과 화면 조회는 별개입니다. 아래 작업 현황은 별도로 확인한 정보이며, 전체 화면 상태는 아직 미확인입니다.</p><button type="button" class="btn" data-action="refresh-operations">현황 새로고침</button></div>';
+    }
+
     function renderDashboard() {
       var el = document.getElementById('view-dashboard');
       if (!store.snapshot) {
-        setViewHtml(el, '<div class="section-head"><h2>Connecting to agentmemory</h2></div>' + skeleton(8));
+        setViewHtml(el, store.snapshotError ? snapshotUnavailableHtml() + operationsPanelHtml() : '<div class="section-head"><h2>Connecting to agentmemory</h2></div>' + skeleton(8));
         return;
       }
       var c = store.counts || {};
@@ -8011,7 +8021,7 @@
       var detailStates = {};
       el.querySelectorAll('details[id]').forEach(function(detail) { detailStates[detail.id] = detail.open; });
       if (!store.snapshot) {
-        setViewHtml(el, skeleton(10));
+        setViewHtml(el, store.snapshotError ? snapshotUnavailableHtml() + operationsPanelHtml() : skeleton(10));
         return;
       }
       var r = store.report;
@@ -9151,7 +9161,7 @@
       if (target.disabled) return;
       if (action === 'pause-background') { changeBackgroundControl('pause'); return; }
       if (action === 'resume-background') { changeBackgroundControl('resume'); return; }
-      if (action === 'refresh-operations') { loadOperations(); return; }
+      if (action === 'refresh-operations') { if (!store.snapshot || store.snapshotError) loadSnapshot(); loadOperations(); return; }
 
       if (action === 'toggle-theme') {
         toggleTheme();

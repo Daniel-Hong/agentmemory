@@ -232,7 +232,7 @@ describe('HTTP snapshot fallback when the stream is unavailable', () => {
   it('refreshes the snapshot on the existing timer when the stream is unavailable',async()=>{
     let tick:()=>Promise<void> = async()=>{};
     const loadSnapshot=vi.fn().mockResolvedValue(true),loadOperations=vi.fn();
-    const c=context(['scheduleOperationsRefresh'],{operations:{refreshTimer:null},autoRefresh:{enabled:true,seconds:30},document:{hidden:false},state:{activeTab:'dashboard'},conn:{state:'reconnecting'},loadSnapshot,loadOperations,clearTimeout:vi.fn(),setTimeout:(fn:()=>Promise<void>)=>{tick=fn;return 1;}});
+    const c=context(['scheduleOperationsRefresh'],{operations:{refreshTimer:null},autoRefresh:{enabled:true,seconds:30},document:{hidden:false},state:{activeTab:'dashboard'},conn:{state:'reconnecting'},store:{snapshot:{}},loadSnapshot,loadOperations,clearTimeout:vi.fn(),setTimeout:(fn:()=>Promise<void>)=>{tick=fn;return 1;}});
     c.scheduleOperationsRefresh();await tick();expect(loadSnapshot).toHaveBeenCalledOnce();expect(loadOperations).toHaveBeenCalledOnce();
     c.conn.state='live';await tick();expect(loadSnapshot).toHaveBeenCalledOnce();
   });
@@ -320,3 +320,36 @@ describe('storage verification process totals versus retained samples', () => {
  it('retains an unknown interrupted attempt instead of inferring success from a paused worker',()=>{
   const c=fixtures();expect(c.snapshotStatus({status:'paused',attemptStatus:'unknown',lastAttemptAt:'2026-01-02T00:00:00Z',lastSuccessAt:'2026-01-01T00:00:00Z'})).toContain('data-snapshot-attempt-status="unknown"');
  });
+
+
+describe('failed initial viewer snapshot recovery',()=> {
+  it('retries a failed snapshot on the existing timer even while SSE is live',async()=> {
+    let tick:()=>Promise<void>=async()=>{};
+    const loadSnapshot=vi.fn().mockResolvedValue(true);
+    const c=context(['scheduleOperationsRefresh'],{operations:{refreshTimer:null},autoRefresh:{enabled:true,seconds:60},document:{hidden:false},state:{activeTab:'health'},store:{snapshot:null,snapshotError:true},conn:{state:'live'},loadSnapshot,loadOperations:vi.fn(),clearTimeout:vi.fn(),setTimeout:(fn:()=>Promise<void>)=>{tick=fn;return 1;}});
+    c.scheduleOperationsRefresh();await tick();expect(loadSnapshot).toHaveBeenCalledOnce();
+    c.autoRefresh.enabled=false;await tick();expect(loadSnapshot).toHaveBeenCalledOnce();
+  });
+  for(const name of ['renderDashboard','renderHealth']) {
+    it(name+' exposes an initial query failure and available operations instead of an endless loader',()=> {
+      const el={contains:()=>false,querySelectorAll:()=>[]};let html='';
+      const c=context(['snapshotUnavailableHtml',name],{store:{snapshot:null,snapshotError:true},document:{getElementById:()=>el,activeElement:null},setViewHtml:(_:unknown,value:string)=>{html=value;},skeleton:()=>'<loading>',operationsPanelHtml:()=>'<section>RUNNING metadata</section>'});
+      c[name]();expect(html).toContain('조회 실패');expect(html).toContain('RUNNING metadata');expect(html).not.toContain('<loading>');expect(html).not.toContain('healthy');
+    });
+  }
+});
+
+it('shares overlapping snapshot requests and releases the slot after failure',async()=> {
+  let resolve:(value:unknown)=>void=()=>{};const apiGet=vi.fn(()=>new Promise(r=>{resolve=r;}));
+  const c=context(['loadSnapshot'],{apiGet,store:{},state:{activeTab:'health',graph:{resetSeq:0}},renderConnection:vi.fn(),updateFooter:vi.fn(),markDirty:vi.fn(),renderTab:vi.fn()});
+  const first=c.loadSnapshot(),second=c.loadSnapshot();expect(apiGet).toHaveBeenCalledTimes(1);
+  resolve(null);expect(await first).toBe(false);expect(await second).toBe(false);
+  const third=c.loadSnapshot();expect(apiGet).toHaveBeenCalledTimes(2);resolve(null);await third;
+});
+
+it('finishes one bounded reread when the graph resets during a shared snapshot request',async()=> {
+  let c:Record<string,any>;let calls=0;
+  const apiGet=async()=>{if(++calls===1)c.state.graph.resetSeq++;return null;};
+  c=context(['loadSnapshot'],{apiGet,store:{},state:{activeTab:'health',graph:{resetSeq:0}},renderConnection:vi.fn(),updateFooter:vi.fn(),markDirty:vi.fn(),renderTab:vi.fn()});
+  expect(await c.loadSnapshot()).toBe(false);expect(calls).toBe(2);expect(c.store.snapshotRequest).toBeNull();
+});

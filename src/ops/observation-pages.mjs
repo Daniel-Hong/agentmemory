@@ -35,6 +35,7 @@ export function createObservationReader({storePath,kv}){
  const activeMutations=new Map();
  const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
+ const listJobs=new Map();
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function revision(scope){
   let file='absent';try{const value=await stat(join(storePath,encodeURIComponent(scope)+'.bin'),{bigint:true});file=[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');}catch(error){if(error.code!=='ENOENT')throw error;}
@@ -115,7 +116,7 @@ export function createObservationReader({storePath,kv}){
   else if(session&&session.observationCount!==rows.length+(removed.get(scope)?.size||0))throw fail('observation_index_not_ready_retry');
   return rows;
  }
- async function list(scope,{consistency='current-path'}={}){
+ async function readList(scope,{consistency='current-path'}={}){
   const rows=new Map();
   // Internal callers need complete rows; stream the file rather than amplify it into one SDK request per row.
   for(let attempt=0;;attempt++){
@@ -140,6 +141,34 @@ export function createObservationReader({storePath,kv}){
   }
   if(overlay&&!overlay.size)pending.delete(scope);
   return [...rows.values()];
+ }
+ // Share only an unfinished read of the same file/SDK revision. Completed
+ // rows are never cached: every later request validates its own generation.
+ async function list(scope,{consistency='current-path'}={}){
+  const key=JSON.stringify([scope,consistency,await revision(scope)]);
+  let job=listJobs.get(key),created=false;
+  // Preserve the independent path beyond the existing reader's waiter scale.
+  if(job?.waiters.length>=8)return readList(scope,{consistency});
+  if(!job){job={waiters:[]};listJobs.set(key,job);created=true;}
+  const answer=new Promise((resolve,reject)=>job.waiters.push({resolve,reject}));
+  if(created)void(async()=>{
+   const close=()=>{if(listJobs.get(key)===job)listJobs.delete(key);};
+   try{
+    const rows=await readList(scope,{consistency});close();
+    // Keep the owner's rows private until every follower is independent.
+    // Clone by record, not by namespace, to avoid a namespace-sized clone
+    // serialization buffer. The results still occupy one copy per caller.
+    const copies=Array.from({length:job.waiters.length-1},()=>[]);
+    let yieldedAt=Date.now();
+    if(copies.length)for(const row of rows)for(const copy of copies){
+     copy.push(structuredClone(row));
+     if(Date.now()-yieldedAt>=8){await new Promise(resolve=>setImmediate(resolve));yieldedAt=Date.now();}
+    }
+    const results=[rows,...copies];
+    job.waiters.forEach((waiter,index)=>waiter.resolve(results[index]));
+   }catch(error){close();job.waiters.forEach(waiter=>waiter.reject(error));}
+  })();
+  return answer;
  }
  async function response(scope,query,filterAgentId){
   if(Object.values(query).some(value=>typeof value!=="string"))throw fail("invalid_query",400);
