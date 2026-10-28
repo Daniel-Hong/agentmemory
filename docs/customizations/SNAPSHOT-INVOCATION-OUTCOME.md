@@ -1,6 +1,6 @@
 # Snapshot admission and actual completion
 
-2026-10-28 development follow-up to operating .37 / ace9bc2d. No operating action or new release candidate.
+2026-10-28 development follow-up to operating .37 / ace9bc2d; server-only .38 release preparation. No operating action.
 
 ## Confirmed boundary
 
@@ -34,6 +34,6 @@ Compression-local timeout errors now carry fixed COMPRESSION_TIMEOUT diagnostics
 
 Synthetic RED cases reproduced response/completion coupling, incorrect disabled mapping, scheduler errors before/during/after real ownership and retry restart misclassification. Small synthetic tests cover persisted admission, admission save failure, single-flight/pause/drain, legacy metadata, authenticated read-only status, safe older-server failure, and compression diagnostic redaction. Test evidence and final check results are recorded under the task's snapshot-outcome-diagnostics-development dossier.
 
-Real installed SDK/engine continuation after an admission acknowledgement has not been verified in this follow-up. No operating snapshot/retry/resume/model call, restart, installation, candidate registration or deployment was executed. Before proposing deployment, perform a tiny isolated SDK/engine admission→deferred owner→success/failure→drain test with synthetic data, then review the changed public response contract. No large operating data is needed for that next check.
+A subsequent small isolated test using installed SDK0.25.0/native engine0.22.1 verified prompt admission, owner continuation beyond a synthetic2-second invocation budget, attempt-bound success/failure, actual archive/Git success, prior snapshot preservation on failure and drain waiting for the owner. It used temporary HOME/config/state/spool and a loopback port; both processes exited normally and temporary data/port cleanup was verified. Evidence: snapshot-outcome-sdk-integration-verified2/REPORT.md in the task workspace. No operating snapshot/retry/resume/model call, restart, installation, candidate registration or deployment was executed. That component test does not reproduce production180-second calls, large exports, whole-service scheduler/control assembly or real REST/MCP/Viewer end-to-end. The release preparation must review the changed public response contract and freeze a server-only package before any separate operating approval.
 
 Replace these customizations when upstream provides equivalent request/actual-completion semantics, read-only tracking and privacy-safe compression diagnostics with the same failure/source-preservation regressions.
