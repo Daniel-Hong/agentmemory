@@ -28,6 +28,7 @@ function mockKV(seed: Record<string, Record<string, unknown>> = {}) {
       store.get(scope)?.delete(key);
     }),
     list: vi.fn(async (scope: string) => Array.from(store.get(scope)?.values() ?? [])),
+    countSummaries: vi.fn(async () => store.get(KV.summaries)?.size ?? 0),
   };
 }
 

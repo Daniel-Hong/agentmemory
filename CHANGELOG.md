@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — bounded Viewer summary counts
+
+- Consolidation/Viewer counts summaries from validated file keys plus completed SDK mutations instead of transporting every summary body through `state::list`. Null values remain records; deletions remain distinct. Redis uses its existing SDK list contract.
+- Corrupt/uncertain summary storage remains unavailable rather than becoming a false zero. This is display metadata, not a disk-commit certificate. No SDK limits, write completion, timeouts, recovery budgets, or installed client behavior changed.
+- Development only; operating .39 remains protected after SDK mutation uncertainty. Large summaries and reconnect timing support a transport-limit hypothesis, but the failed wire envelope and exact disconnect cause were not retained.
+
 ## Unreleased — Viewer initial snapshot recovery
 
 - Show a failed initial snapshot query explicitly in Overview/Health while retaining independently queried operations metadata. Retry missing/failed snapshots on the existing refresh timer even with live SSE, respect refresh OFF, and share overlapping snapshot requests. No operating deployment; storage/receipt and wire contracts are unchanged. See docs/customizations/VIEWER-INITIAL-SNAPSHOT-RECOVERY.md.

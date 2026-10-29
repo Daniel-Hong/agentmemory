@@ -482,14 +482,14 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
 export function createConsolidationStatusReader(kv: StateKV) {
   const counts = singleFlight(async () => {
     const [summaries, memories, semantic, procedural, relations] = await Promise.all([
-      kv.list(KV.summaries).catch(() => []),
+      kv.countSummaries(),
       kv.list<import("../types.js").Memory>(KV.memories).catch(() => []),
       kv.list(KV.semantic).catch(() => []),
       kv.list(KV.procedural).catch(() => []),
       kv.list(KV.relations).catch(() => []),
     ]);
     return {
-      summaries: summaries.length,
+      summaries,
       recurringPatterns: memories.filter(
         (m) =>
           m.isLatest &&

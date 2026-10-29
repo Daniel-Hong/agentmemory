@@ -7,6 +7,7 @@ import { getEnvVar } from '../config.js'
 import { createStateDurabilityFence } from '../ops/state-durability.mjs'
 import { createObservationReader } from '../ops/observation-pages.mjs'
 import { createAuditReader } from '../ops/audit-reader.mjs'
+import { createSummaryCount } from '../ops/summary-count.mjs'
 import { createGraphFileList } from '../ops/graph-file-list.mjs'
 import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generation.js'
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
@@ -128,6 +129,7 @@ export class StateKV {
   readonly graphFileList: ReturnType<typeof createGraphFileList> | null
   readonly captureReceiptPage: ReturnType<typeof createCaptureReceiptPage> | null
   readonly auditReader: ReturnType<typeof createAuditReader> | null
+  private readonly summaryCount: ReturnType<typeof createSummaryCount> | null
 
   constructor(
     private sdk: IIIClient,
@@ -142,6 +144,7 @@ export class StateKV {
     this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this }) : null
     this.graphFileList = this.backend === 'file' && storePath ? createGraphFileList({ storePath }) : null
     this.auditReader = this.backend === 'file' && storePath ? createAuditReader({ storePath, kv: this }) : null
+    this.summaryCount = this.backend === 'file' && storePath ? createSummaryCount({storePath,kv:this}) : null
     this.captureReceiptPage = this.backend === 'file' && storePath ? createCaptureReceiptPage(storePath) : null
   }
 
@@ -186,7 +189,7 @@ export class StateKV {
     scope: string,
     key: string,
     operation: (resolvedScope: string) => Promise<T>,
-    knownValue?: { value: unknown },
+    knownValue?: { value: unknown; deleted?: boolean },
   ): Promise<T> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
@@ -207,6 +210,11 @@ export class StateKV {
         : withGraphSnapshotUnknownMutation(this, scope, key, orderedWrite),
     )
     await notifyGraphGenerationChange(this, scope, key)
+    if(scope==='mem:summaries'){
+      if(knownValue)this.summaryCount?.record(key,knownValue.deleted!==true)
+      else if(result&&typeof result==='object'&&Object.hasOwn(result,'new_value'))this.summaryCount?.record(key,true)
+      else this.summaryCount?.invalidate()
+    }
     if (knownValue) this.record(scope, key, knownValue.value, knownValue.value === null && Boolean(result))
     else if (result && typeof result === 'object' && Object.hasOwn(result, 'new_value')) this.record(scope, key, (result as UpdateResult).new_value)
     return result
@@ -246,7 +254,14 @@ export class StateKV {
         function_id: 'state::delete',
         payload: { scope: resolvedScope, key },
       })
-    }, { value: null })
+    }, { value: null, deleted: true })
+  }
+
+  async countSummaries(): Promise<number> {
+    if(this.uncertainMutation)throw Error('summary_count_mutation_uncertain')
+    const count=this.summaryCount ? await this.summaryCount.count() : (await this.list('mem:summaries')).length
+    if(this.uncertainMutation)throw Error('summary_count_mutation_uncertain')
+    return count
   }
 
   async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation' }): Promise<T[]> {
