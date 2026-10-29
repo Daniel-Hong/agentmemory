@@ -524,7 +524,7 @@ describe("status wiring", () => {
 
   it("streams the same report to the viewer on every health tick and in the snapshot", () => {
     const streams = readFileSync("src/triggers/viewer-streams.ts", "utf-8");
-    expect(streams).toMatch(/statusReport\(\{ health: snapshot, scanMaxAgeMs \}\)/);
+    expect(streams).toMatch(/statusReport\(\{ health: snapshot, scanMaxAgeMs, functionMetrics:metricsRead \}\)/);
     expect(streams).toContain("healthPayload(payload.new_value ?? null, HEALTH_TICK_SCAN_MAX_AGE_MS)");
     expect(streams).toContain("healthPayload(health ?? null, UNINDEXED_SCAN_REUSE_MS)");
   });

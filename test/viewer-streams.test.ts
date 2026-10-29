@@ -258,6 +258,17 @@ describe("viewer stream triggers", () => {
     expect(Array.isArray(res.body.flags)).toBe(true);
   });
 
+  it('shares the same function metrics read with the status report without adding concurrent reads',async()=>{
+    const metrics=[{functionId:'mem::summarize',totalCalls:3,successCount:3,failureCount:0}];
+    const metricsStore={getAll:vi.fn(async()=>metrics)};
+    const {handlers}=setup(seeded(),{metricsStore});
+    const res=await handlers.get('api::viewer-snapshot')!({headers:{},query_params:{}})as{body:any};
+    expect(metricsStore.getAll).toHaveBeenCalledTimes(1);
+    expect(res.body.functionMetrics).toMatchObject(metrics);
+    expect(res.body.counts).toMatchObject({sessions:2,observations:10});
+    expect(res.body.report).not.toBeNull();
+  });
+
   it("rejects the snapshot and counts endpoints without the bearer when a secret is set", async () => {
     const { handlers } = setup(mockKV(), { secret: "s3cret" });
     const denied = (await handlers.get("api::counts")!({ headers: {} })) as { status_code: number };

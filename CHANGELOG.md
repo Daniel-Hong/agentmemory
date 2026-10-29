@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — selected SDK capture reconciliation (development only)
+
+- Add an authenticated, explicitly confirmed per-key reconciliation operation, pinned to the selected original digest. Recheck source, canonical observation, current keyword/vector ownership and publication marker under the existing record gate. Keep SDK completion distinct from disk verification.
+- Retain every original, historical failure/request and recovery budget/circuit; use resumable resolution metadata across partial SDK acknowledgements. Never replay an observation or invoke a model to mark an already stored capture complete.
+- Add bounded current index membership metadata without full state scans. Share the existing Viewer function-metrics read with status reporting; the broader query-parallelization experiment was rejected because of contention risk.
+- Operating .40 and its 114 quarantined captures remain unchanged. Historical uncertain writes and unexamined index membership remain unresolved. See docs/customizations/SDK-CAPTURE-RECONCILIATION.md.
+
 ## Unreleased — bounded active summary inputs
 
 - Automatic semantic consolidation keeps its exact five required fields, original stable newest20 selection, total, fingerprint, prompt and grounding. Summary source-preservation fields are read locally and never transported through an unbounded SDK list.
@@ -83,6 +90,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.41] — 2026-10-29
 ## [0.9.31-daniel.40] — 2026-10-29
 ## [0.9.31-daniel.39] — 2026-10-28
 ## [0.9.31-daniel.38] — 2026-10-28
@@ -383,6 +391,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.41]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.40...v0.9.31-daniel.41
 [0.9.31-daniel.40]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.39...v0.9.31-daniel.40
 [0.9.31-daniel.39]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.38...v0.9.31-daniel.39
 [0.9.31-daniel.38]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.37...v0.9.31-daniel.38

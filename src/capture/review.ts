@@ -2,6 +2,7 @@ import type { CaptureReviewHistory } from '../types.js';
 import type { InboxRecord } from '../functions/capture.js';
 import type { StateKV } from '../state/kv.js';
 import { KV } from '../state/schema.js';
+import{committedSdkResolution}from'./sdk-resolution-record.js';
 
 export function captureFailureCode(error: string): string {
   if (error.includes('Session observation limit reached')) return 'SESSION_OBSERVATION_LIMIT';
@@ -47,6 +48,7 @@ export function reviewMetadata(history: CaptureReviewHistory) {
   const requests=Object.entries(history.requests);const last=requests[requests.length-1];
   return {status:history.status,totalAttempts:history.totalAttempts,manualRetries:history.manualRetries,
     lastFailureCode:history.failures.at(-1)?.code ?? null,recoveredAt:history.recoveredAt ?? null,
+    ...(history.sdkResolution?{resolutionCompletion:'sdk',resolutionPhase:history.sdkResolution.phase,diskVerified:false}:{}),
     lastRequest:last ? {requestId:last[0],...last[1]} : null};
 }
 
@@ -62,7 +64,7 @@ export async function captureReviewPage(kv: StateKV, input: {status?:string;even
     const h=byKey.get(rec.key);const d=rec.payload?.data as Record<string,unknown>|undefined;
     const text=typeof d?.tool_name==='string' ? d.tool_name : rec.hookType;
     rows.set(rec.key,{key:rec.key,eventId:rec.eventId,sessionId:rec.sessionId,project:rec.project,hookType:rec.hookType,
-      observationId:rec.observationId,status:rec.status,attempts:rec.attempts,acceptedAt:rec.acceptedAt,updatedAt:rec.updatedAt,
+      observationId:rec.observationId,status:committedSdkResolution(h,rec)?'completed':rec.status,attempts:rec.attempts,acceptedAt:rec.acceptedAt,updatedAt:rec.updatedAt,
       errorCode:rec.lastError ? captureFailureCode(rec.lastError) : null,preview:text,
       review:h ? reviewMetadata(h) : {status:rec.status,totalAttempts:rec.attempts,manualRetries:0,lastFailureCode:rec.lastError?captureFailureCode(rec.lastError):null,recoveredAt:null,lastRequest:null}});
   }

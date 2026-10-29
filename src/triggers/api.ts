@@ -47,6 +47,8 @@ import { stripPrivateData } from "../functions/privacy.js";
 import { isSlotsEnabled, isReflectEnabled, parseSlotOwner } from "../functions/slots.js";
 import { renderViewerDocument } from "../viewer/document.js";
 import { validCaptureMetadataQuery, type CaptureMetadataQuery } from "../capture/review-metadata.js";
+import {createCaptureIndexMembership,validIndexMembershipQuery}from'../capture/index-membership.js';
+import{validSdkReconciliationSelection}from'../capture/sdk-reconciliation.js';
 import { getBoundViewerPort, getViewerSkipped } from "../viewer/server.js";
 import { MAX_FILES_UPPER_BOUND } from "../functions/replay.js";
 import { describeGraphNode } from "../functions/graph-node.js";
@@ -394,7 +396,7 @@ export interface StatusReporterDeps {
 }
 
 export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusReporterDeps) {
-  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number } = {}): Promise<StatusReport> {
+  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
     const idx = getSearchIndex();
     const keywordRebuildRunning = isKeywordRebuildInProgress();
     const scan = unindexedScanFor(kv);
@@ -403,7 +405,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
       : null;
     const [health, functionMetrics, graph, unindexed, auditMigrationState, stateStore, capture, graphIndex] = await Promise.all([
       options.health !== undefined ? Promise.resolve(options.health) : valueWithin(getLatestHealth(kv), STATUS_CHECK_TIMEOUT_MS),
-      deps.metricsStore ? valueWithin(deps.metricsStore.getAll(), STATUS_CHECK_TIMEOUT_MS) : Promise.resolve([]),
+      options.functionMetrics || deps.metricsStore ? valueWithin(options.functionMetrics ?? deps.metricsStore!.getAll(), STATUS_CHECK_TIMEOUT_MS) : Promise.resolve([]),
       valueWithin(
         sdk.trigger({ function_id: "mem::graph-stats", payload: {} }) as Promise<GraphStatsInput>,
         STATUS_CHECK_TIMEOUT_MS,
@@ -780,6 +782,36 @@ export function registerApiTriggers(
     catch{return {status_code:503,headers,body:{error:'CAPTURE_METADATA_UNAVAILABLE'}};}
   });
   sdk.registerTrigger({type:'http',function_id:'api::capture-review-metadata',config:{api_path:'/agentmemory/capture/review-metadata',http_method:'GET'}});
+
+  const indexMembership=createCaptureIndexMembership({keyword:getSearchIndex,vector:getVectorIndex});
+  sdk.registerFunction('api::capture-index-membership',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers:{...denied.headers,...headers}};
+    const q=req.query_params??{},raw=q.ids;
+    const input={ids:typeof raw==='string'&&raw.length<=8223?raw.split(','):[]};
+    if(Object.keys(q).some(k=>k!=='ids')||!validIndexMembershipQuery(input))return{status_code:400,headers,body:{error:'INVALID_INDEX_MEMBERSHIP_QUERY'}};
+    return{status_code:200,headers,body:indexMembership(input)};
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-index-membership',config:{api_path:'/agentmemory/capture/index-membership',http_method:'GET'}});
+
+  sdk.registerFunction('api::capture-reconcile-sdk',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers};
+    if(!secret)return{status_code:503,headers,body:{completed:false,code:'SDK_RECONCILIATION_AUTH_REQUIRED'}};
+    const body=req.body as Record<string,unknown>|undefined;
+    if(!body||Array.isArray(body)||body.captureCompletion!=='sdk-v1'||req.headers?.['x-agentmemory-capture-reconcile']!=='1'||Object.keys(req.query_params??{}).length)return{status_code:400,headers,body:{completed:false,code:'INVALID_SDK_RECONCILIATION'}};
+    const{captureCompletion,...selection}=body;
+    if(!validSdkReconciliationSelection(selection))return{status_code:400,headers,body:{completed:false,code:'INVALID_SDK_RECONCILIATION'}};
+    try{const value:any=await sdk.trigger({function_id:'mem::capture-reconcile-sdk',payload:selection});return{status_code:value?.completed===true?200:value?.code==='SDK_RECONCILIATION_UNAVAILABLE'?503:409,headers,body:value?.completed===true?value:{...value,completed:false,completion:'sdk',verified:false,synced:false}};}
+    catch{return{status_code:503,headers,body:{completed:false,code:'SDK_RECONCILIATION_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-reconcile-sdk',config:{api_path:'/agentmemory/capture/reconcile-sdk',http_method:'POST'}});
+  sdk.registerFunction('api::capture-reconcile-sdk-status',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers};
+    const q=req.query_params??{};
+    if(Object.keys(q).some(k=>!['key','requestId'].includes(k))||!validSdkReconciliationSelection({key:q.key,requestId:q.requestId,sourceDigest:'0'.repeat(64)}))return{status_code:400,headers,body:{error:'INVALID_SDK_RECONCILIATION'}};
+    try{return{status_code:200,headers,body:await sdk.trigger({function_id:'mem::capture-reconcile-sdk-status',payload:q})};}
+    catch{return{status_code:503,headers,body:{error:'SDK_RECONCILIATION_STATUS_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-reconcile-sdk-status',config:{api_path:'/agentmemory/capture/reconcile-sdk',http_method:'GET'}});
 
   sdk.registerFunction('api::capture-auto-recovery-control',async(req:HttpRequest):Promise<Response>=>{
     const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret)??requireConfiguredSecret(secret,'capture automatic recovery control');

@@ -1,5 +1,6 @@
 import {recordAudit} from "./audit.js";
-import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim} from "../capture/sdk-source-restore.js";
+import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim,assertSdkSourceLegacyProtection} from "../capture/sdk-source-restore.js";
+import{createSdkCaptureReconciliation,sdkReconciliationInvocation}from'../capture/sdk-reconciliation.js';
 import {createCaptureAutoRecovery,type CaptureAutoRecoveryOptions} from "../capture/auto-recovery.js";
 import {getSearchIndex,getVectorIndex} from "./search.js";
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
@@ -52,6 +53,8 @@ export interface InboxRecord {
   sdkRestoreRequestId?:string;
   sdkRestoreAttempts?:number;
   sdkRestoreState?:"pending"|"completed";
+  sdkResolutionId?:string;
+  sdkResolutionState?:'pending'|'committed';
   key: string;
   eventId: string;
   eventSource: "client" | "server";
@@ -108,6 +111,7 @@ export interface CaptureStatus {
     pending: number;
     sdkCompleted?: number;
     sdkRestorePending?:number;
+    sdkResolutionPending?:number;
     retrying: number;
     dead: number;
     oldestAcceptedAt: string | null;
@@ -275,6 +279,11 @@ export function registerCaptureFunctions(
     return pending;
   }
   const trackMaintenance=(work:()=>Promise<unknown>)=>{void trackWork(work).catch(()=>{});};
+  const sdkReconciliation=createSdkCaptureReconciliation(kv,{
+    admitted:()=>!stopped&&!backgroundPaused()&&(options.autoRecovery?.admitted()??true),
+    indexReady:obs=>getSearchIndex().sessionOf(obs.id)===obs.sessionId&&getVectorIndex()?.get(obs.id)?.sessionId===obs.sessionId,
+    audit:selection=>recordAudit(kv,'capture_sdk_reconciliation','api::capture-reconcile-sdk',[],{requestId:selection.requestId,completion:'sdk',stage:'verification_pending'}),
+  });
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
 
   function updatePendingSince(): void {
@@ -401,7 +410,7 @@ export function registerCaptureFunctions(
         const retained=await kv.get<InboxRecord>(KV.captureInbox,key);
         if(retained?.storageCompletion==='sdk'){
           const observation=retained.observationId?await kv.get<CompressedObservation>(KV.observations(retained.sessionId),retained.observationId):null;
-          return {status:'duplicate',state:observation&&retained.sdkRestoreState!=='pending'?'sdk_completed':'pending',eventId,observationId:retained.observationId,deduplicated:true};
+          return {status:'duplicate',state:observation&&retained.sdkRestoreState!=='pending'&&retained.sdkResolutionState!=='pending'?'sdk_completed':'pending',eventId,observationId:retained.observationId,deduplicated:true};
         }
       }
       if (clientEventId) {
@@ -469,7 +478,7 @@ export function registerCaptureFunctions(
         let source:InboxRecord|undefined,alreadyPresent=false;
         await withKeyedLock('capture:inbox-admission',()=>kv.recoveryWrite!.exclusive(keys,async()=>{
           requireSdkSourceWriter(kv);
-          if(await kv.get(KV.captureReview,key)||await kv.get(eventScope(key),key))throw sdkSourceFailure('SDK_SOURCE_LEGACY_PROTECTED');
+          await assertSdkSourceLegacyProtection(kv,payload,key,id,eventId);
           const rec=await kv.get<InboxRecord>(KV.captureInbox,key),obs=await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id);
           if(rec&&(rec.storageCompletion!=='sdk'||!['pending','retrying'].includes(rec.status)||rec.key!==key||rec.eventId!==eventId||rec.eventSource!=='client'||rec.sessionId!==payload.sessionId||rec.project!==payload.project||rec.hookType!==payload.hookType||rec.observationId!==id||!sameSdkSource(rec.payload,payload)))throw sdkSourceFailure('SDK_SOURCE_CONFLICT');
           if(obs&&!sdkObservationMatches(obs,payload,key,id,eventId))throw sdkSourceFailure('SDK_SOURCE_CONFLICT');
@@ -689,11 +698,11 @@ export function registerCaptureFunctions(
         .filter((v): v is string => typeof v === "string")
         .sort()[0];
       const lastFailed = records
-        .filter((r) => r.lastError)
+        .filter((r) => r.lastError && (r.storageCompletion!=='sdk'||r.sdkResolutionState==='pending'))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       inbox = {
         pending: records.filter((r) => r.status === "pending" && r.storageCompletion !== "sdk").length,
-        ...(sdkCompletion?{sdkCompleted:records.filter(r=>r.storageCompletion==='sdk'&&r.sdkRestoreState!=='pending').length,sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length}:{}),
+        ...(sdkCompletion?{sdkCompleted:records.filter(r=>r.storageCompletion==='sdk'&&r.sdkRestoreState!=='pending'&&r.sdkResolutionState!=='pending').length,sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length,sdkResolutionPending:records.filter(r=>r.sdkResolutionState==='pending').length}:{}),
         retrying: records.filter((r) => r.status === "retrying").length,
         dead: records.filter((r) => r.status === "dead").length,
         oldestAcceptedAt: live.map((r) => r.acceptedAt).sort()[0] ?? null,
@@ -714,6 +723,22 @@ export function registerCaptureFunctions(
   }
 
   sdk.registerFunction("mem::capture-restore-sdk",(input:{payload:HookPayload;eventId:string})=>trackWork(()=>backgroundTask(restoreSdkSource)(input)));
+  sdk.registerFunction('mem::capture-reconcile-sdk',input=>{
+    const selection=sdkReconciliationInvocation(input);
+    return trackWork(()=>backgroundTask(async()=>{
+      try{
+        const result=await sdkReconciliation.reconcile(selection);
+        if(result.status==='reconciled'){counters.recovered++;updateActiveInbox(selection.key,false);}
+        return result;
+      }catch(error){const code=(error as {code?:unknown})?.code;return{completed:false,completion:'sdk',verified:false,synced:false,code:typeof code==='string'&&/^SDK_RECONCILIATION_[A-Z_]+$/.test(code)?code:'SDK_RECONCILIATION_UNAVAILABLE'};}
+    })());
+  });
+  sdk.registerFunction('mem::capture-reconcile-sdk-status',input=>{
+    if(!input||typeof input!=='object'||Array.isArray(input))throw Error('INVALID_SDK_RECONCILIATION');
+    const{_caller_worker_id,...body}=input as Record<string,unknown>;
+    if(_caller_worker_id!==undefined&&typeof _caller_worker_id!=='string')throw Error('INVALID_SDK_RECONCILIATION');
+    return sdkReconciliation.status(body as {key:string;requestId:string});
+  });
   sdk.registerFunction("mem::capture", async (input: { payload: HookPayload; eventId?: string }) => capture(input));
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean; requestId?: string } = {}) => {
