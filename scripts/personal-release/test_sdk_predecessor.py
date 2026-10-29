@@ -7,13 +7,14 @@ import test_sdk_shutdown_compat as shutdown
 
 
 class SdkPredecessorTests(unittest.TestCase):
+    predecessor_version = '0.9.31-daniel.33'
     def setUp(self):
         shutdown.ShutdownTests.setUp(self)
         self.tx.start_attempted = False
         self.tx.owner, self.tx.anchor = os.getuid(), self.root
         self.tx.paths.update(public=self.root / 'public', releases=self.root / 'releases', dropin=self.root / 'service.conf', data=self.root / 'data')
         self.profile = {'backgroundControlVersion': 2, 'automaticMemoryRecovery': True, 'storageCompletion': 'sdk-v1', 'nativeEngineCompatibility': '0.22.1', 'serverDependencyMode': 'bundled-sdk0.25-v1'}
-        self.version = '0.9.31-daniel.33'
+        self.version = self.predecessor_version
         self.directory = self.tx.paths['releases'] / (self.version + '-' + 'a' * 8)
         self.manifest = self.directory / 'package.json'
         self.kitpath = self.tx.paths['public'] / 'prior-sdk' / 'kit.json'
@@ -193,5 +194,14 @@ class SdkPredecessorTests(unittest.TestCase):
         with patch.object(self.module.subprocess, 'check_output', side_effect=raw) as read:
             self.assertEqual(self.module.System().service_commands(), commands)
             self.assertEqual([call.args[0][-2] for call in read.call_args_list], list(commands))
+
+class Current39SdkPredecessorTests(SdkPredecessorTests):
+    predecessor_version = '0.9.31-daniel.39'
+
+    def test_current_four_uncertain_mutations_are_refused_before_stop(self):
+        self.health['storageDurability']['mutationFailures'] = 4
+        with self.assertRaisesRegex(RuntimeError, 'SDK_PREDECESSOR_CONTRACT_UNVERIFIED'):
+            self.prove()
+        self.assertFalse(self.tx.system.stopped)
 
 if __name__ == '__main__': unittest.main()

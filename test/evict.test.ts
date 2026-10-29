@@ -88,6 +88,9 @@ function mockKV(store: Store, listFailures: Set<string> = new Set()) {
       const entries = store.get(scope);
       return entries ? (Array.from(entries.values()) as T[]) : [];
     },
+    async getSummarySessionIds():Promise<Set<unknown>> {
+      return new Set((await this.list<{sessionId:unknown}>(KV.summaries)).map(row=>row.sessionId));
+    },
   };
 }
 
@@ -132,6 +135,11 @@ function storeForObservedSession(sessionId: string): Store {
 }
 
 describe("mem::evict stale sessions", () => {
+  it("stops before any deletion when summary identities are unavailable",async()=>{
+    const kv=mockKV(storeForObservations('kept',[]),new Set([KV.summaries]));const {sdk}=mockSdk();registerEvictFunction(sdk as never,kv as never);const deleted=vi.spyOn(kv,'delete');
+    await expect(sdk.trigger({function_id:'mem::evict',payload:{}})).rejects.toThrow('list failed');
+    expect(deleted).not.toHaveBeenCalled();expect(await kv.get(KV.sessions,'kept')).not.toBeNull();
+  });
   it("runs session recovery before deleting a stale observed session", async () => {
     const sessionId = "ses_stale";
     const store = storeForObservedSession(sessionId);

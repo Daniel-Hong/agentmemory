@@ -106,7 +106,7 @@ function semanticGroundingTokens(value: unknown) {
 	)];
 }
 
-function semanticFactSupportedBySummary(fact: string, summary: SessionSummary) {
+function semanticFactSupportedBySummary(fact: string, summary: Pick<SessionSummary,'title'|'narrative'|'concepts'>) {
 	const factTokens = semanticGroundingTokens(fact);
 
 	// Very short/generated facts are too ambiguous to promote safely.
@@ -174,23 +174,16 @@ export function registerConsolidationPipelineFunction(
       const results: Record<string, unknown> = {};
 
       if (tier === "all" || tier === "semantic") {
-        const summaries = await kv.list<SessionSummary>(KV.summaries);
+        const {total:totalSummaries,recent:recentSummaries} = await kv.getSummaryMergeInputs();
         const existingSemantic = await kv.list<SemanticMemory>(KV.semantic);
 
-        if (summaries.length >= 5) {
-          const recentSummaries = summaries
-            .sort(
-              (a, b) =>
-                new Date(b.createdAt).getTime() -
-                new Date(a.createdAt).getTime(),
-            )
-            .slice(0, 20);
+        if (totalSummaries >= 5) {
 
           const fingerprintKey="consolidation:semanticFingerprint:v2";
           const fingerprint=createHash("sha256").update("semantic-grounded-v2|"+JSON.stringify(recentSummaries.map(s=>({sessionId:s.sessionId,title:s.title,narrative:s.narrative,concepts:s.concepts})))).digest("hex");
           const previous=await kv.get<{hash:string}>(KV.config,fingerprintKey);
           if(previous?.hash===fingerprint) {
-            results.semantic={skipped:true,reason:"summaries unchanged",totalSummaries:summaries.length};
+            results.semantic={skipped:true,reason:"summaries unchanged",totalSummaries};
           } else {
           const prompt = buildSemanticMergePrompt(
             recentSummaries.map((s) => ({
@@ -240,8 +233,8 @@ export function registerConsolidationPipelineFunction(
                 newFacts++;
               }
             }
-            await kv.set(KV.config,fingerprintKey,{hash:fingerprint,at:now,summaryCount:summaries.length});
-            results.semantic = { newFacts, totalSummaries: summaries.length };
+            await kv.set(KV.config,fingerprintKey,{hash:fingerprint,at:now,summaryCount:totalSummaries});
+            results.semantic = { newFacts, totalSummaries };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             logger.error("Semantic consolidation failed", { error: msg });

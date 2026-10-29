@@ -33,6 +33,10 @@ function mockKV() {
       const entries = store.get(scope);
       return entries ? (Array.from(entries.values()) as T[]) : [];
     },
+    async getSummaryMergeInputs() {
+      const rows=await this.list<SessionSummary>('mem:summaries');
+      return {total:rows.length,recent:rows.sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,20).map(({sessionId,createdAt,title,narrative,concepts})=>({sessionId,createdAt,title,narrative,concepts}))};
+    },
   };
 }
 

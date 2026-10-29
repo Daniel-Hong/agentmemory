@@ -196,7 +196,17 @@ export class StateKV {
     const write = async () => {
       noteGraphSnapshotWrite(this, scope, key)
       try {
-        return await this.guardedMutation(scope, key, () => operation(scope))
+        return await this.guardedMutation(scope, key, () => {
+          if(scope==='mem:summaries'&&this.summaryCount)return withKeyedLock(`summary-state:${key}`,async()=>{
+            const projection=knownValue&&!knownValue.deleted?this.summaryCount!.prepare(knownValue.value):undefined
+            const result=await operation(scope)
+            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection)
+            else if(result&&typeof result==='object'&&Object.hasOwn(result,'new_value'))this.summaryCount!.record(key,true,this.summaryCount!.prepare(Reflect.get(result,'new_value')))
+            else this.summaryCount!.invalidate()
+            return result
+          })
+          return operation(scope)
+        })
       } finally {
         noteGraphSnapshotWrite(this, scope, key)
       }
@@ -210,13 +220,8 @@ export class StateKV {
         : withGraphSnapshotUnknownMutation(this, scope, key, orderedWrite),
     )
     await notifyGraphGenerationChange(this, scope, key)
-    if(scope==='mem:summaries'){
-      if(knownValue)this.summaryCount?.record(key,knownValue.deleted!==true)
-      else if(result&&typeof result==='object'&&Object.hasOwn(result,'new_value'))this.summaryCount?.record(key,true)
-      else this.summaryCount?.invalidate()
-    }
     if (knownValue) this.record(scope, key, knownValue.value, knownValue.value === null && Boolean(result))
-    else if (result && typeof result === 'object' && Object.hasOwn(result, 'new_value')) this.record(scope, key, (result as UpdateResult).new_value)
+    else if (result && typeof result === 'object' && Object.hasOwn(result, 'new_value')) this.record(scope, key, Reflect.get(result,'new_value'))
     return result
   }
 
@@ -262,6 +267,20 @@ export class StateKV {
     const count=this.summaryCount ? await this.summaryCount.count() : (await this.list('mem:summaries')).length
     if(this.uncertainMutation)throw Error('summary_count_mutation_uncertain')
     return count
+  }
+
+  async getSummaryMergeInputs(): Promise<{total:number;recent:Pick<import('../types.js').SessionSummary,'sessionId'|'createdAt'|'title'|'narrative'|'concepts'>[]}> {
+    if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+    const result=this.summaryCount ? await this.summaryCount.inputs() : await this.list<import('../types.js').SessionSummary>('mem:summaries').then(rows=>({total:rows.length,recent:rows.sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,20)}))
+    if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+    return result
+  }
+
+  async getSummarySessionIds(): Promise<Set<unknown>> {
+    if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+    const result=this.summaryCount ? await this.summaryCount.sessionIds() : new Set((await this.list<import('../types.js').SessionSummary>('mem:summaries')).map(row=>row.sessionId))
+    if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+    return result
   }
 
   async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation' }): Promise<T[]> {

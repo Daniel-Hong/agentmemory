@@ -32,6 +32,9 @@ async function fixture() {
       return value;
     },
     list: async <T>(scope: string): Promise<T[]> => structuredClone([...store.get(scope)?.values() ?? []]) as T[],
+    async getSummarySessionIds():Promise<Set<unknown>> {
+      return new Set((await this.list<{sessionId:unknown}>(KV.summaries)).map(row=>row.sessionId));
+    },
     delete: async (scope: string, key: string) => { store.get(scope)?.delete(key); },
   };
   const sdk = {

@@ -1,6 +1,7 @@
 import {mkdtemp,open,rename,rm,stat,realpath,readdir} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {createHash} from 'node:crypto';
+import {AsyncLocalStorage} from 'node:async_hooks';
 import {isDeepStrictEqual} from 'node:util';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -36,6 +37,8 @@ export interface CompressionCertificationScenario {
   storageUnitCount?:1|16;
   writerPlacement?:'unrelated'|'same_shard'|'same_target';
   recoverPendingAtEnd?:boolean;
+  forceMetadataSupersession?:boolean;
+  awaitEachPublication?:boolean;
   // Injected isolated actual engine; lifecycle and temporary store remain caller-owned.
   realEngine?:{sdk:{trigger:(input:any)=>Promise<any>};storePath:string;prepareOnly?:boolean;reuseSyntheticSeed?:boolean;seedChecksums?:Record<string,string>};
 }
@@ -85,9 +88,10 @@ export async function runCompressionCertificationScenario(options:CompressionCer
   const {namespaceBytes=256*1024,itemCount=2,inferenceMs=5,publicationDelayMs=0,timeoutMs=1000,
     foregroundWritesAtMs=[],recoveryAtMs,recoveryItemCount=1,firstCompressionPublicationDelayMs=0,arrivalAnchor='scenario_start',
     warmCaptureBudget=false,recoveryFactory=registerEmbeddingRecovery,durabilityFactory=createStateDurabilityFence,compressFactory=registerCompressFunction,
-    storageUnitCount=1,writerPlacement='unrelated',recoverPendingAtEnd=false,realEngine}=options;
+    storageUnitCount=1,writerPlacement='unrelated',recoverPendingAtEnd=false,forceMetadataSupersession=false,awaitEachPublication=false,realEngine}=options;
   if(namespaceBytes<1024||namespaceBytes>260_000_000||itemCount<1||itemCount>5||![1,16].includes(storageUnitCount)||recoveryItemCount<1||recoveryItemCount>4||firstCompressionPublicationDelayMs<0||firstCompressionPublicationDelayMs>18000||foregroundWritesAtMs.length>5||[...foregroundWritesAtMs,...(recoveryAtMs===undefined?[]:[recoveryAtMs])].some(n=>!Number.isInteger(n)||n<0||n>13000))throw Error('synthetic_scenario_bounds');
   if(realEngine&&(publicationDelayMs!==0||firstCompressionPublicationDelayMs!==0))throw Error('actual_engine_cannot_simulate_publication');
+  if(forceMetadataSupersession&&(realEngine||namespaceBytes>1024*1024||itemCount!==2))throw Error('synthetic_metadata_gate_requires_small_two_item_fixture');
   const directory=realEngine?await realpath(realEngine.storePath):await mkdtemp(join(tmpdir(),'am-compression-first-'));
   if(realEngine&&!directory.startsWith('/tmp/'))throw Error('actual_engine_requires_temporary_store');
   const scope=KV.observations('synthetic-first-certification');
@@ -99,6 +103,17 @@ export async function runCompressionCertificationScenario(options:CompressionCer
   if(writerPlacement==='same_shard')for(let n=0;;n++){const key='same-unit-peer-'+n;if(storageUnitFor(key)===storageUnitFor('target-0')){foregroundKey=key;break;}}
   const rows=new Map<string,Map<string,any>>(),publications=new Map<string,Promise<void>>();
   const sourcePublicationEvents:Record<string,unknown>[]=[],taskEvents:Record<string,unknown>[]=[];
+  const indexPublicationEvents:Record<string,unknown>[]=[],fenceTrace=new AsyncLocalStorage<Record<string,unknown>>();
+  let metadataCaptures=0,metadataSupersessionForced=false,captureStarted!:()=>void,newMetaPublished!:()=>void;
+  const captureGate=new Promise<void>(r=>{captureStarted=r;}),publicationGate=new Promise<void>(r=>{newMetaPublished=r;});
+  async function waitGate(promise:Promise<void>){let timer:ReturnType<typeof setTimeout>|undefined;try{await Promise.race([promise,new Promise<void>((_,reject)=>{timer=setTimeout(()=>reject(Error('synthetic_metadata_gate_unreached')),timeoutMs);})]);}finally{clearTimeout(timer);}}
+  const indexKind=(s:string,k:string)=>s===KV.bm25Index&&k==='vectors:meta'?'metadata':s===KV.vectorPendingLog?(k==='~clear'?'pending_clear':'pending_item'):s.startsWith(KV.bm25Index+':vec:')?'vector_bucket':null;
+  function indexTrace(phase:string,s:string,k:string,value:unknown){
+    const kind=indexKind(s,k);if(!kind)return;
+    const hash=createHash('sha256').update(JSON.stringify(value??null)).digest('hex');
+    const entry={phase,kind,hash,atMs:performance.now()-began};if(indexPublicationEvents.length<64)indexPublicationEvents.push(entry);
+    const active=fenceTrace.getStore();if(phase==='sdk_get'&&active){const capture=(active.captures??=[])as unknown[];if(capture.length<200)capture.push({kind,hash});}
+  }
   const file=(s:string)=>join(directory,encodeURIComponent(s)+'.bin');
   let sdkGets=0,namespacePublishes=0,publicationFailures=0;
   let firstCompressionWriteAtMs:number|null=null,sourcePublishAfter=0;
@@ -119,6 +134,8 @@ export async function runCompressionCertificationScenario(options:CompressionCer
     const task=(publications.get(s)??Promise.resolve()).then(async()=>{
       await pause(publicationDelayMs);if(s===firstSourceUnit&&sourcePublishAfter>performance.now())await pause(sourcePublishAfter-performance.now());
       const startedAtMs=performance.now()-began;await writeNamespace(s,snapshot);
+      for(const[key,value]of snapshot)indexTrace('published',s,key,value);
+      if(forceMetadataSupersession&&s===KV.bm25Index&&snapshot.get('vectors:meta')?.count===2)newMetaPublished();
       if(sourceUnitSet.has(s)&&sourcePublicationEvents.length<16)sourcePublicationEvents.push({unit:sourceUnits.indexOf(s),queuedAtMs,startedAtMs,finishedAtMs:performance.now()-began});
     });
     task.catch(()=>publicationFailures++);publications.set(s,task);
@@ -131,11 +148,18 @@ export async function runCompressionCertificationScenario(options:CompressionCer
       if(id==='state::set'&&p.scope===firstSourceUnit&&p.key==='target-0'&&p.value.llmCompressionRevision!==undefined&&firstCompressionWriteAtMs===null){firstCompressionWriteAtMs=performance.now()-began;onFirstCompressionWrite();}
       return realEngine.sdk.trigger(input);
     }
-    if(id==='state::get'){sdkGets++;return rows.get(p.scope)?.get(p.key)??null;}
+    if(id==='state::get'){
+      sdkGets++;const value=rows.get(p.scope)?.get(p.key)??null;indexTrace('sdk_get',p.scope,p.key,value);
+      if(forceMetadataSupersession&&p.scope===KV.bm25Index&&p.key==='vectors:meta'&&fenceTrace.getStore()&&++metadataCaptures===2){
+        if(value?.count!==1)throw Error('synthetic_obsolete_capture_not_pinned');captureStarted();await waitGate(publicationGate);metadataSupersessionForced=true;
+      }
+      return value;
+    }
     if(id==='state::list')return [...rows.get(p.scope)?.values()??[]];
     if(id==='state::set'){
+      if(forceMetadataSupersession&&p.scope===KV.bm25Index&&p.key==='vectors:meta'&&p.value.count===2)await waitGate(captureGate);
       if(p.scope===firstSourceUnit&&p.key==='target-0'&&p.value.llmCompressionRevision!==undefined&&firstCompressionWriteAtMs===null){firstCompressionWriteAtMs=performance.now()-began;sourcePublishAfter=performance.now()+firstCompressionPublicationDelayMs;onFirstCompressionWrite();}
-      if(!rows.has(p.scope))rows.set(p.scope,new Map());rows.get(p.scope)!.set(p.key,JSON.parse(JSON.stringify(p.value)));publish(p.scope);return p.value;
+      if(!rows.has(p.scope))rows.set(p.scope,new Map());rows.get(p.scope)!.set(p.key,JSON.parse(JSON.stringify(p.value)));indexTrace('sdk_set',p.scope,p.key,rows.get(p.scope)!.get(p.key));publish(p.scope);return p.value;
     }
     if(id==='state::delete'){const found=rows.get(p.scope)?.delete(p.key);publish(p.scope);return found;}
     if(id==='state::update'){
@@ -153,7 +177,7 @@ export async function runCompressionCertificationScenario(options:CompressionCer
   const physicalSelection=(selection:any[])=>selection.map(row=>({family:sourceUnitSet.has(row.scope)?'source':row.scope===RETRY||row.scope.startsWith(RETRY+':unit:')?'retry':row.scope===COMMITTED||row.scope.startsWith(COMMITTED+':unit:')?'marker':'index',unit:sourceUnitSet.has(row.scope)?sourceUnits.indexOf(row.scope):storageUnitCount===16&&row.scope.includes(':unit:')?parseInt(row.scope.slice(-2),16):0}));
   durability.waitForKeys=async(...args:any[])=>{
     const started=performance.now(),event:Record<string,unknown>={kind:role(args[1]),keys:args[1].length,physicalSelection:physicalSelection(args[1]),startedAtMs:started-began};
-    try{const result=await waitForKeys(...args);Object.assign(event,{outcome:'verified'});return result;}
+    try{const result=await fenceTrace.run(event,()=>waitForKeys(...args));Object.assign(event,{outcome:'verified'});return result;}
     catch(error:any){Object.assign(event,{outcome:'failed',code:error?.code??null,stage:error?.diagnostics?.stage??null,cause:error?.diagnostics?.errorCode??null});throw error;}
     finally{event.elapsedMs=performance.now()-started;if(certificateEvents.length<64)certificateEvents.push(event);}
   };
@@ -247,6 +271,9 @@ export async function runCompressionCertificationScenario(options:CompressionCer
       const start=performance.now(),result:any=await sdk.trigger({function_id:'mem::compress',payload:{sessionId:fixed.sessionId,observationId:'target-'+n,raw:{...raw,id:'target-'+n}}});
       const stored=await kv.get<any>(scope,'target-'+n);
       outcomes.push({success:result?.success===true,elapsedMs:performance.now()-start,revisionWritten:stored?.llmCompressionRevision!==undefined,retained:result?.retained===true,diagnosticCategory:result?.diagnostics?.category??null});
+      // The explicitly uncontended fixture waits for publication, not only the
+      // compress handler that enqueues it. Default scenarios retain overlap.
+      if(awaitEachPublication)await worker.drain();
     }
     const compressionBatchReturnedMs=performance.now()-began;
     await worker.drain();
@@ -266,7 +293,7 @@ export async function runCompressionCertificationScenario(options:CompressionCer
       compressionBatchReturnedMs,firstPassDrainedMs,firstPassCompleted,completedItemsPerMinute:committedDisk.values.size/(elapsedMs/60000),firstAttemptFailures:outcomes.filter(row=>!row.success).length,
       inferencePeak,compressionCalls,embeddingCalls,inferenceEvents,outcomes,sdkGets,certificateEvents,
       durabilityReads:{physicalReads:reads.startedReads-initialReads.startedReads,scanBytes:reads.scanBytes-initialReads.scanBytes,sharedRequests:reads.sharedRequests-initialReads.sharedRequests},
-      namespacePublishes,publicationFailures,sourcePublicationEvents,taskEvents,taskErrors:errors,metrics:await metrics.get('mem::compress'),
+      namespacePublishes,publicationFailures,sourcePublicationEvents,indexPublicationEvents,metadataSupersessionForced,taskEvents,taskErrors:errors,metrics:await metrics.get('mem::compress'),
       originalSourcesPreserved:selected.values.size===itemCount&&[...selected.values.values()].every((row:any)=>row?.sourceRaw?.toolOutput===raw.toolOutput),
       diskCompressedTargets:[...selected.values.values()].filter((row:any)=>row.llmCompressionRevision!==undefined).length,
       pendingTargets:(await kv.list<any>(RETRY)).filter(row=>row.id.startsWith('target-')).length,

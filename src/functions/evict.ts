@@ -4,7 +4,6 @@ import type {
   Session,
   CompressedObservation,
   RawObservation,
-  SessionSummary,
   Memory,
 } from "../types.js";
 import { KV } from "../state/schema.js";
@@ -149,10 +148,7 @@ export function registerEvictFunction(sdk: IIIClient, kv: StateKV): void {
 
       let recoveredStaleSessions = 0;
       const sessions = await kv.list<Session>(KV.sessions).catch(() => []);
-      const summaries = await kv
-        .list<SessionSummary>(KV.summaries)
-        .catch(() => []);
-      const summaryIds = new Set(summaries.map((s) => s.sessionId));
+      const summaryIds = await kv.getSummarySessionIds();
 
       for (const session of sessions) {
         if (!session.startedAt) continue;

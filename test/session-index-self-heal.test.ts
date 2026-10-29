@@ -41,6 +41,9 @@ function mockKV() {
       if (!store.has(scope)) return [];
       return Array.from(store.get(scope)!.values()) as T[];
     }),
+    async getSummarySessionIds():Promise<Set<unknown>> {
+      return new Set((await this.list<{sessionId:unknown}>(KV.summaries)).map(row=>row.sessionId));
+    },
   };
 }
 

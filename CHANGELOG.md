@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — bounded active summary inputs
+
+- Automatic semantic consolidation keeps its exact five required fields, original stable newest20 selection, total, fingerprint, prompt and grounding. Summary source-preservation fields are read locally and never transported through an unbounded SDK list.
+- Eviction reads the exact summary session-ID set and stops before deletion if the projection is unavailable. Completed SDK changes are JSON-pinned at dispatch and serialized per summary key inside the existing recovery gate. Count/ID queries stay usable when only semantic metadata is too large or order is ambiguous.
+- Invalid semantic dates or pending tied-order ambiguity are explicit failures, not guessed order or false emptiness. Per-record SDK get/write, explicit full export/import and other manual summary consumers retain their existing transport limits. No operating change or historical-write resolution is claimed.
+
 ## Unreleased — bounded Viewer summary counts
 
 - Consolidation/Viewer counts summaries from validated file keys plus completed SDK mutations instead of transporting every summary body through `state::list`. Null values remain records; deletions remain distinct. Redis uses its existing SDK list contract.
@@ -77,6 +83,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.40] — 2026-10-29
 ## [0.9.31-daniel.39] — 2026-10-28
 ## [0.9.31-daniel.38] — 2026-10-28
 ## [0.9.31-daniel.37] — 2026-10-28
@@ -376,6 +383,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.40]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.39...v0.9.31-daniel.40
 [0.9.31-daniel.39]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.38...v0.9.31-daniel.39
 [0.9.31-daniel.38]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.37...v0.9.31-daniel.38
 [0.9.31-daniel.37]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.36...v0.9.31-daniel.37

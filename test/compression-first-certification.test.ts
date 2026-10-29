@@ -16,8 +16,9 @@ it('reports compression success separately from a failed disk certificate and re
  expect(result.certificateEvents).toContainEqual(expect.objectContaining({kind:'source_intent',outcome:'failed',code:'STATE_DURABILITY_TIMEOUT'}));
  expect(result.embeddingCalls).toBe(0);expect(result.pendingTargets).toBe(1);expect(result.durablePendingTargets).toBe(1);expect(result.committedTargets).toBe(0);expect(result.originalSourcesPreserved).toBe(true);expect(result.inferencePeak).toBe(1);
 });
-it('uses serial full compression arrivals and real final vector publication on an uncontended file',async()=>{
- const result=await runCompressionCertificationScenario({itemCount:2,timeoutMs:2000});
+it('serializes full compression and final vector publication on an uncontended file',async()=>{
+ const result=await runCompressionCertificationScenario({itemCount:2,timeoutMs:2000,awaitEachPublication:true});
+ await report(result);
  expect(result.outcomes.every(row=>row.success)).toBe(true);expect(result.compressionCalls).toBe(2);expect(result.embeddingCalls).toBe(2);expect(result.inferencePeak).toBe(1);
  expect(result.certificateEvents.filter(row=>row.outcome==='failed')).toEqual([]);
  expect(result.originalSourcesPreserved).toBe(true);expect(result.pendingTargets).toBe(0);expect(result.committedTargets).toBe(2);expect(result.publicationFailures).toBe(0);
@@ -27,6 +28,15 @@ it('keeps foreground writes and recovery separate from serial compression submis
  const result=await runCompressionCertificationScenario({itemCount:2,inferenceMs:15,foregroundWritesAtMs:[10,35],recoveryAtMs:20,publicationDelayMs:3,timeoutMs:2000});
  expect(result.inferencePeak).toBe(1);expect(result.originalSourcesPreserved).toBe(true);expect(result.publicationFailures).toBe(0);expect(result.taskErrors).toEqual([]);
  expect(result.compressionCalls).toBe(2);expect(result.outcomes).toHaveLength(2);
+});
+it('recaptures superseded metadata before certifying the current publication',async()=>{
+ const result=await runCompressionCertificationScenario({itemCount:2,timeoutMs:250,forceMetadataSupersession:true});
+ await report(result);
+ expect(result.metadataSupersessionForced).toBe(true);
+ const recaptured=result.certificateEvents.find(row=>Array.isArray(row.captures)&&new Set((row.captures as {kind:string;hash:string}[]).filter(row=>row.kind==='metadata').map(row=>row.hash)).size===2);
+ expect(recaptured).toMatchObject({kind:'index_publication',outcome:'verified'});
+ expect(result.certificateEvents.filter(row=>row.outcome==='failed')).toEqual([]);
+ expect(result.originalSourcesPreserved).toBe(true);expect(result.pendingTargets).toBe(0);expect(result.durablePendingTargets).toBe(0);expect(result.committedTargets).toBe(2);expect(result.publicationFailures).toBe(0);
 });
 it.runIf(process.env.AM_COMPRESSION_BIG==='1')('measures the bounded 253 MB first-attempt full path without concurrent compression injection',async()=>{
  const result=await runCompressionCertificationScenario({namespaceBytes:253_000_000,itemCount:2,inferenceMs:25,foregroundWritesAtMs:[100],recoveryAtMs:200,publicationDelayMs:40,timeoutMs:15000,warmCaptureBudget:process.env.AM_COMPRESSION_WARM==='1',...await factories()});
