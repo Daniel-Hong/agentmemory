@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — independent Viewer bootstrap
+
+- Return nullable optional consolidation detail from the initial Viewer snapshot without waiting for a full summary count. Keep last-run metadata, actual health/counts and the existing dedicated detail endpoint; do not invent healthy/empty data or increase request deadlines.
+- Display a schema-validated GET health503 response as its actual critical state instead of discarding the diagnostics; other HTTP/authentication/malformed failures remain failures. Explain Refresh OFF as retained screen data, and label pause/resume buttons as actions. Preserve server control, storage protections and the user-requested retirement of temporary automatic-pause operators.
+- Behavioral regressions cover a blocked count, actual registered snapshot/detail handlers and frontend lazy-loading. Operating recovery and graph migration remain separate until actually verified. See docs/customizations/VIEWER-INITIAL-SNAPSHOT-RECOVERY.md.
+
 ## Unreleased — coherent live resource samples
 
 - Add an optional per-response resourceSample to the existing health route, sampling local memory once after existing asynchronous reads. Preserve the cached health record, existing authentication and lookup counts.
@@ -110,6 +116,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.45] — 2026-10-30
 ## [0.9.31-daniel.44] — 2026-10-30
 ## [0.9.31-daniel.43] — 2026-10-30
 ## [0.9.31-daniel.42] — 2026-10-30
@@ -414,6 +421,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.45]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.44...v0.9.31-daniel.45
 [0.9.31-daniel.44]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.43...v0.9.31-daniel.44
 [0.9.31-daniel.43]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.42...v0.9.31-daniel.43
 [0.9.31-daniel.42]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.41...v0.9.31-daniel.42

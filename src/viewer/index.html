@@ -2102,9 +2102,23 @@
         if (!res.ok) {
           if (res.status === 401) showViewerAuthPrompt();
           console.warn('[viewer] API ' + (fetchOpts.method || 'GET') + ' ' + path + ' returned ' + res.status);
-          if (!readErrorBody) return null;
+          var criticalHealth = path === 'health' && res.status === 503 && (fetchOpts.method || 'GET') === 'GET';
+          if (!readErrorBody && !criticalHealth) return null;
           try {
-            return await res.json();
+            var errorBody = await res.json();
+            if (readErrorBody) return errorBody;
+            if (errorBody && errorBody.service === 'agentmemory' && typeof errorBody.version === 'string' &&
+                /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(errorBody.version) && errorBody.status === 'critical' &&
+                errorBody.health && !Array.isArray(errorBody.health) &&
+                ['healthy','degraded','critical'].includes(errorBody.health.status) &&
+                Array.isArray(errorBody.health.alerts) && errorBody.health.alerts.every(function(alert) { return typeof alert === 'string'; }) &&
+                Array.isArray(errorBody.functionMetrics) && errorBody.functionMetrics.every(function(metric) {
+                  return metric && typeof metric === 'object' && !Array.isArray(metric) &&
+                    typeof metric.functionId === 'string' && metric.functionId.trim().length > 0 &&
+                    Number.isFinite(metric.totalCalls) && metric.totalCalls >= 0 &&
+                    Number.isFinite(metric.failureCount) && metric.failureCount >= 0;
+                })) return errorBody;
+            return null;
           } catch (parseErr) {
             console.debug('[viewer] API ' + path + ' non-2xx body was not JSON:', parseErr);
             return null;
@@ -2279,7 +2293,7 @@
         await Promise.all(missing.map(ensureLoaded));
         if (state.activeTab === tab) renderTab(tab);
       }
-      if (tab === 'dashboard') ensureConsolidationStatus();
+      if (tab === 'dashboard' || tab === 'health') ensureConsolidationStatus();
       if (tab === 'actions') ensureFrontier();
       if (tab === 'graph') {
         if (!state.graph.loaded && !state.graph.loading) await loadGraph();
@@ -2436,6 +2450,7 @@
         var reconnect = !!store.snapshotAt;
         noteGraphGeneration(snap.graph);
         applySnapshot(store, snap);
+        if (state.activeTab === 'dashboard' || state.activeTab === 'health') ensureConsolidationStatus(true);
         renderConnection();
         renderFlagsChip();
         renderFlagsPanel();
@@ -2705,7 +2720,7 @@
       var controlLabel = operations.controlBusy ? operations.controlAction === 'resume' ? '재개 중' : '일시정지 요청 중' : labels[control.status] || '미확인';
       var html = '<section class="card operations-card" id="health-operations" aria-labelledby="operations-title"><h2 class="health-section-title" id="operations-title">작업 진행 현황</h2>';
       html += '<strong role="status">백그라운드: '+esc(operations.controlError ? '미확인 · 마지막 확인 '+controlLabel : controlLabel)+'</strong>';
-      var actions = '<div class="health-action-group" aria-label="백그라운드 작업"><h3 class="health-section-title">작업 관리</h3><div class="operations-actions"><button type="button" class="btn" data-action="refresh-operations"'+(operations.loading ? ' disabled' : '')+'>'+(operations.loading ? '조회 중…' : '현황 새로고침')+'</button><button type="button" class="btn" data-action="'+(resume ? 'resume-background' : 'pause-background')+'"'+(disabled ? ' disabled' : '')+'>'+(operations.controlBusy ? controlLabel+'…' : resume ? '재개' : control.status === 'error' ? '저장 상태 다시 확인' : '일시정지')+'</button><button type="button" class="btn" data-action="capture-review-open">수집 격리·복구 이력 보기</button></div><p class="hnote">저장 전 실패한 수집 기록은 격리·복구 이력에서 확인합니다.</p>';
+      var actions = '<div class="health-action-group" aria-label="백그라운드 작업"><h3 class="health-section-title">작업 관리</h3><div class="operations-actions"><button type="button" class="btn" data-action="refresh-operations"'+(operations.loading ? ' disabled' : '')+'>'+(operations.loading ? '조회 중…' : '현황 새로고침')+'</button><button type="button" class="btn" data-action="'+(resume ? 'resume-background' : 'pause-background')+'"'+(disabled ? ' disabled' : '')+'>'+(operations.controlBusy ? controlLabel+'…' : resume ? '작업 재개하기' : control.status === 'error' ? '저장 상태 다시 확인' : '작업 일시정지하기')+'</button><button type="button" class="btn" data-action="capture-review-open">수집 격리·복구 이력 보기</button></div><p class="hnote">저장 전 실패한 수집 기록은 격리·복구 이력에서 확인합니다.</p>';
       html += '<section class="health-attention" id="health-attention" aria-labelledby="health-attention-title"><h3 class="health-section-title" id="health-attention-title">확인할 상태</h3>';
       if (h.status === 'critical' || h.memoryPressure && h.memoryPressure.level === 'critical') html += '<p role="alert" class="mem-note err">서버 점검 필요 · 상태 보고서와 메모리 경고를 확인하세요.</p>';
       html += operations.controlBusy && (control.transition || {}).action !== operations.controlAction ? '<p class="hnote" role="status">요청 전달 중 · 서버의 진행 단계를 확인하고 있습니다.</p>' : controlDiagnosticHtml(control);
@@ -2883,14 +2898,16 @@
 
     var consolidationStatusRequest = null;
     function ensureConsolidationStatus(force) {
-      if (!force && (store.consolidationStatus || consolidationStatusRequest)) return;
+      if (consolidationStatusRequest) return consolidationStatusRequest;
+      if (!force && store.consolidationStatus) return;
       consolidationStatusRequest = apiGet('consolidation/status').then(function(res) {
-        consolidationStatusRequest = null;
         if (res && res.tiers) {
           store.consolidationStatus = res;
-          markDirty(['dashboard']);
+          markDirty(['dashboard', 'health']);
+          if (state.activeTab === 'dashboard' || state.activeTab === 'health') renderTab(state.activeTab);
         }
-      });
+      }).catch(function() {}).finally(function() { consolidationStatusRequest = null; });
+      return consolidationStatusRequest;
     }
 
     var frontierRequest = null;
@@ -7680,6 +7697,7 @@
     }
 
     function healthStaleHtml(r) {
+      if (!autoRefresh.enabled) return '<div class="hstale" id="health-live-state"><strong>화면 자동 새로고침 꺼짐</strong> 아래 값은 마지막 조회 결과입니다. 서버 작업 상태와 별개이므로 현황 새로고침으로 현재 상태를 확인하세요.</div>';
       var last = store.lastHealthAt ? new Date(store.lastHealthAt).toLocaleTimeString() : '';
       if (conn.state !== 'live' && hasFreshHttpSnapshot()) return '<div class="hstale"><strong>실시간 스트림 미연결</strong> HTTP 현황을 ' + autoRefresh.seconds + '초 주기로 조회합니다. 서버 진단 보고서의 생성 시각은 아래 Report를 확인하세요.</div>';
       if (conn.state === 'reconnecting' || conn.state === 'offline') {
@@ -9161,7 +9179,7 @@
       if (target.disabled) return;
       if (action === 'pause-background') { changeBackgroundControl('pause'); return; }
       if (action === 'resume-background') { changeBackgroundControl('resume'); return; }
-      if (action === 'refresh-operations') { if (!store.snapshot || store.snapshotError) loadSnapshot(); loadOperations(); return; }
+      if (action === 'refresh-operations') { if (!store.snapshot || store.snapshotError) loadSnapshot(); ensureConsolidationStatus(true); loadOperations(); return; }
 
       if (action === 'toggle-theme') {
         toggleTheme();

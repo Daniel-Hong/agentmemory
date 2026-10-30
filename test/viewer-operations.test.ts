@@ -27,6 +27,17 @@ function fixtures(extra: Record<string, unknown> = {}) {
 }
 
 describe("custom operations panel", () => {
+  it("labels controls as actions while preserving the actual running and paused state", () => {
+    const c=fixtures();c.operations.control={status:'running',holds:[],activeOperations:1};
+    let html=c.operationsPanelHtml();
+    expect(html).toContain('백그라운드: 실행 중');
+    expect(html).toMatch(/data-action="pause-background"[^>]*>작업 일시정지하기<\/button>/);
+    c.operations.control={status:'paused',holds:['manual'],activeOperations:0};
+    html=c.operationsPanelHtml();
+    expect(html).toContain('백그라운드: 일시정지 됨');
+    expect(html).toMatch(/data-action="resume-background"[^>]*>작업 재개하기<\/button>/);
+  });
+
   it("lets stage progress collapse independently and retains its open state in rendering", () => {
     const c=fixtures();c.operations.progressOpen=false;
     expect(c.operationsPanelHtml()).toContain('<details id="operations-progress-details"><summary>단계별 처리 현황 · 최근 완료 표본 기준</summary>');
@@ -137,6 +148,64 @@ describe("operational metadata", () => {
 });
 
 describe("manual operations commands", () => {
+  const criticalHealth = { service: 'agentmemory', version: '0.9.31-daniel.44', status: 'critical', health: { status: 'critical', alerts: ['event_loop_lag_critical_520ms'] }, functionMetrics: [{functionId:'mem::summary',totalCalls:10,failureCount:0}] };
+  function healthApi(status: number, body: unknown, extra: Record<string, unknown> = {}) {
+    return context(['api','apiGet','loadOperations'], {
+      REST: '', getViewerToken: () => '', showViewerAuthPrompt: vi.fn(), hideViewerAuthPrompt: vi.fn(),
+      console: {warn:vi.fn(),debug:vi.fn()}, renderOperations:vi.fn(),
+      operations: { health:{status:'healthy'}, sessions:[], generation:0, metrics:{} },
+      fetch: async (url: string) => ({ ok: status >= 200 && status < 300, status, json: async () => url.endsWith('/health') ? body : null }), ...extra,
+    });
+  }
+  it('retains an intentional GET health 503 as critical operational data', async () => {
+    const c=healthApi(503,criticalHealth);
+    await c.loadOperations();
+    expect(c.operations.error).toBe('');
+    expect(c.operations.health).toEqual(criticalHealth);
+    expect(c.operations.health.status).toBe('critical');
+    expect(c.operations.health.health.alerts).toEqual(['event_loop_lag_critical_520ms']);
+  });
+  it.each([
+    ['null metric',null], ['array metric',[]], ['missing function id',{totalCalls:1,failureCount:0}],
+    ['invalid function id',{functionId:7,totalCalls:1,failureCount:0}],
+    ['empty function id',{functionId:' ',totalCalls:1,failureCount:0}],
+    ['missing counters',{functionId:'mem::summary'}],
+    ['negative calls',{functionId:'mem::summary',totalCalls:-1,failureCount:0}],
+    ['negative failures',{functionId:'mem::summary',totalCalls:1,failureCount:-1}],
+    ['nonfinite calls',{functionId:'mem::summary',totalCalls:Infinity,failureCount:0}],
+    ['nonnumeric failures',{functionId:'mem::summary',totalCalls:1,failureCount:'0'}],
+  ])('fails closed through operations loading for a critical health body with %s',async(_label,metric)=>{
+    const c=healthApi(503,{...criticalHealth,functionMetrics:[metric]});
+    await expect(c.loadOperations()).resolves.toBeUndefined();
+    expect(c.operations.error).toContain('Health 조회 실패');
+    expect(c.operations.health).toEqual({status:'healthy'});
+    expect(c.operations.request).toBeNull();
+  });
+  it.each([
+    ['wrong service',{...criticalHealth,service:'proxy'}],
+    ['missing version',{...criticalHealth,version:undefined}],
+    ['invalid version',{...criticalHealth,version:'unknown'}],
+    ['wrong status',{...criticalHealth,status:'healthy'}],
+    ['missing health',{...criticalHealth,health:null}],
+    ['invalid health status',{...criticalHealth,health:{status:'unknown',alerts:[]}}],
+    ['invalid alerts',{...criticalHealth,health:{status:'critical',alerts:'error'}}],
+    ['invalid alert item',{...criticalHealth,health:{status:'critical',alerts:[{}]}}],
+  ])('rejects a health 503 with %s',async(_label,body)=>{
+    const c=healthApi(503,body);
+    expect(await c.apiGet('health')).toBeNull();
+  });
+  it.each([
+    ['viewer/snapshot',503,'GET'],['viewer/snapshot',500,'GET'],['viewer/snapshot',504,'GET'],
+    ['health',500,'GET'],['health',401,'GET'],['health',403,'GET'],['health',503,'POST'],['background/control',503,'GET'],
+  ])('preserves failure for %s HTTP %i %s',async(path,status,method)=>{
+    const c=healthApi(status,criticalHealth,{fetch:async()=>({ok:false,status,json:async()=>criticalHealth})});
+    expect(await c.api(path,{method})).toBeNull();
+    if(status===401)expect(c.showViewerAuthPrompt).toHaveBeenCalledOnce();
+  });
+  it('rejects a health 503 with an invalid JSON body',async()=>{
+    const c=healthApi(503,null,{fetch:async()=>({ok:false,status:503,json:async()=>{throw Error('invalid JSON');}})});
+    expect(await c.apiGet('health')).toBeNull();
+  });
   it("refreshes only current metadata and preserves previously loaded analysis", async () => {
     const apiGet = vi.fn(async (path: string) => path === 'health' ? {} : path.startsWith('sessions?') ? {sessions:[]} : {success:true,control:{status:'running'}});
     const job={id:'past-job',status:'completed',result:'preserved result'};
@@ -352,4 +421,29 @@ it('finishes one bounded reread when the graph resets during a shared snapshot r
   const apiGet=async()=>{if(++calls===1)c.state.graph.resetSeq++;return null;};
   c=context(['loadSnapshot'],{apiGet,store:{},state:{activeTab:'health',graph:{resetSeq:0}},renderConnection:vi.fn(),updateFooter:vi.fn(),markDirty:vi.fn(),renderTab:vi.fn()});
   expect(await c.loadSnapshot()).toBe(false);expect(calls).toBe(2);expect(c.store.snapshotRequest).toBeNull();
+});
+
+
+describe("health display refresh explanation", () => {
+  function stale(enabled:boolean, state='live', age=600000) {
+    const c=context(['esc','healthStaleHtml'], {
+      autoRefresh:{enabled,seconds:30},conn:{state},store:{lastHealthAt:Date.now()-age},HEALTH_STALE_MS:90000,
+      hasFreshHttpSnapshot:()=>false,cmdBlock:(value:string)=>value,
+    });
+    return c.healthStaleHtml({});
+  }
+  it.each(['live','offline','paused'])("describes refresh OFF without attributing server failure (%s)", (state) => {
+    const html=stale(false,state);
+    expect(html).toContain('화면 자동 새로고침 꺼짐');
+    expect(html).toContain('서버 작업 상태와 별개');
+    expect(html).not.toContain('SSE feed is connected');
+    expect(html).not.toContain('worker may be busy');
+    expect(html).not.toContain('restart agentmemory');
+    expect(html).not.toContain('server is running');
+  });
+  it("keeps genuine ON stale and disconnected guidance", () => {
+    expect(stale(true)).toContain('SSE feed is connected');
+    expect(stale(true,'offline')).toContain('lost its connection');
+    expect(stale(true,'live',1000)).toBe('');
+  });
 });

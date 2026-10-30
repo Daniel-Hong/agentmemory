@@ -312,7 +312,7 @@ export function registerViewerStreamTriggers(
           graph,
           consolidation: {
             lastRun: lastRun ?? null,
-            status: await consolidationStatus({ lastRun: lastRun ?? null }).catch(() => null),
+            status: null,
           },
           ...(await healthPayload(health ?? null, UNINDEXED_SCAN_REUSE_MS)),
         },

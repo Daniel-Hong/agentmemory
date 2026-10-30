@@ -201,10 +201,9 @@ describe("consolidation status wiring", () => {
     expect(handler).not.toMatch(/kv\.list\(/);
   });
 
-  it("the snapshot and every consolidation.run event carry the full status", () => {
+  it("every consolidation.run event carries the full status", () => {
     const streams = readFileSync("src/triggers/viewer-streams.ts", "utf-8");
     expect(streams).toContain("status: await consolidationStatus({ lastRun }).catch(() => null),");
-    expect(streams).toContain("status: await consolidationStatus({ lastRun: lastRun ?? null }).catch(() => null),");
   });
 
   it("the dashboard shows one Memory layers panel instead of the three separate cards", () => {
