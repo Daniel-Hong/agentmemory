@@ -91,12 +91,12 @@ export function registerViewerStreamTriggers(
   const statusReport = createStatusReporter(sdk, kv, { metricsStore: deps.metricsStore, provider: deps.provider });
   const consolidationStatus = createConsolidationStatusReader(kv);
 
-  async function healthPayload(snapshot: HealthSnapshot | null, scanMaxAgeMs: number) {
+  async function healthPayload(snapshot: HealthSnapshot | null, scanMaxAgeMs: number, scanUnindexed = true) {
     const metricsRead=deps.metricsStore ? deps.metricsStore.getAll().catch(()=>[]) : Promise.resolve([]);
     const [functionMetrics, counts, report] = await Promise.all([
       metricsRead,
       getViewerCounts(kv),
-      statusReport({ health: snapshot, scanMaxAgeMs, functionMetrics:metricsRead }).catch(() => null),
+      statusReport({ health: snapshot, scanMaxAgeMs, scanUnindexed, functionMetrics:metricsRead }).catch(() => null),
     ]);
     return {
       status: snapshot?.status ?? "healthy",
@@ -276,7 +276,7 @@ export function registerViewerStreamTriggers(
         sdk,
         eventId("health", "latest"),
         "health",
-        await healthPayload(payload.new_value ?? null, HEALTH_TICK_SCAN_MAX_AGE_MS),
+        await healthPayload(payload.new_value ?? null, HEALTH_TICK_SCAN_MAX_AGE_MS, false),
       );
       return { emitted: true };
     },

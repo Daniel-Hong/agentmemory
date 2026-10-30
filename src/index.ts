@@ -774,7 +774,7 @@ async function main() {
     config.restPort,
   );
 
-  void graphIndexMigration.resumeOnBoot().catch(() => {
+  void graphIndexMigration.resumeOnBoot({ held: persistentBackground && control.isPaused() }).catch(() => {
     bootWarn("Graph index migration could not resume. Run agentmemory graph-index status for recovery instructions.");
   });
 

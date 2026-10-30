@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — shared observation projections and held graph handoff
+
+- Share ID/keyword-eligibility file projections by exact file and mutation revision. Bound successful reuse to eight scopes and 4,096 rows/1MiB per scope; retain current-path validation, SDK overlays and unknown status after response timeout. Do not retain original bodies or omit integrity checks.
+- Keep periodic health events from starting deep observation scans; reuse recent completed evidence or report unknown. Explicit status and initial Viewer checks remain available; automatic discovery frequency is reduced.
+- Preserve an interrupted graph migration without cursor writes during protected boot. Existing data verification must finish before explicitly resuming the same migration job. Journal writes remain sequential; the rejected parallel prototype is not included.
+- Small real-file regressions and comparison reduce duplicate parsing while preserving output; operating throughput and browser rendering are not yet certified. See docs/customizations/OBSERVATION-PROJECTION-SHARING.md.
+
 ## Unreleased — independent Viewer bootstrap
 
 - Return nullable optional consolidation detail from the initial Viewer snapshot without waiting for a full summary count. Keep last-run metadata, actual health/counts and the existing dedicated detail endpoint; do not invent healthy/empty data or increase request deadlines.
@@ -116,6 +123,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.46] — 2026-10-30
 ## [0.9.31-daniel.45] — 2026-10-30
 ## [0.9.31-daniel.44] — 2026-10-30
 ## [0.9.31-daniel.43] — 2026-10-30
@@ -421,6 +429,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.46]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.45...v0.9.31-daniel.46
 [0.9.31-daniel.45]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.44...v0.9.31-daniel.45
 [0.9.31-daniel.44]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.43...v0.9.31-daniel.44
 [0.9.31-daniel.43]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.42...v0.9.31-daniel.43

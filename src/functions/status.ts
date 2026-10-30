@@ -321,14 +321,14 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
       level: "info",
       code: "keyword-index-rebuilding",
       message: "The keyword index is still rebuilding from stored data, so the check for observations missing from search waits until it finishes.",
-      fix: "No action needed. The check runs on the next health update after the rebuild.",
+      fix: "No action needed. An explicit status or initial Viewer request runs the check after the rebuild.",
     });
   } else if (missingObservations === null) {
     problems.push({
       level: "info",
       code: "index-check-unavailable",
       message: "The search index check did not complete, so whether stored observations are missing from search remains unknown.",
-      fix: "The check runs again on the next health update. If it stays incomplete, check diagnostics for scan, storage or timeout errors.",
+      fix: "An explicit status or initial Viewer request runs the check. Periodic health updates reuse recent completed evidence; if it stays unknown, inspect scan, storage or timeout errors.",
     });
   }
 

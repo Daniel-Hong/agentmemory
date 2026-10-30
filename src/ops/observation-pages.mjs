@@ -36,6 +36,7 @@ export function createObservationReader({storePath,kv}){
  const activeMutations=new Map();
  const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
+ const projectionCache=new Map(),projectionFlights=new Map();
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function revision(scope){
   let file='absent';try{const value=await stat(join(storePath,encodeURIComponent(scope)+'.bin'),{bigint:true});file=[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');}catch(error){if(error.code!=='ENOENT')throw error;}
@@ -142,33 +143,61 @@ export function createObservationReader({storePath,kv}){
   if(overlay&&!overlay.size)pending.delete(scope);
   return [...rows.values()];
  }
- async function project(scope,pick){
-  const rows=new Map();
-  for(let attempt=0;;attempt++){
-   rows.clear();
-   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{withReadChunk:bulkRead,onEntry:(key,value)=>{
-    if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
-    if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
-    rows.set(key,{value:pick(value),info:pending.get(scope)?.has(key)?metadata(key,value):undefined});
-   }});break;}catch(error){if(error.code==='ENOENT')break;if(error.code==='state_namespace_changed'&&attempt<1)continue;throw error;}
+ async function diskProjection(scope){
+  const observed=await revision(scope),cached=projectionCache.get(scope);
+  if(!activeMutations.get(scope)&&cached?.revision===observed){
+   projectionCache.delete(scope);projectionCache.set(scope,cached);return cached.rows;
   }
+  projectionCache.delete(scope);
+  const flightKey=scope+'\0'+observed;
+  let flight=projectionFlights.get(flightKey);
+  if(!flight){
+   flight=(async()=>{
+    const rows=new Map(),mutation=mutations.get(scope)??0;let fileRevision='absent';
+    for(let attempt=0;;attempt++){
+     rows.clear();
+     try{
+      const result=await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{withReadChunk:bulkRead,onEntry:(key,value)=>{
+       if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
+       if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
+       rows.set(key,{value:{id:value.id,eligible:observationIndexEligible(value)},info:pending.get(scope)?.has(key)?metadata(key,value):undefined});
+      }});fileRevision=result.signature;break;
+     }catch(error){if(error.code==='ENOENT')break;if(error.code==='state_namespace_changed'&&attempt<1)continue;throw error;}
+    }
+    const expected=fileRevision+':'+mutation;
+    if(rows.size<=4096&&!activeMutations.get(scope)&&expected===await revision(scope)){
+     let encodedBytes=0;
+     for(const row of rows){encodedBytes+=bytes(row);if(encodedBytes>1024*1024)break;}
+     if(encodedBytes<=1024*1024){
+      projectionCache.delete(scope);projectionCache.set(scope,{revision:expected,rows});
+      while(projectionCache.size>8)projectionCache.delete(projectionCache.keys().next().value);
+     }
+    }
+    return rows;
+   })();
+   projectionFlights.set(flightKey,flight);
+  }
+  try{return await flight;}finally{if(projectionFlights.get(flightKey)===flight)projectionFlights.delete(flightKey);}
+ }
+ async function project(scope,pick){
+  const disk=await diskProjection(scope),rows=new Map([...disk].map(([key,row])=>[key,{value:pick(row.value),info:row.info}]));
   const overlay=pending.get(scope);
   for(const [key,value] of new Map(overlay??[])){
-   const disk=rows.get(key);
-   if((value===null&&!disk)||(disk&&isDeepStrictEqual(disk.info,value))){if(overlay.get(key)===value)overlay.delete(key);continue;}
+   const committed=rows.get(key);
+   if((value===null&&!committed)||(committed&&isDeepStrictEqual(committed.info,value))){if(overlay.get(key)===value)overlay.delete(key);continue;}
    if(value?.bytes>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
    const current=await kv.get(scope,key);
    if(current===null||current===undefined)rows.delete(key);else {
     if(typeof current!=='object'||Array.isArray(current))throw fail('invalid_observation_record');
     if(bytes(current)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
-    rows.set(key,{value:pick(current)});
+    rows.set(key,{value:pick({id:current.id,eligible:observationIndexEligible(current)})});
    }
   }
   if(overlay&&!overlay.size)pending.delete(scope);
-  return [...rows.values()].map(row=>row.value);
+  return [...rows.values()].map(row=>structuredClone(row.value));
  }
  const ids=scope=>project(scope,row=>row.id);
- const indexCandidates=scope=>project(scope,row=>({id:row.id,eligible:observationIndexEligible(row)}));
+ const indexCandidates=scope=>project(scope,row=>({id:row.id,eligible:row.eligible}));
  async function response(scope,query,filterAgentId){
   if(Object.values(query).some(value=>typeof value!=="string"))throw fail("invalid_query",400);
   const limitText=query.limit;const explicit=limitText!==undefined||query.cursor!==undefined;

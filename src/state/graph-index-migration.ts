@@ -244,7 +244,11 @@ export class GraphIndexMigrationController {
     return this.status();
   }
 
-  async resumeOnBoot(): Promise<void> {
+  async resumeOnBoot({ held = false }: { held?: boolean } = {}): Promise<void> {
+    // A protected restart must finish original-state verification before this
+    // job changes its saved cursor, journal or control revision. Explicit resume
+    // after verification continues the same sealed job.
+    if (held) return;
     const state = await pinGraphState(this.kv);
     const job = readJob(await state.get(KV.graphIndexMigration, GRAPH_INDEX_MIGRATION_KEY));
     if (!job || !job.sealed || job.state === "ready" || job.state === "superseded") return;

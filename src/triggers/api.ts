@@ -398,7 +398,7 @@ export interface StatusReporterDeps {
 }
 
 export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusReporterDeps) {
-  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
+  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; scanUnindexed?: boolean; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
     const idx = getSearchIndex();
     const keywordRebuildRunning = isKeywordRebuildInProgress();
     const scan = unindexedScanFor(kv);
@@ -412,7 +412,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         sdk.trigger({ function_id: "mem::graph-stats", payload: {} }) as Promise<GraphStatsInput>,
         STATUS_CHECK_TIMEOUT_MS,
       ),
-      keywordRebuildRunning ? Promise.resolve(null) : cached ? Promise.resolve(cached) : valueWithin(scan.run(), STATUS_CHECK_TIMEOUT_MS),
+      keywordRebuildRunning ? Promise.resolve(null) : cached ? Promise.resolve(cached) : options.scanUnindexed === false ? Promise.resolve(null) : valueWithin(scan.run(), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(
         kv.get<AuditMigrationState>(KV.auditMonths, AUDIT_MIGRATION_STATE_KEY),
         STATUS_CHECK_TIMEOUT_MS,
