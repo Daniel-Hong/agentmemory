@@ -1,3 +1,4 @@
+import {liveResourceSample} from '../health/live-resource.js';
 import {createSessionEndDiagnostics} from "../ops/session-end-diagnostics.js";
 import {finishLongSession} from "../ops/long-session.mjs";
 import {operationalHealth,operationalState} from "../ops/context.js";
@@ -642,6 +643,7 @@ export function registerApiTriggers(
           circuitBreaker,
           ...ops,
           ...instanceInfo(),
+          resourceSample: liveResourceSample(),
         },
       };
     },

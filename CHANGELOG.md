@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — coherent live resource samples
+
+- Add an optional per-response resourceSample to the existing health route, sampling local memory once after existing asynchronous reads. Preserve the cached health record, existing authentication and lookup counts.
+- Add an unprivileged pure observer that refuses missing/stale/incoherent samples, preserves absolute heap/host/storage protections, and reports only explicitly hypothetical trend/drain calculations. No operating threshold or resume policy is changed by these tools.
+- Existing .43 capture completion semantics and originals/history remain unchanged. Operating activation, any trend-policy change and remaining capture adoption require their normal approved procedure.
+
 ## Unreleased — truthful selected SDK completion contract (development only)
 
 - Share unchanged observation rebuild eligibility and record actual keyword membership separately from empty-string exclusion. Require vector ownership and original source/publication proof.
@@ -104,6 +110,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.44] — 2026-10-30
 ## [0.9.31-daniel.43] — 2026-10-30
 ## [0.9.31-daniel.42] — 2026-10-30
 ## [0.9.31-daniel.41] — 2026-10-29
@@ -407,6 +414,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.44]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.43...v0.9.31-daniel.44
 [0.9.31-daniel.43]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.42...v0.9.31-daniel.43
 [0.9.31-daniel.42]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.41...v0.9.31-daniel.42
 [0.9.31-daniel.41]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.40...v0.9.31-daniel.41
