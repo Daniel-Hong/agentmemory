@@ -1,4 +1,4 @@
-import {snapshotJsonChunks,readGitSnapshot,validateSnapshotArchive} from "../ops/snapshot-json.mjs";
+import {snapshotSessionJsonChunks,readGitSnapshot,validateSnapshotArchive} from "../ops/snapshot-json.mjs";
 import { pinGraphState } from "../state/graph-generation.js";
 import {createSnapshotRecovery, ensurePrivateSnapshotDir, publishSnapshotFile} from "../ops/snapshot-recovery.mjs";
 import {backgroundPaused} from "../ops/background-control.mjs";
@@ -73,15 +73,7 @@ export function registerSnapshotFunction(
         phase = "read_access";
         const accessLogs = await kv.list<AccessLogExport>(KV.accessLog);
 
-        const observations: Record<string, unknown[]> = {};
-        phase = "read_observations";
-        for (const session of sessions) {
-          const obs = await kv.list(KV.observations(session.id), { observationConsistency: "opened-generation" });
-          if (obs.length > 0) {
-            observations[session.id] = obs;
-          }
-        }
-
+        let observationCount = 0;
         const exportState = {
           version: VERSION,
           timestamp: ts,
@@ -89,14 +81,21 @@ export function registerSnapshotFunction(
           memories,
           graphNodes,
           graphEdges,
-          observations,
+          observations: {},
           accessLogs,
         };
 
         phase = "serialize";
         validateSnapshotArchive(exportState);
         validateGraphRecords(graphNodes, graphEdges);
-        const content = snapshotJsonChunks(exportState);
+        const sessionIds = Object.keys(Object.fromEntries(sessions.map(session => [session.id, null])));
+        const content = snapshotSessionJsonChunks(exportState, sessionIds, async (sessionId: string) => {
+          phase = "read_observations";
+          const rows = await kv.list(KV.observations(sessionId), { observationConsistency: "opened-generation" });
+          observationCount += rows.length;
+          phase = "publish";
+          return rows;
+        });
         phase = "publish";
         await publishSnapshotFile(snapshotDir, "state.json", content);
         phase = "git_add";
@@ -127,10 +126,7 @@ export function registerSnapshotFunction(
           message,
           stats: {
             sessions: sessions.length,
-            observations: Object.values(observations).reduce(
-              (sum, arr) => sum + arr.length,
-              0,
-            ),
+            observations: observationCount,
             memories: memories.length,
             graphNodes: graphNodes.length,
           },

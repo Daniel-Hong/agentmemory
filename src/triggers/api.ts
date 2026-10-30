@@ -48,6 +48,7 @@ import { isSlotsEnabled, isReflectEnabled, parseSlotOwner } from "../functions/s
 import { renderViewerDocument } from "../viewer/document.js";
 import { validCaptureMetadataQuery, type CaptureMetadataQuery } from "../capture/review-metadata.js";
 import {createCaptureIndexMembership,validIndexMembershipQuery}from'../capture/index-membership.js';
+import {validCaptureIndexEvidenceQuery} from '../capture/index-evidence.js';
 import{validSdkReconciliationSelection}from'../capture/sdk-reconciliation.js';
 import { getBoundViewerPort, getViewerSkipped } from "../viewer/server.js";
 import { MAX_FILES_UPPER_BOUND } from "../functions/replay.js";
@@ -792,6 +793,16 @@ export function registerApiTriggers(
     return{status_code:200,headers,body:indexMembership(input)};
   });
   sdk.registerTrigger({type:'http',function_id:'api::capture-index-membership',config:{api_path:'/agentmemory/capture/index-membership',http_method:'GET'}});
+
+  sdk.registerFunction('api::capture-index-evidence',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers:{...denied.headers,...headers}};
+    const q=req.query_params??{},raw=q.keys;
+    const input={keys:typeof raw==='string'&&raw.length<=449?raw.split(','):[]};
+    if(Object.keys(q).some(k=>k!=='keys')||!validCaptureIndexEvidenceQuery(input))return{status_code:400,headers,body:{error:'INVALID_CAPTURE_INDEX_EVIDENCE_QUERY'}};
+    try{return{status_code:200,headers,body:await sdk.trigger({function_id:'mem::capture-index-evidence',payload:input})};}
+    catch{return{status_code:503,headers,body:{error:'CAPTURE_INDEX_EVIDENCE_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-index-evidence',config:{api_path:'/agentmemory/capture/index-evidence',http_method:'GET'}});
 
   sdk.registerFunction('api::capture-reconcile-sdk',async(req:HttpRequest):Promise<Response>=>{
     const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers};

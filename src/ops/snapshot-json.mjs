@@ -15,28 +15,58 @@ function* arrayChunks(value,depth){
  for(let n=0;n<value.length;n++){if(n)yield ',\n';yield indent(depth+2);yield encoded(String(n),value[n],depth+2,true);}
  yield '\n'+indent(depth)+']';
 }
+function* propertyValueChunks(key,value){
+ const framed=typeof value?.toJSON!=='function'&&(Array.isArray(value)||(key==='observations'&&value&&typeof value==='object'));
+ const scalar=framed?undefined:encoded(key,value,2);if(!framed&&scalar===undefined)return;
+ if(framed&&Array.isArray(value))yield* arrayChunks(value,2);
+ else if(framed){
+  yield '{';let sessions=0;
+  for(const[session,rows]of Object.entries(value)){
+   if(rows===undefined||typeof rows==='function'||typeof rows==='symbol')continue;
+   const framedRows=Array.isArray(rows)&&typeof rows.toJSON!=='function';const scalarRow=framedRows?undefined:encoded(session,rows,4);if(!framedRows&&scalarRow===undefined)continue;
+   yield sessions++?',\n':'\n';yield '    '+JSON.stringify(session)+': ';
+   if(framedRows)yield* arrayChunks(rows,4);else yield scalarRow;
+  }
+  yield sessions?'\n  }':'}';
+ }else yield scalar;
+}
 export function* snapshotJsonChunks(archive){
  try{
   yield '{';let count=0;
   for(const[key,value]of Object.entries(archive)){
    if(value===undefined||typeof value==='function'||typeof value==='symbol')continue;
-   const framed=typeof value?.toJSON!=='function'&&(Array.isArray(value)||(key==='observations'&&value&&typeof value==='object'));
-   const scalar=framed?undefined:encoded(key,value,2);if(!framed&&scalar===undefined)continue;
-   yield count++?',\n':'\n';yield '  '+JSON.stringify(key)+': ';
-   if(framed&&Array.isArray(value))yield* arrayChunks(value,2);
-   else if(framed){
-    yield '{';let sessions=0;
-    for(const[session,rows]of Object.entries(value)){
-     if(rows===undefined||typeof rows==='function'||typeof rows==='symbol')continue;
-     const framedRows=Array.isArray(rows)&&typeof rows.toJSON!=='function';const scalarRow=framedRows?undefined:encoded(session,rows,4);if(!framedRows&&scalarRow===undefined)continue;
-     yield sessions++?',\n':'\n';yield '    '+JSON.stringify(session)+': ';
-     if(framedRows)yield* arrayChunks(rows,4);else yield scalarRow;
-    }
-    yield sessions?'\n  }':'}';
-   }else yield scalar;
+   const chunks=propertyValueChunks(key,value),first=chunks.next();if(first.done)continue;
+   yield count++?',\n':'\n';yield '  '+JSON.stringify(key)+': ';yield first.value;yield* chunks;
   }
   yield count?'\n}':'}';
  }catch(error){try{error.snapshotPhase='serialize';}catch{}throw error;}
+}
+
+export async function* snapshotSessionJsonChunks(archive,sessionIds,readObservations){
+ yield '{';let count=0;
+ for(const[key,value]of Object.entries(archive)){
+  if(key==='observations'){
+   yield count++?',\n':'\n';yield '  "observations": {';let sessions=0;
+   for(const session of sessionIds){
+    let rows=await readObservations(session);
+    if(!rows.length){rows=null;continue;}
+    try{
+     validateSnapshotArchive({observations:{[session]:rows}});
+     yield sessions++?',\n':'\n';yield '    '+JSON.stringify(session)+': ';
+     yield* arrayChunks(rows,4);
+    }catch(error){try{error.snapshotPhase='serialize';}catch{}throw error;}
+    rows=null;
+   }
+   yield sessions?'\n  }':'}';
+  }else{
+   try{
+    if(value===undefined||typeof value==='function'||typeof value==='symbol')continue;
+    const chunks=propertyValueChunks(key,value),first=chunks.next();if(first.done)continue;
+    yield count++?',\n':'\n';yield '  '+JSON.stringify(key)+': ';yield first.value;yield* chunks;
+   }catch(error){try{error.snapshotPhase='serialize';}catch{}throw error;}
+  }
+ }
+ yield count?'\n}':'}';
 }
 
 export async function readSnapshotJson(source,{signal}={}){

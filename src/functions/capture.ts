@@ -2,7 +2,8 @@ import {recordAudit} from "./audit.js";
 import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim,assertSdkSourceLegacyProtection} from "../capture/sdk-source-restore.js";
 import{createSdkCaptureReconciliation,sdkReconciliationInvocation}from'../capture/sdk-reconciliation.js';
 import {createCaptureAutoRecovery,type CaptureAutoRecoveryOptions} from "../capture/auto-recovery.js";
-import {getSearchIndex,getVectorIndex} from "./search.js";
+import {getSearchIndex,getVectorIndex,getKeywordRebuildEpoch,isKeywordRebuildInProgress} from "./search.js";
+import {createCaptureIndexEvidence,captureIndexEvidenceInvocationQuery} from "../capture/index-evidence.js";
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
 import { registerCaptureReceipts } from "../capture/receipts.js";
 import { createCaptureReviewMetadata, captureMetadataInvocationQuery } from "../capture/review-metadata.js";
@@ -239,6 +240,8 @@ export function registerCaptureFunctions(
   registerCaptureReceipts(sdk,kv);
   const reviewMetadata=createCaptureReviewMetadata(kv);
   sdk.registerFunction('mem::capture-review-metadata',async input=>reviewMetadata(captureMetadataInvocationQuery(input)));
+  const indexEvidence=createCaptureIndexEvidence(kv,{keyword:getSearchIndex,vector:getVectorIndex,indexEpoch:getKeywordRebuildEpoch,indexRebuilding:isKeywordRebuildInProgress});
+  sdk.registerFunction('mem::capture-index-evidence',async input=>indexEvidence(captureIndexEvidenceInvocationQuery(input)));
   const inspectOutbox=createOutboxMetadata(join(getEnvVar("AGENTMEMORY_HOME")||join(homedir(),".agentmemory"),"hook-outbox"));
   const policy = capturePolicy();
   const counterEpoch = randomUUID();
