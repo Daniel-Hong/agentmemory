@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — truthful selected SDK completion contract (development only)
+
+- Share unchanged observation rebuild eligibility and record actual keyword membership separately from empty-string exclusion. Require vector ownership and original source/publication proof.
+- Add resumable v2 resolution evidence for dead/retrying captures with preserved inbox fields and pending projection bindings; retain v1 historical completion semantics. Generic duplicate/status consumers validate marked resolution evidence.
+- Bound per-status archive validation to four concurrent reads without dropping proof. Final development suite5,659 passed/13 existing conditional skips/0 failures; bounded native SDK0.25/engine0.22.1 two-record normal restart/idempotency passed.
+- No operating activation or state adoption. Active rollback to unmodified .42 after v2 writes is unsupported; keep originals and pause for compatible forward repair or obtain a compatible rollback target before separately approved adoption. See docs/customizations/SDK-CAPTURE-RECONCILIATION.md.
+
 ## Unreleased — snapshot input lifetime and selected index evidence
 
 - Stream observation sessions into the existing snapshot JSON format instead of retaining every session array until publication. Preserve pinned graph/opened-generation reads, statistics, atomic publication, fsync and restore compatibility; a single large session and other metadata sections still materialize.

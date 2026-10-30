@@ -1,3 +1,4 @@
+import { committedSdkResolution } from '../capture/sdk-resolution-record.js';
 import {recordAudit} from "./audit.js";
 import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim,assertSdkSourceLegacyProtection} from "../capture/sdk-source-restore.js";
 import{createSdkCaptureReconciliation,sdkReconciliationInvocation}from'../capture/sdk-reconciliation.js';
@@ -284,7 +285,7 @@ export function registerCaptureFunctions(
   const trackMaintenance=(work:()=>Promise<unknown>)=>{void trackWork(work).catch(()=>{});};
   const sdkReconciliation=createSdkCaptureReconciliation(kv,{
     admitted:()=>!stopped&&!backgroundPaused()&&(options.autoRecovery?.admitted()??true),
-    indexReady:obs=>getSearchIndex().sessionOf(obs.id)===obs.sessionId&&getVectorIndex()?.get(obs.id)?.sessionId===obs.sessionId,
+    indexEvidence:obs=>({keyword:{present:getSearchIndex().has(obs.id),sessionId:getSearchIndex().sessionOf(obs.id)},vectorSessionId:getVectorIndex()?.get(obs.id)?.sessionId}),
     audit:selection=>recordAudit(kv,'capture_sdk_reconciliation','api::capture-reconcile-sdk',[],{requestId:selection.requestId,completion:'sdk',stage:'verification_pending'}),
   });
   const spoolTargets = options.restPort ? serverSpoolTargets(options.restPort) : [];
@@ -402,6 +403,13 @@ export function registerCaptureFunctions(
     return { status: "accepted", state: "retrying", eventId: rec.eventId, observationId: rec.observationId, attempts: rec.attempts, nextAttemptAt, error: message };
   }
 
+  async function sdkRecordCompleted(rec:InboxRecord):Promise<boolean>{
+    if(rec.storageCompletion!=='sdk'||rec.sdkRestoreState==='pending'||rec.sdkResolutionState==='pending')return false;
+    const history=await kv.get<CaptureReviewHistory>(KV.captureReview,rec.key);
+    if(rec.sdkResolutionId!==undefined||rec.sdkResolutionState!==undefined||history?.sdkResolution!==undefined)return committedSdkResolution(history,rec);
+    return true;
+  }
+
   async function capture(input: { payload: HookPayload; eventId?: string }): Promise<CaptureResult> {
     const payload = input.payload;
     const clientEventId = isValidEventId(input.eventId) ? input.eventId : undefined;
@@ -413,7 +421,7 @@ export function registerCaptureFunctions(
         const retained=await kv.get<InboxRecord>(KV.captureInbox,key);
         if(retained?.storageCompletion==='sdk'){
           const observation=retained.observationId?await kv.get<CompressedObservation>(KV.observations(retained.sessionId),retained.observationId):null;
-          return {status:'duplicate',state:observation&&retained.sdkRestoreState!=='pending'&&retained.sdkResolutionState!=='pending'?'sdk_completed':'pending',eventId,observationId:retained.observationId,deduplicated:true};
+          return {status:'duplicate',state:observation&&await sdkRecordCompleted(retained)?'sdk_completed':'pending',eventId,observationId:retained.observationId,deduplicated:true};
         }
       }
       if (clientEventId) {
@@ -695,6 +703,10 @@ export function registerCaptureFunctions(
     try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
       refreshInbox(records);
+      let sdkCompleted=0;
+      if(sdkCompletion)for(let at=0;at<records.length;at+=4){
+        sdkCompleted+=(await Promise.all(records.slice(at,at+4).map(r=>sdkRecordCompleted(r)))).filter(Boolean).length;
+      }
       const live = records.filter((r) => r.status !== "dead" && r.storageCompletion !== "sdk");
       const next = live
         .map((r) => r.nextAttemptAt)
@@ -705,7 +717,7 @@ export function registerCaptureFunctions(
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       inbox = {
         pending: records.filter((r) => r.status === "pending" && r.storageCompletion !== "sdk").length,
-        ...(sdkCompletion?{sdkCompleted:records.filter(r=>r.storageCompletion==='sdk'&&r.sdkRestoreState!=='pending'&&r.sdkResolutionState!=='pending').length,sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length,sdkResolutionPending:records.filter(r=>r.sdkResolutionState==='pending').length}:{}),
+        ...(sdkCompletion?{sdkCompleted,sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length,sdkResolutionPending:records.filter(r=>r.sdkResolutionState==='pending').length}:{}),
         retrying: records.filter((r) => r.status === "retrying").length,
         dead: records.filter((r) => r.status === "dead").length,
         oldestAcceptedAt: live.map((r) => r.acceptedAt).sort()[0] ?? null,

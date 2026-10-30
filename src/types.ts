@@ -1133,11 +1133,18 @@ export interface EmbeddingCommit {
   committedAt: string;
 }
 
-export interface CaptureSdkResolution {
-  version:1; completion:'sdk'; phase:'pending'|'committed'; requestId:string;
-  sourceDigest:string; initialProjection:string; verifiedProjection?:string;
-  priorFailureDigest:string; priorInboxState:'dead'; startedAt:string; completedAt?:string;
+export interface CaptureSdkIndexEvidence {
+  keyword:{applicability:"required"|"excluded_empty_title"|"excluded_empty_narrative"|"excluded_empty_title_and_narrative";present:boolean;sessionId?:string};
+  vectorSessionId:string;
 }
+
+interface CaptureSdkResolutionBase {
+  completion:'sdk'; phase:'pending'|'committed'; requestId:string;
+  sourceDigest:string; initialProjection:string; verifiedProjection?:string;
+  priorFailureDigest:string; startedAt:string; completedAt?:string;
+}
+
+export type CaptureSdkResolution = CaptureSdkResolutionBase & ({version:1;priorInboxState:'dead'}|{version:2;priorInboxState:'dead'|'retrying';priorReviewState:'dead'|'retrying';priorInboxDigest:string;indexEvidence:CaptureSdkIndexEvidence});
 
 export interface CaptureReviewHistory {
   key: string; eventId: string; sessionId: string; project: string; hookType: string; observationId: string;

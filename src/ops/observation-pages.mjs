@@ -1,3 +1,4 @@
+import { observationIndexEligible } from './observation-index-policy.mjs';
 import {readFile,stat} from 'node:fs/promises';
 import {join,isAbsolute} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
@@ -167,7 +168,7 @@ export function createObservationReader({storePath,kv}){
   return [...rows.values()].map(row=>row.value);
  }
  const ids=scope=>project(scope,row=>row.id);
- const indexCandidates=scope=>project(scope,row=>({id:row.id,eligible:Boolean(row.title&&row.narrative)}));
+ const indexCandidates=scope=>project(scope,row=>({id:row.id,eligible:observationIndexEligible(row)}));
  async function response(scope,query,filterAgentId){
   if(Object.values(query).some(value=>typeof value!=="string"))throw fail("invalid_query",400);
   const limitText=query.limit;const explicit=limitText!==undefined||query.cursor!==undefined;

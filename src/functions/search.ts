@@ -1,3 +1,4 @@
+import { observationIndexEligible } from '../ops/observation-index-policy.mjs';
 import type { IIIClient } from 'iii-sdk'
 import type { GraphObservationAuthorization } from "./graph-retrieval.js";
 import type { IndexPersistenceStatus } from "../state/index-persistence.js";
@@ -407,7 +408,7 @@ export async function indexRecords(
     count++
   }
   for (const obs of observations) {
-    if (!obs.title || !obs.narrative) continue
+    if (!observationIndexEligible(obs)) continue
     idx.add(obs)
     if (vectorEnabled) revisions.set(obs, idx.watchRevision(obs.id))
     count++
@@ -463,7 +464,7 @@ export async function findUnindexedObservations(
     if (known > 0 && known <= (indexed.get(session.id) ?? 0)) continue
     const observations = await kv.list<CompressedObservation>(KV.observations(session.id))
     for (const obs of observations) {
-      if (!obs.title || !obs.narrative || idx.has(obs.id)) continue
+      if (!observationIndexEligible(obs) || idx.has(obs.id)) continue
       missing.push(obs)
     }
   }
@@ -481,7 +482,7 @@ export async function countUnindexedObservations(kv: StateKV): Promise<{ session
     const scope = KV.observations(session.id)
     const candidates = typeof kv.observationReader?.indexCandidates === 'function'
       ? await kv.observationReader.indexCandidates(scope)
-      : (await kv.list<CompressedObservation>(scope)).map(row => ({ id: row.id, eligible: Boolean(row.title && row.narrative) }))
+      : (await kv.list<CompressedObservation>(scope)).map(row => ({ id: row.id, eligible: observationIndexEligible(row) }))
     for (const row of candidates) if (row.eligible && !idx.has(row.id as string)) missing++
   }
   return { sessions: sessions.length, missing }
@@ -676,7 +677,7 @@ async function runKeywordRebuild(
       })
     )
     for (const obs of results.flat()) {
-      if (!obs.title || !obs.narrative) continue
+      if (!observationIndexEligible(obs)) continue
       idx.add(obs)
       consider(obs.id, obs.sessionId, obs.title + ' ' + obs.narrative, obs.timestamp, "observation")
       documents++

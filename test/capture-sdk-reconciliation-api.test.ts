@@ -27,3 +27,28 @@ it('holds drain until an in-flight reconciliation exits and stops before further
  const active=f.call();await reached;f.control.stop();let drained=false;const drain=f.control.drain().then(()=>drained=true);await Promise.resolve();expect(drained).toBe(false);release();expect((await active).body.completed).toBe(false);await drain;expect(drained).toBe(true);expect(f.writes).not.toHaveBeenCalled();
 });
 it('rejects invalid status identifiers without SDK dispatch',async()=>{const f=await fixture();const result=await f.sdk.fns.get('api::capture-reconcile-sdk-status')!({headers:f.headers,query_params:{key:'bad',requestId:'bad'}})as any;expect(result.status_code).toBe(400);expect(f.writes).not.toHaveBeenCalled()});
+it('generic duplicate and count consumers refuse invalid resolution markers',async()=>{const f=await fixture();await f.call();const h=await f.kv.get<any>(KV.captureReview,key);h.sdkResolution.version=99;await f.kv.set(KV.captureReview,key,h);expect((await f.control.status()).inbox.sdkCompleted).toBe(0);expect(await f.sdk.trigger('mem::capture',{payload,eventId})).toMatchObject({status:'duplicate',state:'pending'})});
+it('bounds SDK archive status history reads to four while preserving validated completion counts',async()=>{
+ const f=await fixture();await f.call();
+ const valid=await f.kv.get<any>(KV.captureInbox,key);
+ const history=await f.kv.get<any>(KV.captureReview,key);
+ for(let i=0;i<8;i++){
+  const ordinaryKey='cap_'+String(i+1).padStart(40,'0');
+  const {sdkResolutionId,sdkResolutionState,...ordinary}=valid;
+  await f.kv.set(KV.captureInbox,ordinaryKey,{...ordinary,key:ordinaryKey});
+ }
+ const invalidKey='cap_'+'f'.repeat(40);
+ await f.kv.set(KV.captureInbox,invalidKey,{...valid,key:invalidKey});
+ await f.kv.set(KV.captureReview,invalidKey,{...history,key:invalidKey,sdkResolution:{...history.sdkResolution,version:99}});
+ const get=f.kv.get.bind(f.kv);let active=0,peak=0,reviewReads=0;
+ f.kv.get=async(scope,itemKey)=>{
+  if(scope!==KV.captureReview)return get(scope,itemKey);
+  reviewReads++;active++;peak=Math.max(peak,active);
+  try{await new Promise(resolve=>setTimeout(resolve,0));return await get(scope,itemKey)}finally{active--}
+ };
+ const result=await f.control.status();
+ expect(result.inbox?.sdkCompleted).toBe(9);
+ expect(reviewReads).toBe(10);
+ expect(active).toBe(0);
+ expect(peak).toBeLessThanOrEqual(4);
+});
