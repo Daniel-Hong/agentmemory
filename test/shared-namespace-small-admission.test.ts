@@ -26,8 +26,9 @@ it('lets a bounded small read finish while a large read and another large reques
 });
 it('does not share a bounded file query with an incompatible unbounded query',async()=>{
  const f=await fixture();const a=f.reader.read(f.big,{keys:new Set(['key']),maxFileBytes:10}),b=f.reader.read(f.big,{keys:new Set(['key'])});
- await vi.waitFor(()=>expect(f.calls).toHaveLength(1));f.calls[0].finish();await a;
- await vi.waitFor(()=>expect(f.calls).toHaveLength(2));f.calls[1].finish();await b;
+ await vi.waitFor(()=>expect(f.calls).toHaveLength(1));f.calls[0].finish();await Promise.race([a,b]);
+ await vi.waitFor(()=>expect(f.calls).toHaveLength(2));f.calls[1].finish();await Promise.all([a,b]);
+ expect(f.calls.map(call=>call.opts.maxFileBytes??Infinity).sort((a,b)=>a-b)).toEqual([10,Infinity]);
  expect(f.reader.snapshot().sharedRequests).toBe(0);
 });
 it('bounds the small lane to one physical read and preserves queued cancellation',async()=>{

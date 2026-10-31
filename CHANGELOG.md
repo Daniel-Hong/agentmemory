@@ -2,6 +2,10 @@
 
 ## Unreleased — bounded stable-generation metadata reuse
 
+- Correct a test fixture that assumed asynchronous file classification preserves request order. Complete each physical read in its actual admission order while requiring both distinct size limits and zero sharing; do not change production admission or time limits.
+
+- Preserve local mutation revision stamps only for active disk certificates, even when a newer certificate has already verified and forgotten the dirty key. This avoids waiting for superseded metadata after successful newer publication; exact pinned-value, disk readback/fsync/signature and SDK completion contracts remain unchanged.
+
 - Retain complete summary/enrichment work metadata across multi-session rounds without the former eight-slot churn, keeping the existing 8MiB entry/16MiB aggregate encoded metadata bounds and a finite 512-entry limit.
 - Reuse ID/keyword eligibility projections for long sessions under aggregate 8MiB/32,768-row bounds, with at most 512 scopes and 4MiB per scope. Preserve generation/mutation validation, independent caller values and complete uncached overflow; do not retain original bodies or treat a search index as complete source membership.
 - Share summary key-count reads through final file-generation validation and retain only bounded key metadata. Preserve SDK null presence, inserts, tombstones, corruption and uncertain-write refusal. No timeout, storage/recovery guard, engine, original or history change.
@@ -143,6 +147,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.49] — 2026-10-31
 ## [0.9.31-daniel.48] — 2026-10-31
 ## [0.9.31-daniel.47] — 2026-10-31
 ## [0.9.31-daniel.46] — 2026-10-30
@@ -451,6 +456,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.49]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.48...v0.9.31-daniel.49
 [0.9.31-daniel.48]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.47...v0.9.31-daniel.48
 [0.9.31-daniel.47]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.46...v0.9.31-daniel.47
 [0.9.31-daniel.46]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.45...v0.9.31-daniel.46

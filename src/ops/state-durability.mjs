@@ -29,12 +29,20 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   if(!['sdk','disk'].includes(completion))throw Error('state_completion_invalid');
   let sdkCompleted=0,sdkFailed=0;
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
-  const active=new Set(),touched=new Map(),pruneAttempts=new Map();
+  const active=new Set(),touched=new Map(),pruneAttempts=new Map(),revisionObservers=new Map();
   const certificates=new Set(),certificateContext=new AsyncLocalStorage();
   const measurements=createDurabilityMeasurements();
   const readCoordinator=createReadCoordinator({clock});
   const readSharing=createSharedNamespaceReader({maxParallelReads:1,maxSmallParallelReads:1,maxJobMs:MAX_SHARED_READ_MS,trackRead:(work,options)=>readCoordinator.run('critical',work,options)});
-  function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});}
+  function remember(scope,key){if(!touched.has(scope))touched.set(scope,new Map());touched.get(scope).set(key,{revision:++revision,lastTouched:clock()});for(const item of revisionObservers.get(scope)?.get(key)??[])item.observedRevision=revision;}
+  function observeRevisions(items){
+    for(const item of items){
+      if(!revisionObservers.has(item.scope))revisionObservers.set(item.scope,new Map());
+      const scope=revisionObservers.get(item.scope);if(!scope.has(item.key))scope.set(item.key,new Set());
+      item.observedRevision=touched.get(item.scope)?.get(item.key)?.revision;scope.get(item.key).add(item);
+    }
+    return()=>{for(const item of items){const scope=revisionObservers.get(item.scope),keys=scope?.get(item.key);keys?.delete(item);if(!keys?.size)scope?.delete(item.key);if(!scope?.size)revisionObservers.delete(item.scope);}};
+  }
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
   function forgetKeys(selected){for(const {scope,key,revision} of selected){const map=touched.get(scope);if(revision===undefined||map?.get(key)?.revision!==revision)continue;map.delete(key);if(!map.size){touched.delete(scope);pruneAttempts.delete(scope);}}}
@@ -108,6 +116,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     }
     for(const {scope} of selected)if(!expected.has(scope))expected.set(scope,new Map());
     const measurement=completion==='disk'?measurements.begin(expected.keys(),selected.length,{budgetMs,startedAt:began}):null;
+    const stopObserving=completion==='disk'?observeRevisions(selectedRevisions):()=>{};
     let outcome='failed';
     try{
     stage='capture';measurement?.enter('capture');
@@ -168,7 +177,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
       try{
         // Foreground capture may supersede a drained background value before disk publication.
         for(const [index,item] of selectedRevisions.entries()){
-          const current=touched.get(item.scope)?.get(item.key)?.revision;
+          const current=item.observedRevision;
           if(current!==undefined&&current!==item.revision){
             measurement?.enter('capture');
             item.revision=current;
@@ -206,7 +215,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     }catch(error){
       if(typeof error?.code==='string'&&error.code.startsWith('STATE_READ_COORDINATION_')){outcome='failed';stage='admission';lastCode=error.code;measurement?.retry(lastCode,stage);throw failed();}
       throw error;
-    }finally{if(completion==='sdk'){if(outcome==='sdk_completed')sdkCompleted=Math.min(Number.MAX_SAFE_INTEGER,sdkCompleted+1);else sdkFailed=Math.min(Number.MAX_SAFE_INTEGER,sdkFailed+1);}else{measurement?.finish(outcome,lastCode,stage);measurements.complete(outcome,stage,lastCode);}}
+    }finally{stopObserving();if(completion==='sdk'){if(outcome==='sdk_completed')sdkCompleted=Math.min(Number.MAX_SAFE_INTEGER,sdkCompleted+1);else sdkFailed=Math.min(Number.MAX_SAFE_INTEGER,sdkFailed+1);}else{measurement?.finish(outcome,lastCode,stage);measurements.complete(outcome,stage,lastCode);}}
   }
   async function publishScopes(kv,selected){
     const began=clock(),groups=new Map();
