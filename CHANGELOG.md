@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — bounded stable-generation metadata reuse
+
+- Retain complete summary/enrichment work metadata across multi-session rounds without the former eight-slot churn, keeping the existing 8MiB entry/16MiB aggregate encoded metadata bounds and a finite 512-entry limit.
+- Reuse ID/keyword eligibility projections for long sessions under aggregate 8MiB/32,768-row bounds, with at most 512 scopes and 4MiB per scope. Preserve generation/mutation validation, independent caller values and complete uncached overflow; do not retain original bodies or treat a search index as complete source membership.
+- Share summary key-count reads through final file-generation validation and retain only bounded key metadata. Preserve SDK null presence, inserts, tombstones, corruption and uncertain-write refusal. No timeout, storage/recovery guard, engine, original or history change.
+- A 5.87MB synthetic nine-session comparison preserves metadata and selected model-input hashes; repeated warmed rounds read no files instead of 20 each and total CPU falls 1,250→604ms. Initial latency and event-loop maxima do not improve; sampled retained heap increases about4MB. This is not operating UI/graph throughput or large-source memory proof. See docs/customizations/STABLE-METADATA-REUSE.md.
+
 ## Unreleased — complete observation work selection
 
 - Select unfinished summary and enrichment work from complete, generation-bound scalar metadata, then hydrate and hash-check only selected originals through SDK per-key reads. Preserve pending SDK overlays/deletions, pins, source offsets, ordering, backoff, provider input and publication checks; generic list/search completeness is unchanged.

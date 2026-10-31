@@ -55,16 +55,41 @@ it('does not cache failed validation or serve cached results while a mutation is
  await writeFile(f.file,JSON.stringify(f.rows));expect(await f.reader.ids(f.scope)).toEqual(['one']);const n=f.chunks();
  const finish=f.reader.beginMutation(f.scope);try{expect(await f.reader.ids(f.scope)).toEqual(['one']);expect(f.chunks()).toBe(n+1);}finally{finish();}
 });
-it('does not retain over-limit projections and evicts old scopes after eight completed entries',async()=>{
- const f=await fixture();const many=Object.fromEntries(Array.from({length:4097},(_,i)=>[String(i),{id:String(i)}]));await writeFile(f.file,JSON.stringify(many));
- expect(await f.reader.ids(f.scope)).toHaveLength(4097);const n=f.chunks();expect(await f.reader.indexCandidates(f.scope)).toHaveLength(4097);expect(f.chunks()).toBe(n*2);
- await writeFile(f.file,JSON.stringify(f.rows));await f.reader.ids(f.scope);
- for(let i=0;i<8;i++){const scope=KV.observations('extra'+i);await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),JSON.stringify(f.rows));await f.reader.ids(scope);}
- const before=f.chunks();expect(await f.reader.ids(f.scope)).toEqual(['one']);expect(f.chunks()).toBe(before+1);
+it('retains a complete long-session ID projection across a multi-session maintenance round',async()=>{
+ const f=await fixture();const ids=Array.from({length:8317},(_,i)=>'synthetic-id-'+i);
+ await writeFile(f.file,JSON.stringify(Object.fromEntries(ids.map(id=>[id,{id,title:'synthetic',narrative:'text'}]))));
+ expect(await f.reader.ids(f.scope)).toEqual(ids);
+ for(let i=0;i<9;i++){const scope=KV.observations('extra'+i);await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),JSON.stringify(f.rows));await f.reader.ids(scope);}
+ const before=f.chunks(),index=await f.reader.indexCandidates(f.scope);
+ expect(index).toHaveLength(8317);expect(index[0]).toEqual({id:'synthetic-id-0',eligible:true});expect(index.at(-1)).toEqual({id:'synthetic-id-8316',eligible:true});
+ expect(f.chunks()).toBe(before);
 });
-it('does not retain a projection whose encoded value exceeds one MiB',async()=>{
- const f=await fixture();await writeFile(f.file,JSON.stringify({one:{id:{retained:'x'.repeat(1024*1024)}}}));
- expect((await f.reader.ids(f.scope))[0].retained.length).toBe(1024*1024);const n=f.chunks();await f.reader.ids(f.scope);expect(f.chunks()).toBe(n*2);
+it('does not retain a projection whose encoded value exceeds its per-entry byte budget',async()=>{
+ const f=await fixture();await writeFile(f.file,JSON.stringify({one:{id:{retained:'x'.repeat(4*1024*1024)}}}));
+ expect((await f.reader.ids(f.scope))[0].retained.length).toBe(4*1024*1024);const n=f.chunks();await f.reader.ids(f.scope);expect(f.chunks()).toBe(n*2);
+});
+it('evicts by aggregate retained row pressure while returning every ID',async()=>{
+ const f=await fixture(),ids=Array.from({length:7000},(_,i)=>'synthetic-'+i),payload=JSON.stringify(Object.fromEntries(ids.map(id=>[id,{id}])));
+ const scopes=Array.from({length:5},(_,i)=>KV.observations('row-budget-'+i));
+ for(const scope of scopes){await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),payload);expect(await f.reader.ids(scope)).toEqual(ids);}
+ const before=f.chunks();expect(await f.reader.ids(scopes[0])).toEqual(ids);expect(f.chunks()).toBeGreaterThan(before);
+});
+it('evicts by aggregate encoded byte pressure without dropping unretained results',async()=>{
+ const f=await fixture(),value='x'.repeat(1536*1024),payload=JSON.stringify({one:{id:{retained:value}}});
+ const scopes=Array.from({length:6},(_,i)=>KV.observations('byte-budget-'+i));
+ for(const scope of scopes){await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),payload);expect((await f.reader.ids(scope))[0].retained).toBe(value);}
+ const before=f.chunks();expect((await f.reader.ids(scopes[0]))[0].retained).toBe(value);expect(f.chunks()).toBeGreaterThan(before);
+});
+it('returns an over-row-budget scope completely without retaining it',async()=>{
+ const f=await fixture(),ids=Array.from({length:32769},(_,i)=>'overflow-'+i);
+ await writeFile(f.file,JSON.stringify(Object.fromEntries(ids.map(id=>[id,{id}]))));
+ expect(await f.reader.ids(f.scope)).toEqual(ids);const first=f.chunks();
+ expect(await f.reader.ids(f.scope)).toEqual(ids);expect(f.chunks()).toBe(first*2);
+});
+it('bounds retained empty scopes even when row and encoded-byte totals are zero',async()=>{
+ const f=await fixture();await writeFile(f.file,'{}');expect(await f.reader.ids(f.scope)).toEqual([]);
+ for(let i=0;i<512;i++){const scope=KV.observations('empty-'+i);await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),'{}');await f.reader.ids(scope);}
+ const before=f.chunks();expect(await f.reader.ids(f.scope)).toEqual([]);expect(f.chunks()).toBe(before+1);
 });
 
 it('periodic health never starts a deep scan and keeps absent or expired evidence unknown',async()=>{

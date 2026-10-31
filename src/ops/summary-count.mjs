@@ -1,15 +1,18 @@
 import {join} from 'node:path';
+import {stat} from 'node:fs/promises';
 import {readNamespaceEntries} from './namespace-reader.mjs';
 
 export function createSummaryCount({storePath,kv}) {
   const pending=new Map(),views=new Map(),identities=new Map();
+  const path=join(storePath,encodeURIComponent('mem:summaries')+'.bin');
+  let countCache=null,countLoading=null;
   let keyBytes=0,unavailable=false,viewsUnavailable=false,idsUnavailable=false,viewBytes=0,idBytes=0;
   const inputFields=['sessionId','createdAt','title','narrative','concepts'];
   const fail=code=>Object.assign(Error(code),{code});
   const project=value=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(inputFields.filter(k=>Object.hasOwn(value,k)).map(k=>[k,value[k]])):value;
   const size=value=>{const text=JSON.stringify(value);if(text===undefined)throw fail('summary_projection_unknown');return Buffer.byteLength(text,'utf8');};
   const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
-  function invalidate(){unavailable=true;}
+  function invalidate(){unavailable=true;countCache=null;}
   function prepare(value){
     const result={idValid:false,viewValid:false};
     try{
@@ -50,14 +53,42 @@ export function createSummaryCount({storePath,kv}) {
       views.set(key,view);viewBytes=total;
     }catch{viewsUnavailable=true;views.clear();viewBytes=0;}
   }
+  async function countFileRevision(){
+    try{const s=await stat(path,{bigint:true});return[s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join(':');}
+    catch(error){if(error.code==='ENOENT')return'absent';throw error;}
+  }
+  async function readCountKeys(){
+    const keys=new Set();let bytes=0,signature='absent';
+    try{
+      const result=await readNamespaceEntries(path,{withReadChunk:bulkRead,onEntry:key=>{keys.add(key);bytes+=Buffer.byteLength(key,'utf8');}});
+      signature=result.signature;
+    }catch(error){if(error.code!=='ENOENT')throw error;}
+    if(signature!==await countFileRevision())throw fail('state_namespace_changed');
+    const result={keys,bytes,signature};
+    if(!unavailable&&keys.size<=16384&&bytes<=4*1024*1024)countCache=result;
+    return result;
+  }
+  async function countKeys(){
+    for(let attempt=0;;attempt++){
+      const revision=await countFileRevision();
+      if(countCache?.signature===revision)return countCache.keys;
+      countCache=null;
+      if(!countLoading){
+        const reading=readCountKeys();countLoading=reading;
+        const clear=()=>{if(countLoading===reading)countLoading=null;};reading.then(clear,clear);
+      }
+      let result;
+      try{result=await countLoading;}
+      catch(error){if(error.code==='state_namespace_changed'&&attempt===0)continue;throw error;}
+      if(result.signature!==await countFileRevision()){
+        if(attempt===0)continue;throw fail('state_namespace_changed');
+      }
+      return result.keys;
+    }
+  }
   async function count(){
     if(unavailable)throw Error('summary_count_overlay_limit_or_unknown');
-    const keys=new Set();
-    for(let attempt=0;;attempt++){
-      keys.clear();
-      try{await readNamespaceEntries(join(storePath,encodeURIComponent('mem:summaries')+'.bin'),{withReadChunk:bulkRead,onEntry:key=>{keys.add(key);}});break;}
-      catch(error){if(error.code==='ENOENT')break;if(error.code==='state_namespace_changed'&&attempt===0)continue;throw error;}
-    }
+    const keys=new Set(await countKeys());
     if(unavailable)throw Error('summary_count_overlay_limit_or_unknown');
     for(const [key,present] of pending){
       if(present)keys.add(key);else keys.delete(key);

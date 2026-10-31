@@ -39,6 +39,16 @@ export function createObservationReader({storePath,kv,workContext,workCacheBytes
  const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
  const projectionCache=new Map(),projectionFlights=new Map(),readBody=createInflightBodyReader();
+ let projectionBytes=0,projectionRows=0;
+ function dropProjection(scope){
+  const entry=projectionCache.get(scope);if(!entry)return;
+  projectionBytes-=entry.bytes;projectionRows-=entry.rows.size;projectionCache.delete(scope);
+ }
+ function retainProjection(scope,entry){
+  dropProjection(scope);
+  while(projectionCache.size&&(projectionCache.size>=512||projectionBytes+entry.bytes>8*1024*1024||projectionRows+entry.rows.size>32768))dropProjection(projectionCache.keys().next().value);
+  projectionCache.set(scope,entry);projectionBytes+=entry.bytes;projectionRows+=entry.rows.size;
+ }
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function fileRevision(scope){
   let file='absent';try{const value=await stat(join(storePath,encodeURIComponent(scope)+'.bin'),{bigint:true});file=[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');}catch(error){if(error.code!=='ENOENT')throw error;}
@@ -159,7 +169,7 @@ export function createObservationReader({storePath,kv,workContext,workCacheBytes
   if(!activeMutations.get(scope)&&cached?.revision===observed){
    projectionCache.delete(scope);projectionCache.set(scope,cached);return cached.rows;
   }
-  projectionCache.delete(scope);
+  dropProjection(scope);
   const flightKey=scope+'\0'+observed;
   let flight=projectionFlights.get(flightKey);
   if(!flight){
@@ -176,13 +186,10 @@ export function createObservationReader({storePath,kv,workContext,workCacheBytes
      }catch(error){if(error.code==='ENOENT')break;if(error.code==='state_namespace_changed'&&attempt<1)continue;throw error;}
     }
     const expected=fileRevision+':'+mutation;
-    if(rows.size<=4096&&!activeMutations.get(scope)&&expected===await revision(scope)){
+    if(rows.size<=32768&&!activeMutations.get(scope)&&expected===await revision(scope)){
      let encodedBytes=0;
-     for(const row of rows){encodedBytes+=bytes(row);if(encodedBytes>1024*1024)break;}
-     if(encodedBytes<=1024*1024){
-      projectionCache.delete(scope);projectionCache.set(scope,{revision:expected,rows});
-      while(projectionCache.size>8)projectionCache.delete(projectionCache.keys().next().value);
-     }
+     for(const row of rows){encodedBytes+=bytes(row);if(encodedBytes>4*1024*1024)break;}
+     if(encodedBytes<=4*1024*1024)retainProjection(scope,{revision:expected,rows,bytes:encodedBytes});
     }
     return rows;
    })();

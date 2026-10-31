@@ -54,7 +54,7 @@ export function createObservationWorkReader({storePath,kv,bulkRead,fileRevision,
    entry={file:signature,rows,bytes:size};
    if(size<=cacheBytes){
     drop(key);
-    while(cache.size&&(cache.size>=8||retained+size>16*1024*1024))drop(cache.keys().next().value);
+    while(cache.size&&(cache.size>=512||retained+size>16*1024*1024))drop(cache.keys().next().value);
     cache.set(key,entry);retained+=size;
    }
   }else{cache.delete(key);cache.set(key,entry);}

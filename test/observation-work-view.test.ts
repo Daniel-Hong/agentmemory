@@ -1,6 +1,30 @@
 import {afterEach,it,expect,vi} from 'vitest';import {mkdtemp,writeFile,rename,rm} from 'node:fs/promises';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createObservationReader} from '../src/ops/observation-pages.mjs';
 const dirs:string[]=[];afterEach(async()=>{for(const p of dirs.splice(0))await rm(p,{recursive:true,force:true});});
+it('reuses complete work metadata across a maintenance round of nine sessions and both consumers',async()=>{
+ const f=await fixture(),scopes=Array.from({length:9},(_,i)=>'mem:obs:round'+i);
+ for(const scope of scopes)await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),JSON.stringify(f.rows));
+ const views=[];
+ for(const scope of scopes)for(const options of [{kind:'summary'},{kind:'enrichment',compressEnabled:false,inputChars:3200}]){
+  views.push(await f.reader.work(scope,options));
+ }
+ const firstReadChunks=f.chunks();expect(firstReadChunks).toBe(18);
+ for(const scope of scopes)for(const options of [{kind:'summary'},{kind:'enrichment',compressEnabled:false,inputChars:3200}]){
+  const view=await f.reader.work(scope,options);expect(view.rows.map((r:any)=>r.id)).toEqual(['one']);
+  expect(JSON.stringify(view.rows)).not.toContain('private synthetic raw');
+ }
+ expect(f.chunks()).toBe(firstReadChunks);
+});
+it('still evicts complete work views under aggregate encoded metadata pressure',async()=>{
+ const f=await fixture(),id='x'.repeat(3*1024*1024),payload=JSON.stringify({[id]:{id}});
+ const scopes=['mem:obs:budget-a','mem:obs:budget-b','mem:obs:budget-c'];
+ for(const scope of scopes){
+  await writeFile(join(f.dir,encodeURIComponent(scope)+'.bin'),payload);
+  expect((await f.reader.work(scope,{kind:'summary'})).rows).toHaveLength(1);
+ }
+ const before=f.chunks();expect((await f.reader.work(scopes[0],{kind:'summary'})).rows[0].id.length).toBe(id.length);
+ expect(f.chunks()).toBeGreaterThan(before);
+},10000);
 async function fixture(options:any={}){const dir=await mkdtemp(join(tmpdir(),'am-work-view-'));dirs.push(dir);const scope='mem:obs:synthetic',file=join(dir,encodeURIComponent(scope)+'.bin');const rows:any={one:{id:'one',timestamp:'2026-01-01',type:'decision',importance:9,title:'yes',narrative:'text',sourceRaw:{hookType:'prompt_submit',toolOutput:'private synthetic raw'}}};await writeFile(file,JSON.stringify(rows));let chunks=0;const get=vi.fn(async(_s:string,k:string)=>structuredClone(rows[k]??null));const kv:any={get,durability:{withBulkRead:async(w:any)=>{chunks++;return w();}}};const reader:any=createObservationReader({storePath:dir,kv,...options});return{dir,scope,file,rows,get,reader,chunks:()=>chunks};}
 it('reuses a validated work projection without retaining full sources or exposing mutable cache rows',async()=>{const f=await fixture();const a=await f.reader.work(f.scope,{kind:'summary'}),b=await f.reader.work(f.scope,{kind:'summary'});expect(f.chunks()).toBe(1);expect(a.rows).not.toBe(b.rows);expect(JSON.stringify(a.rows)).not.toContain('private synthetic raw');expect(a.rows[0]).toMatchObject({id:'one',type:'decision',importance:8,sourceRaw:{hookType:'prompt_submit'}});expect(Object.isFrozen(a.rows[0])).toBe(true);expect(await a.load(a.rows[0])).toEqual(f.rows.one);});
 it('invalidates replacement and preserves pending SDK upserts and deletes over an unchanged disk generation',async()=>{const f=await fixture();await f.reader.work(f.scope,{kind:'summary'});f.rows.two={id:'two',timestamp:'2026-01-02',narrative:'new'};f.reader.record(f.scope,'two',f.rows.two);let v=await f.reader.work(f.scope,{kind:'summary'});expect(v.rows.map((r:any)=>r.id)).toEqual(['one','two']);expect(f.chunks()).toBe(1);delete f.rows.one;f.reader.record(f.scope,'one',null,true);v=await f.reader.work(f.scope,{kind:'summary'});expect(v.rows.map((r:any)=>r.id)).toEqual(['two']);await writeFile(f.file+'.next',JSON.stringify({three:{id:'three'}}));await rename(f.file+'.next',f.file);expect((await f.reader.work(f.scope,{kind:'summary'})).rows.map((r:any)=>r.id)).toEqual(['three','two']);expect(f.chunks()).toBe(2);});

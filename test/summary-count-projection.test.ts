@@ -1,11 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StateKV } from '../src/state/kv.js';
 import { createConsolidationStatusReader } from '../src/triggers/api.js';
 const dirs:string[]=[];
-afterEach(async()=>{vi.unstubAllEnvs();await Promise.all(dirs.splice(0).map(d=>rm(d,{recursive:true,force:true})));});
+afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllEnvs();await Promise.all(dirs.splice(0).map(d=>rm(d,{recursive:true,force:true})));});
 async function fixture(rows:Record<string,unknown>={}){
  const dir=await mkdtemp(join(tmpdir(),'am-summary-count-'));dirs.push(dir);vi.stubEnv('AGENTMEMORY_STATE_STORE_PATH',dir);
  const path=join(dir,encodeURIComponent('mem:summaries')+'.bin');await writeFile(path,JSON.stringify(rows));
@@ -15,6 +15,39 @@ async function fixture(rows:Record<string,unknown>={}){
 it('counts summary keys without returning their values through the SDK',async()=>{
  const {kv,trigger}=await fixture({a:{text:'x'.repeat(128*1024)},b:null});
  expect(await kv.countSummaries()).toBe(2);expect(trigger).not.toHaveBeenCalled();
+});
+it('shares an initial summary-key scan and reuses only the unchanged file generation',async()=>{
+ const {kv,path}=await fixture({a:null,b:{text:'retained synthetic body'}}),reads=vi.spyOn(kv.durability!,'withBulkRead');
+ expect(await Promise.all([kv.countSummaries(),kv.countSummaries(),kv.countSummaries()])).toEqual([2,2,2]);
+ expect(reads).toHaveBeenCalledTimes(1);expect(await kv.countSummaries()).toBe(2);expect(reads).toHaveBeenCalledTimes(1);
+ await writeFile(path+'.next','{"c":{}}');await rename(path+'.next',path);
+ expect(await kv.countSummaries()).toBe(1);expect(reads).toHaveBeenCalledTimes(2);
+ await kv.set('mem:summaries','pending',null);await kv.delete('mem:summaries','c');
+ expect(await kv.countSummaries()).toBe(1);expect(reads).toHaveBeenCalledTimes(2);
+});
+it('never falls back to previously cached summary counts after corrupt publication',async()=>{
+ const {kv,path}=await fixture({a:{}});expect(await kv.countSummaries()).toBe(1);
+ await writeFile(path,'{"broken":');
+ const results=await Promise.allSettled([kv.countSummaries(),kv.countSummaries()]);
+ expect(results.every(result=>result.status==='rejected')).toBe(true);
+ await writeFile(path,'{"fixed":{},"other":{}}');expect(await kv.countSummaries()).toBe(2);
+});
+it('counts every summary key without retaining an over-budget generation',async()=>{
+ const {kv,path}=await fixture();await writeFile(path,JSON.stringify(Object.fromEntries(Array.from({length:16385},(_,i)=>['key'+i,null]))));
+ const reads=vi.spyOn(kv.durability!,'withBulkRead');expect(await kv.countSummaries()).toBe(16385);const first=reads.mock.calls.length;
+ expect(first).toBeGreaterThan(0);expect(await kv.countSummaries()).toBe(16385);expect(reads.mock.calls.length).toBe(first*2);
+});
+it('does not retain source keys whose encoded bytes exceed the key cache budget',async()=>{
+ const {kv,path}=await fixture();await writeFile(path,JSON.stringify({['k'.repeat(4*1024*1024+1)]:null}));
+ const reads=vi.spyOn(kv.durability!,'withBulkRead');expect(await kv.countSummaries()).toBe(1);const first=reads.mock.calls.length;
+ expect(await kv.countSummaries()).toBe(1);expect(reads.mock.calls.length).toBe(first*2);
+},10000);
+it('invalidates a cached absence at first publication without losing later SDK tombstones',async()=>{
+ const {kv,path}=await fixture();await rm(path);expect(await kv.countSummaries()).toBe(0);
+ await writeFile(path,'{"published":null}');expect(await kv.countSummaries()).toBe(1);
+ await kv.set('mem:summaries','pending',null);expect(await kv.countSummaries()).toBe(2);
+ await writeFile(path+'.next','{"published":null,"pending":null}');await rename(path+'.next',path);
+ await kv.delete('mem:summaries','pending');expect(await kv.countSummaries()).toBe(1);
 });
 it('overlays SDK completed insert, replacement, null set and deletion before publication',async()=>{
  const {kv,path}=await fixture({a:{text:'old'},b:{text:'old'}});
