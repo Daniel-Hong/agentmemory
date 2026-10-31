@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — in-flight observation body reads (development only)
+
+- Coalesce at most two concurrent full-body reads only for the same scope, file/mutation revision and consistency mode. Return independently mutable nested objects and apply each caller’s SDK overlay separately; retain file validation, corruption errors and current-path retry.
+- Retain no completed body cache. Cancel physical work only after every consumer cancels; hold shared admission reservations through actual cleanup. Limit shared admission to eight active loads and 512MiB source bytes, falling back to independent reads beyond those limits. These are sharing limits, not an overall heap ceiling.
+- Real summarizer/enrichment and small file regressions demonstrate one parse instead of two without model calls. Operating Viewer504 and migration throughput remain unverified; no new deployment, guard change or temporary automatic pause is included.
+
 ## Unreleased — shared observation projections and held graph handoff
 
 - Share ID/keyword-eligibility file projections by exact file and mutation revision. Bound successful reuse to eight scopes and 4,096 rows/1MiB per scope; retain current-path validation, SDK overlays and unknown status after response timeout. Do not retain original bodies or omit integrity checks.
@@ -123,6 +129,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.47] — 2026-10-31
 ## [0.9.31-daniel.46] — 2026-10-30
 ## [0.9.31-daniel.45] — 2026-10-30
 ## [0.9.31-daniel.44] — 2026-10-30
@@ -429,6 +436,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.47]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.46...v0.9.31-daniel.47
 [0.9.31-daniel.46]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.45...v0.9.31-daniel.46
 [0.9.31-daniel.45]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.44...v0.9.31-daniel.45
 [0.9.31-daniel.44]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.43...v0.9.31-daniel.44

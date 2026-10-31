@@ -1,3 +1,4 @@
+import {createInflightBodyReader} from './inflight-body-reader.mjs';
 import { observationIndexEligible } from './observation-index-policy.mjs';
 import {readFile,stat} from 'node:fs/promises';
 import {join,isAbsolute} from 'node:path';
@@ -36,7 +37,7 @@ export function createObservationReader({storePath,kv}){
  const activeMutations=new Map();
  const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
- const projectionCache=new Map(),projectionFlights=new Map();
+ const projectionCache=new Map(),projectionFlights=new Map(),readBody=createInflightBodyReader();
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
  async function revision(scope){
   let file='absent';try{const value=await stat(join(storePath,encodeURIComponent(scope)+'.bin'),{bigint:true});file=[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');}catch(error){if(error.code!=='ENOENT')throw error;}
@@ -117,17 +118,24 @@ export function createObservationReader({storePath,kv}){
   else if(session&&session.observationCount!==rows.length+(removed.get(scope)?.size||0))throw fail('observation_index_not_ready_retry');
   return rows;
  }
- async function list(scope,{consistency='current-path'}={}){
+ async function diskBody(scope,consistency,signal){
   const rows=new Map();
   // Internal callers need complete rows; stream the file rather than amplify it into one SDK request per row.
   for(let attempt=0;;attempt++){
    rows.clear();
-   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{consistency,withReadChunk:bulkRead,onEntry:(key,value)=>{
+   try{await readNamespaceEntries(join(storePath,encodeURIComponent(scope)+'.bin'),{consistency,signal,withReadChunk:bulkRead,onEntry:(key,value)=>{
     if(!value||typeof value!=='object'||Array.isArray(value))throw fail('invalid_observation_record');
     if(bytes(value)>15*1024*1024)throw fail('observation_exceeds_page_budget',413);
     rows.set(key,value);
    }});break;}catch(error){if(error.code==='ENOENT')break;if(error.code==='state_namespace_changed'&&attempt<1)continue;throw error;}
   }
+  return rows;
+ }
+ async function list(scope,{consistency='current-path',signal}={}){
+  signal?.throwIfAborted();
+  const observed=await revision(scope),fileBytes=observed.startsWith('absent:')?0:Number(observed.split(':')[2]);
+  const rows=await readBody({key:scope+'\0'+consistency+'\0'+observed,fileBytes,signal,load:signal=>diskBody(scope,consistency,signal)});
+  signal?.throwIfAborted();
   const overlay=pending.get(scope);
   for(const [key,value] of new Map(overlay??[])){
    const disk=rows.get(key);
@@ -141,6 +149,7 @@ export function createObservationReader({storePath,kv}){
    }
   }
   if(overlay&&!overlay.size)pending.delete(scope);
+  signal?.throwIfAborted();
   return [...rows.values()];
  }
  async function diskProjection(scope){
