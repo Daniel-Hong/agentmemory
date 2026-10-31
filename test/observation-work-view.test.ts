@@ -75,8 +75,8 @@ it('does not accumulate phantom retained bytes when admitted same-key cache miss
  expect((await f.reader.work(f.scope,{kind:'summary'})).rows).toHaveLength(1);expect(f.chunks()).toBe(before);
 });
 it('releases published overlay metadata without losing a later upsert or tombstone',async()=>{
- const {createObservationWorkReader}=await import('../src/ops/observation-work.mjs'),{stat}=await import('node:fs/promises'),{createHash}=await import('node:crypto');const f=await fixture();
- const pending=new Map([[f.scope,new Map<string,any>([['one',{fingerprint:createHash('sha256').update(JSON.stringify(f.rows.one)).digest('hex')}],['deleted',null]])]]);
+ const {createObservationWorkReader,observationWorkHash}=await import('../src/ops/observation-work.mjs'),{stat}=await import('node:fs/promises');const f=await fixture();
+ const pending=new Map([[f.scope,new Map<string,any>([['one',{fingerprint:observationWorkHash(f.rows.one)}],['deleted',null]])]]);
  const work=createObservationWorkReader({storePath:f.dir,kv:{get:f.get},bulkRead:(fn:any)=>fn(),pending,mutationRevision:()=>0,pendingMutations:()=>0,fileRevision:async()=>{const s=await stat(f.file,{bigint:true});return[s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join(':');}});
  expect((await work(f.scope,{kind:'summary'})).rows).toHaveLength(1);expect(pending.size).toBe(0);
 });

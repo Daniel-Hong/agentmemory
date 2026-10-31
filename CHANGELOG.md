@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — JSON wire-order read identity
+
+- Compare full observation JSON wire values independent of object key order, preserving arrays, raw strings and actual nested content changes. Retire pending read overlays only after the current file contains the matching full value; SDK get success alone is insufficient. Keep disk receipts, pinned values and generation checks separate.
+- Reject a selected SDK value if a local mutation completes while its read is in flight. This closes an existing stale-response race without claiming disk durability.
+- Actual installed bundled SDK source matches the isolated SDK0.25 fixture; native engine0.22.1 reorders object keys. A small512-row replay removes repeated512 SDK reads per warm round while retaining selected values. Operating pending population, CPU contribution, UI latency and large-source memory safety remain unverified. See docs/customizations/JSON-WIRE-READ-IDENTITY.md.
+
 ## Unreleased — bounded stable-generation metadata reuse
 
 - Correct a test fixture that assumed asynchronous file classification preserves request order. Complete each physical read in its actual admission order while requiring both distinct size limits and zero sharing; do not change production admission or time limits.
@@ -147,6 +153,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.50] — 2026-10-31
 ## [0.9.31-daniel.49] — 2026-10-31
 ## [0.9.31-daniel.48] — 2026-10-31
 ## [0.9.31-daniel.47] — 2026-10-31
@@ -456,6 +463,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.50]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.49...v0.9.31-daniel.50
 [0.9.31-daniel.49]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.48...v0.9.31-daniel.49
 [0.9.31-daniel.48]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.47...v0.9.31-daniel.48
 [0.9.31-daniel.47]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.46...v0.9.31-daniel.47

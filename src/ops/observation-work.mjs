@@ -1,14 +1,14 @@
-import {createHash} from 'node:crypto';
+import {observationJsonFingerprint,observationValueFingerprint} from './observation-json-fingerprint.mjs';
 import {join} from 'node:path';
 import {readNamespaceEntries} from './namespace-reader.mjs';
 import {graphProjection,fingerprint} from './enrichment-projection.mjs';
 const fail=code=>Object.assign(Error(code),{code});
-export const observationWorkHash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export const observationWorkHash=observationValueFingerprint;
 export function describeObservationWork(key,value,options){
  if(!value||typeof value!=='object'||Array.isArray(value)||typeof value.id!=='string'||value.id!==key)throw fail('observation_work_identity_invalid');
  const json=JSON.stringify(value);
  if(Buffer.byteLength(json)>15*1024*1024)throw fail('observation_exceeds_page_budget');
- const row={id:value.id,key,timestamp:value.timestamp??'',_workHash:createHash('sha256').update(json).digest('hex')};
+ const row={id:value.id,key,timestamp:value.timestamp??'',_workHash:observationJsonFingerprint(json)};
  if(options.kind==='summary'){
   row.type=value.type==='decision'?'decision':'';row.importance=value.importance>=8?8:0;
   if((value.sourceRaw?.hookType??value.hookType)==='prompt_submit')row.sourceRaw={hookType:'prompt_submit'};
@@ -72,8 +72,9 @@ export function createObservationWorkReader({storePath,kv,bulkRead,fileRevision,
   const load=async row=>{
    signal?.throwIfAborted();checkedContext(token);if(rows.get(row.key)!==row)throw fail('observation_work_source_changed');
    if(pendingMutations(scope))throw fail('observation_work_source_changed');
+   const selectedMutation=mutationRevision(scope);
    const value=await kv.get(scope,row.key);signal?.throwIfAborted();checkedContext(token);
-   if(pendingMutations(scope))throw fail('observation_work_source_changed');
+   if(pendingMutations(scope)||selectedMutation!==mutationRevision(scope))throw fail('observation_work_source_changed');
    if(value==null||observationWorkHash(value)!==row._workHash)throw fail('observation_work_source_changed');
    return value;
   };

@@ -1,0 +1,13 @@
+# JSON wire read identity
+
+Development successor to frozen .49, not deployed.
+
+StateKV records the caller value after an SDK mutation. The actual native engine sorts object keys recursively. Raw JSON.stringify hashes therefore retain semantically persisted observation overlays and cause repeated SDK reads. Canonical identity applies only to the full JSON wire value in observation-pages metadata and observation-work row/load hashes. Objects are sorted after JSON serialization; arrays, raw string bytes and actual values retain their meaning. Object.fromEntries preserves legal __proto__ own JSON fields.
+
+State durability receipts continue using pinned expected values and isDeepStrictEqual; file generation, process identity, read epochs and all mutation/recovery guards remain separate. No pending TTL or forced eviction is introduced. Successful SDK get without matching current file data does not retire pending. Selected loads additionally compare local mutation revision before/after SDK await, rejecting a delayed old response after a completed newer write.
+
+TDD reproduced the selected-load race (one failure, ten other tests passed); the minimal revision check makes all eleven tests pass. Fixed independent SHA literal and legal __proto__ tests avoid shared-helper self-validation. Existing pinned old-value disk receipt rejection is unchanged and passes.
+
+Small512-row synthetic replay: frozen .48 performs512 SDK gets on each of three visits with pending values, corrected reader performs0/0/0 and retains the same selected-value hash. Small no-pending CPU increased36.175 to44.676ms in one pair; extra parsing/sorting cost and large293MB operating source memory safety are not proved by that result. No completed body cache, timeout extension, new engine, external auto-pause, operating pause or new model call is included.
+
+Final successor-source build, skills generation, docs sync/check and skills check passed. Ordinary regression5791passed/13existing conditional skips/0failed plus the separately admitted real SDK boundary case1passed yields5792distinct passed. The SDK case started only after natural host memory exceeded the unchanged12GiB requirement, with no operating pause. Typecheck retains30baseline diagnostics and no new diagnostics. An initial harness run with global AGENTMEMORY path overrides produced45failures; those logs are preserved, the fixture-changing environment was corrected without product/test changes, and the clean complete regression passed. Deployment state: none; do not inherit frozen .49 test totals. Upstream replacement criterion: matching full JSON wire-value identities plus identical freshness, generation, pending-overlay and exact durability contract regressions.

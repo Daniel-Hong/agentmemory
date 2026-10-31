@@ -4,7 +4,7 @@ import { observationIndexEligible } from './observation-index-policy.mjs';
 import {readFile,stat} from 'node:fs/promises';
 import {join,isAbsolute} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
-import {createHash} from 'node:crypto';
+import {observationJsonFingerprint} from './observation-json-fingerprint.mjs';
 import {readNamespaceEntries} from './namespace-reader.mjs';
 import {namespaceJson} from './state-durability.mjs';
 import {parseListQuery,matchesText} from '../state/list-query.js';
@@ -25,7 +25,7 @@ function cursorPosition(cursor){
 function metadata(key,o){
  if(!o||typeof o!=='object'||Array.isArray(o))throw fail('invalid_observation_record');
  const serialized=JSON.stringify(o);
- return {key,...observationBudgetEntry(o),id:typeof o.id==='string'?o.id:key,timestamp:o.timestamp??'',agentId:o.agentId,type:o.type||o.hookType||'other',importance:o.importance??0,searchFields:[o.title,o.subtitle,o.narrative,...(Array.isArray(o.facts)?o.facts:[]),...(Array.isArray(o.files)?o.files:[])].filter(value=>typeof value==='string'),tool:o.toolName||o.sourceRaw?.toolName||(o.origin?.channel==='tool'?o.origin.detail:null),files:Array.isArray(o.files)?o.files:[],firstPrompt:String(o.userPrompt||o.sourceRaw?.userPrompt||(o.type==='conversation'?o.narrative:'')||'').slice(0,600),bytes:Buffer.byteLength(serialized,'utf8'),fingerprint:createHash('sha256').update(serialized).digest('hex')};
+ return {key,...observationBudgetEntry(o),id:typeof o.id==='string'?o.id:key,timestamp:o.timestamp??'',agentId:o.agentId,type:o.type||o.hookType||'other',importance:o.importance??0,searchFields:[o.title,o.subtitle,o.narrative,...(Array.isArray(o.facts)?o.facts:[]),...(Array.isArray(o.files)?o.files:[])].filter(value=>typeof value==='string'),tool:o.toolName||o.sourceRaw?.toolName||(o.origin?.channel==='tool'?o.origin.detail:null),files:Array.isArray(o.files)?o.files:[],firstPrompt:String(o.userPrompt||o.sourceRaw?.userPrompt||(o.type==='conversation'?o.narrative:'')||'').slice(0,600),bytes:Buffer.byteLength(serialized,'utf8'),fingerprint:observationJsonFingerprint(serialized)};
 }
 export function sessionStats(rows){
  const tools=new Map(),types=new Map(),files=new Set();let firstPrompt='';
