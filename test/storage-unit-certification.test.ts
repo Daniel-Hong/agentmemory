@@ -14,6 +14,26 @@ it('routes the complete compression certification and publication through sixtee
  expect(certificates.map(row=>row.physicalSelection)).toEqual(['target-0','target-1'].map(key=>[{family:'source',unit:storageUnitFor(key)},{family:'retry',unit:storageUnitFor(key)}]));
  expect(result.certificateEvents.filter(row=>row.kind==='committed_marker').map(row=>row.physicalSelection).sort((a,b)=>a[0].unit-b[0].unit)).toEqual(['target-0','target-1'].map(key=>[{family:'marker',unit:storageUnitFor(key)}]).sort((a,b)=>a[0].unit-b[0].unit));
 });
+it('routes uncontended complete compression certification and publication through sixteen real namespace units',async()=>{
+ const result=await runCompressionCertificationScenario({namespaceBytes:512*1024,itemCount:2,warmCaptureBudget:true,storageUnitCount:16,awaitEachPublication:true}as any);
+ expect((result as any).storageUnits).toMatchObject({count:16,logicalSourceFilePresent:false,duplicateSourceKeys:0,sourceKeysComplete:true});
+ expect(result.certificateEvents.filter(row=>row.outcome==='failed')).toEqual([]);
+ expect(result.outcomes.every(row=>row.success)).toBe(true);expect(result.committedTargets).toBe(2);expect(result.pendingTargets).toBe(0);expect(result.originalSourcesPreserved).toBe(true);expect(result.inferencePeak).toBe(1);
+ expect((result as any).storageUnits.sourceFileCount).toBe(16);
+ const certificates=result.certificateEvents.filter(row=>row.kind==='source_intent');
+ expect(certificates).toHaveLength(2);
+ expect(certificates.map(row=>row.physicalSelection)).toEqual(['target-0','target-1'].map(key=>[{family:'source',unit:storageUnitFor(key)},{family:'retry',unit:storageUnitFor(key)}]));
+ expect(result.certificateEvents.filter(row=>row.kind==='committed_marker').map(row=>row.physicalSelection).sort((a,b)=>a[0].unit-b[0].unit)).toEqual(['target-0','target-1'].map(key=>[{family:'marker',unit:storageUnitFor(key)}]).sort((a,b)=>a[0].unit-b[0].unit));
+});
+it('recaptures superseded metadata through sixteen physical units without acknowledging an obsolete publication',async()=>{
+ const result=await runCompressionCertificationScenario({namespaceBytes:512*1024,itemCount:2,warmCaptureBudget:true,storageUnitCount:16,forceMetadataSupersession:true,timeoutMs:250});
+ expect(result.metadataSupersessionForced).toBe(true);
+ const recaptured=result.certificateEvents.find(row=>Array.isArray(row.captures)&&new Set((row.captures as {kind:string;hash:string}[]).filter(row=>row.kind==='metadata').map(row=>row.hash)).size===2);
+ expect(recaptured).toMatchObject({kind:'index_publication',outcome:'verified'});
+ expect(result.certificateEvents.filter(row=>row.outcome==='failed')).toEqual([]);
+ expect(result.committedTargets).toBe(2);expect(result.pendingTargets).toBe(0);expect(result.durablePendingTargets).toBe(0);expect(result.originalSourcesPreserved).toBe(true);
+ expect((result as any).storageUnits).toMatchObject({count:16,logicalSourceFilePresent:false,duplicateSourceKeys:0,sourceKeysComplete:true});
+});
 it('keeps originals and a real durable retry instead of certifying a delayed shard',async()=>{
  const result=await runCompressionCertificationScenario({namespaceBytes:512*1024,itemCount:1,publicationDelayMs:80,timeoutMs:30,storageUnitCount:16});
  expect(result.outcomes[0]).toMatchObject({success:true,retained:false,revisionWritten:true,diagnosticCategory:null});

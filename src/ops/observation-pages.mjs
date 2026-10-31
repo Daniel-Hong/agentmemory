@@ -1,3 +1,4 @@
+import {createObservationWorkReader} from './observation-work.mjs';
 import {createInflightBodyReader} from './inflight-body-reader.mjs';
 import { observationIndexEligible } from './observation-index-policy.mjs';
 import {readFile,stat} from 'node:fs/promises';
@@ -32,17 +33,18 @@ export function sessionStats(rows){
  const top=(map,n)=>Object.fromEntries([...map].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]))).slice(0,n));
  return {observationCount:rows.length,toolsUsed:tools.size,filesTouched:files.size,toolCounts:top(tools,10),typeCounts:top(types,30),files:[...files].slice(0,30),firstPrompt};
 }
-export function createObservationReader({storePath,kv}){
+export function createObservationReader({storePath,kv,workContext,workCacheBytes}){
  if(!isAbsolute(storePath))throw fail('absolute_state_store_path_required');
  const activeMutations=new Map();
  const bulkRead=(work,options)=>typeof kv?.durability?.withBulkRead==='function'?kv.durability.withBulkRead(work,options):work();
  const cache=new Map(),pending=new Map(),removed=new Map(),mutations=new Map(),captureBudgets=new Map(),uncertainScopes=new Set();
  const projectionCache=new Map(),projectionFlights=new Map(),readBody=createInflightBodyReader();
  function invalidateCaptureSummary(scope){if(scope.startsWith('mem:obs:')){uncertainScopes.add(scope);captureBudgets.delete(scope);}}
- async function revision(scope){
+ async function fileRevision(scope){
   let file='absent';try{const value=await stat(join(storePath,encodeURIComponent(scope)+'.bin'),{bigint:true});file=[value.dev,value.ino,value.size,value.mtimeNs,value.ctimeNs].join(':');}catch(error){if(error.code!=='ENOENT')throw error;}
-  return file+':'+(mutations.get(scope)??0);
+  return file;
  }
+ async function revision(scope){return await fileRevision(scope)+':'+(mutations.get(scope)??0);}
  function record(scope,key,value,deletedExisting=false){
   if(!scope.startsWith('mem:obs:'))return;
   mutations.set(scope,(mutations.get(scope)??0)+1);
@@ -231,5 +233,6 @@ export function createObservationReader({storePath,kv}){
   if(bytes(body)>PAGE_BYTES)throw fail('observation_changed_exceeds_page_budget',413);
   return body;
  }
- return {record,snapshot,list,ids,indexCandidates,response,revision,tracksMutations,beginMutation(scope){if(!tracksMutations(scope))return()=>{};mutations.set(scope,(mutations.get(scope)??0)+1);activeMutations.set(scope,(activeMutations.get(scope)??0)+1);let ended=false;return()=>{if(ended)return;ended=true;mutations.set(scope,(mutations.get(scope)??0)+1);const left=activeMutations.get(scope)-1;if(left)activeMutations.set(scope,left);else activeMutations.delete(scope);};},pendingMutations:scope=>activeMutations.get(scope)??0,mutationRevision:scope=>mutations.get(scope)??0,captureSummary,invalidateCaptureSummary};
+ const work=createObservationWorkReader({storePath,kv,bulkRead,fileRevision,pending,mutationRevision:scope=>mutations.get(scope)??0,pendingMutations:scope=>activeMutations.get(scope)??0,context:workContext,cacheBytes:workCacheBytes});
+ return {work,record,snapshot,list,ids,indexCandidates,response,revision,tracksMutations,beginMutation(scope){if(!tracksMutations(scope))return()=>{};mutations.set(scope,(mutations.get(scope)??0)+1);activeMutations.set(scope,(activeMutations.get(scope)??0)+1);let ended=false;return()=>{if(ended)return;ended=true;mutations.set(scope,(mutations.get(scope)??0)+1);const left=activeMutations.get(scope)-1;if(left)activeMutations.set(scope,left);else activeMutations.delete(scope);};},pendingMutations:scope=>activeMutations.get(scope)??0,mutationRevision:scope=>mutations.get(scope)??0,captureSummary,invalidateCaptureSummary};
 }

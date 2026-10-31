@@ -49,6 +49,7 @@ export function ownsFileWriterLease(lease,storePath){
  const e=lease&&owners.get(lease);if(!e)return false;
  try{const open=fstatSync(e.fd),live=lstatSync(e.path);return e.directory===realpathSync(storePath)&&live.isFile()&&open.dev===live.dev&&open.ino===live.ino;}catch{return false;}
 }
+export function fileWriterReadCurrent(lease){const e=owners.get(lease);return !!e&&validEpoch(e.epoch)&&ownsFileWriterLease(lease,e.directory)&&e.evidence.current(e.epoch);}
 export function fileWriterRecoveryAdmitted(lease){const e=owners.get(lease);return !!e?.admitted&&ownsFileWriterLease(lease,e.directory)&&e.evidence.current(e.epoch);}
 export function fileWriterRecoveryReason(lease){const e=owners.get(lease);return !e?'FILE_WRITER_UNSUPPORTED':fileWriterRecoveryAdmitted(lease)?null:e.admitted?'NATIVE_ENGINE_CHANGED':e.reason;}
 export function markFileWriterClean(lease){const e=owners.get(lease);if(!e||!ownsFileWriterLease(lease,e.directory))throw failure('FILE_WRITER_LOST');if(!fileWriterRecoveryAdmitted(lease))throw failure('WRITER_EPOCH_UNVERIFIED');writeMarker(e,true);}

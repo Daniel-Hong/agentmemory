@@ -1,5 +1,5 @@
 import {backgroundControl,backgroundPaused,backgroundTask} from './background-control.mjs';
-import { createHash } from 'node:crypto';
+import {graphProjection,fingerprint} from './enrichment-projection.mjs';
 import { positiveLongSessionInt } from './long-session.mjs';
 import { safeFailureDetails } from './provider-readiness.mjs';
 
@@ -80,20 +80,6 @@ export function boundedEnrichmentText(text, max = positiveLongSessionInt('SUMMAR
   if (/^[\uDC00-\uDFFF]/u.test(tail)) tail = tail.slice(1);
   return head + marker + tail;
 }
-function graphProjection(row, chars) {
-  const projection = {id:row.id,type:row.type,title:String(row.title ?? '').slice(0,100),
-    narrative:String(row.narrative ?? '').slice(0,1000),
-    concepts:(row.concepts ?? []).slice(0,8).map(x=>String(x).slice(0,100)),
-    files:(row.files ?? []).slice(0,8).map(x=>String(x).slice(0,200))};
-  while (JSON.stringify(projection).length > chars-2) {
-    if (projection.narrative.length) projection.narrative = projection.narrative.slice(0,Math.max(0,projection.narrative.length-100));
-    else if (projection.files.length) projection.files.pop();
-    else if (projection.concepts.length) projection.concepts.pop();
-    else throw Error('graph_metadata_exceeds_input_budget');
-  }
-  return projection;
-}
-const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function failure(old, error, now, singleton=true, projectionFingerprint) {
   const attempts = (old?.attempts ?? 0) + 1;
   const changed=old?.fingerprint&&old.fingerprint!==projectionFingerprint;
@@ -133,18 +119,25 @@ export function registerEnrichmentWorker({kv,sdk,KV,withKeyedLock,isGraphEnabled
     const revision = await observationRevision(sid), settings = settingsKey();
     if (revision != null && completed.get(sid)?.revision === revision && completed.get(sid)?.settings === settings) return;
     completed.delete(sid);
-    let rows = await kv.list(KV.observations(sid));
+    let workView,viewSettings;
+    const loadRows=async()=>{
+      viewSettings=settingsKey();
+      workView=await kv.observationReader?.work?.(KV.observations(sid),{kind:'enrichment',compressEnabled:isCompressEnabled(),inputChars:inputChars()});
+      return workView?.rows??await kv.list(KV.observations(sid));
+    };
+    let rows = await loadRows();
     rows.sort((a,b)=>(a.timestamp??'').localeCompare(b.timestamp??'')||a.id.localeCompare(b.id));
     const state = await kv.get(ENRICHMENT_NAMESPACE,sid) ?? {revision:ENRICHMENT_REVISION,compressFailures:{},graphFailures:{},graphDone:{}};
     state.compressFailures ??= {};state.graphFailures ??= {};state.graphDone ??= {};
     let available=!readiness||await readiness.ensureReady();
     const projectionById = new Map();
     function project(row) {
-      if (row.title && (!isCompressEnabled() || row.llmCompressionRevision === ENRICHMENT_REVISION)) {
-        const projection = graphProjection(row,inputChars());
-        projectionById.set(row.id,{row,projection,fingerprint:fingerprint(projection)});
+      if ((workView?row._workTitle:row.title) && (!isCompressEnabled() || row.llmCompressionRevision === ENRICHMENT_REVISION)) {
+        const projection = workView?undefined:graphProjection(row,inputChars());
+        projectionById.set(row.id,{row,projection,fingerprint:workView?row._workGraphFingerprint:fingerprint(projection),chars:workView?row._workGraphChars:JSON.stringify(projection).length});
       } else projectionById.delete(row.id);
     }
+    if(workView&&viewSettings!==settingsKey()){rows=await loadRows();rows.sort((a,b)=>(a.timestamp??'').localeCompare(b.timestamp??'')||a.id.localeCompare(b.id));}
     rows.forEach(project);
     async function publishProgress() {
       const view={revision:ENRICHMENT_REVISION,updatedAt:new Date(clock()).toISOString(),
@@ -165,21 +158,22 @@ export function registerEnrichmentWorker({kv,sdk,KV,withKeyedLock,isGraphEnabled
         if (row.llmCompressionRevision === ENRICHMENT_REVISION || state.compressFailures[row.id]?.status==='blocked' || state.compressFailures[row.id]?.retryAt > clock()) continue;
         if (attempted++ >= batchSize()) break;
         try {
-          const result = await sdk.trigger({function_id:'mem::compress',payload:{sessionId:sid,observationId:row.id,raw:row.sourceRaw ?? rawFromObservationSource(row) ?? row}});
+          const source=workView?await workView.load(row):row;
+          const result = await sdk.trigger({function_id:'mem::compress',payload:{sessionId:sid,observationId:row.id,raw:source.sourceRaw ?? rawFromObservationSource(source) ?? source}});
           if(result?.deferred){available=false;break;}
           if (!result?.success) throw Object.assign(Error(result?.error ?? 'compression_not_acknowledged'),{diagnostics:result?.diagnostics});
           const committed = await kv.get(KV.observations(sid),row.id);
           if (committed?.llmCompressionRevision !== ENRICHMENT_REVISION) throw Error('compression_artifact_not_committed');
-          rows[index]=committed;project(committed);
+          rows[index]=workView?workView.describe(committed):committed;project(rows[index]);
           if(state.compressFailures[row.id])state.compressFailures[row.id]=resolved(state.compressFailures[row.id],clock());
-        } catch (e) { if(e?.providerUnavailable){available=false;break;}state.compressFailures[row.id] = failure(state.compressFailures[row.id],e,clock(),false); }
+        } catch (e) { if(e?.code?.startsWith('observation_work_'))throw e; if(e?.providerUnavailable){available=false;break;}state.compressFailures[row.id] = failure(state.compressFailures[row.id],e,clock(),false); }
         await save(sid,state);
         await publishProgress();
       }
     }
     // A changed/unknown revision may include other writers' edits or deletions.
-    if (isCompressEnabled() && (revision == null || await observationRevision(sid) !== revision)) {
-      rows = await kv.list(KV.observations(sid));
+    if (viewSettings!==settingsKey() || isCompressEnabled() && (revision == null || await observationRevision(sid) !== revision)) {
+      rows = await loadRows();
       rows.sort((a,b)=>(a.timestamp??'').localeCompare(b.timestamp??'')||a.id.localeCompare(b.id));
       projectionById.clear();rows.forEach(project);
       await publishProgress();
@@ -192,18 +186,24 @@ export function registerEnrichmentWorker({kv,sdk,KV,withKeyedLock,isGraphEnabled
       const batch = [];
       for (const item of pending) {
         if (batch.length >= limit) break;
-        if (JSON.stringify([...batch.map(x=>x.projection),item.projection]).length > inputChars()) break;
+        if (2+batch.reduce((size,x)=>size+x.chars,0)+item.chars+batch.length > inputChars()) break;
         batch.push(item);
       }
       if (batch.length) {
         const started=clock();let success=false,deferred=false;
         try {
+          if(workView)for(const item of batch){
+            const source=await workView.load(item.row),projection=JSON.parse(JSON.stringify(graphProjection(source,inputChars())));
+            if(fingerprint(projection)!==item.fingerprint)throw Object.assign(Error('observation_work_source_changed'),{code:'observation_work_source_changed'});
+            item.projection=projection;
+          }
           const result = await sdk.trigger({function_id:'mem::graph-extract',payload:{observations:batch.map(x=>x.projection),requireLlm:true}});
+          workView?.validate();
           if(result?.deferred)throw Object.assign(Error('provider_unavailable'),{providerUnavailable:true});
           if (!result?.success || result.llm !== true) throw Object.assign(Error(result?.error ?? 'graph_llm_not_acknowledged'),{diagnostics:result?.diagnostics});
           for (const {row,projection} of batch) {state.graphDone[row.id]=fingerprint(projection);if(state.graphFailures[row.id])state.graphFailures[row.id]=resolved(state.graphFailures[row.id],clock());}
           success=true;
-        } catch (e) {if(e?.providerUnavailable){deferred=true;available=false;}else for(const {row,projection} of batch) state.graphFailures[row.id]=failure(state.graphFailures[row.id],e,clock(),batch.length===1,fingerprint(projection));}
+        } catch (e) {if(e?.code?.startsWith('observation_work_'))throw e;if(e?.providerUnavailable){deferred=true;available=false;}else for(const item of batch) state.graphFailures[item.row.id]=failure(state.graphFailures[item.row.id],e,clock(),batch.length===1,item.fingerprint);}
         await save(sid,state);
         await publishProgress();
         if (metricsStore && !deferred) await metricsStore.record('mem::graph-extract',clock()-started,success).catch(()=>{});

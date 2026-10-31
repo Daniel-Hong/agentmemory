@@ -1,5 +1,5 @@
 import {createRecordRecoveryGate} from './recovery-write-gate.js'
-import {ownsFileWriterLease,fileWriterRecoveryAdmitted,fileWriterRecoveryReason,type FileWriterLease} from '../ops/file-writer-lease.mjs'
+import {ownsFileWriterLease,fileWriterReadCurrent,fileWriterRecoveryAdmitted,fileWriterRecoveryReason,type FileWriterLease} from '../ops/file-writer-lease.mjs'
 import { createCaptureReceiptPage } from '../capture/receipt-page.js'
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
@@ -141,7 +141,7 @@ export class StateKV {
     this.durability = this.backend === 'file'
       ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath, completion: 'sdk' }) : null)
       : null
-    this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this }) : null
+    this.observationReader = this.backend === 'file' && storePath ? createObservationReader({ storePath, kv: this, workContext: () => this.uncertainMutation ? null : this.writerLease && fileWriterReadCurrent(this.writerLease) ? this.writerLease : null }) : null
     this.graphFileList = this.backend === 'file' && storePath ? createGraphFileList({ storePath }) : null
     this.auditReader = this.backend === 'file' && storePath ? createAuditReader({ storePath, kv: this }) : null
     this.summaryCount = this.backend === 'file' && storePath ? createSummaryCount({storePath,kv:this}) : null

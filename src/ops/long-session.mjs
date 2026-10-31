@@ -102,8 +102,8 @@ export function textSourceRange(body, start = 0, end = body.length) {
   return text + body.slice(cursor, end);
 }
 // Count the actual wire JSON, including wrapper, escaping and source coordinates.
-export function selectLongSessionBatch(pending, offsets, limit, chars, pins = {}) {
-  const result = [];
+export function selectLongSessionBatch(pending, offsets, limit, chars, pins = {}, prefix = []) {
+  const result = prefix.slice();
   const wireSize = extra => JSON.stringify({observations:[...result.map(x=>x.projected),extra]}).length;
   for (const row of pending) {
     if (result.length >= limit) break;
@@ -144,7 +144,8 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
     const id = data.sessionId;
     const session = await kv.get(KV.sessions, id);
     if (!session) return { success: false, error: 'session_not_found' };
-    const all = orderedLongSessionRows(await kv.list(KV.observations(id)));
+    const workView = await kv.observationReader?.work?.(KV.observations(id),{kind:'summary'});
+    const all = orderedLongSessionRows(workView?.rows ?? await kv.list(KV.observations(id)));
     const old = await kv.get(KV.summaries, id);
     const sessionIdentity = JSON.stringify([session.id,session.project,session.cwd,session.agentId,session.startedAt]);
     const summaryBefore = JSON.stringify(old);
@@ -181,8 +182,25 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
     const inputChars = Math.min(progress.inputChars ?? 12000, positiveLongSessionInt('SUMMARIZE_INPUT_CHARS', 3200, 12000));
     const selected = prioritizedRows(pending,old?.schedulingTurn??0,now);
     let batch;
-    try { batch = selectLongSessionBatch(selected, offsets, batchSize, inputChars,pins); }
+    try {
+      if(workView){
+        batch=[];
+        for(const descriptor of selected){
+          const source=await workView.load(descriptor),previous=batch.length;
+          batch=selectLongSessionBatch([source],offsets,batchSize,inputChars,pins,batch);
+          if(batch.length===previous)break;
+          const item=batch.at(-1);
+          item.sourceHash=createHash('sha256').update(JSON.stringify(source)).digest('hex');
+          item.projected=JSON.parse(JSON.stringify(item.projected));
+          item.fullProjection=!item.complete&&!source.sourceRaw?.hookType?JSON.parse(JSON.stringify(item.fullProjection)):undefined;
+          item.row={id:source.id,timestamp:source.timestamp,files:structuredClone(source.files??[]),title:source.title,hookType:source.hookType,
+            ...source.sourceRaw?.hookType!=null?{sourceRaw:{hookType:structuredClone(source.sourceRaw.hookType)}}:{}};
+          if(batch.length>=batchSize||!item.complete)break;
+        }
+      }else batch = selectLongSessionBatch(selected, offsets, batchSize, inputChars,pins);
+    }
     catch(e) {
+      if(e?.code?.startsWith('observation_work_'))return {success:false,retained:true,error:e.code};
       const diagnostics={category:'input_invalid',field:'metadata'};
       const previousBlock=blockedObservations[selected[0].id];
       blockedObservations[selected[0].id]={...previousBlock,status:'blocked',attempts:(previousBlock?.attempts??0)+1,lastError:e.message,diagnostics,at:new Date(now).toISOString()};
@@ -192,7 +210,7 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
     }
     await updateProgress(id, { ...progress, status: 'running', pendingCount: outstanding.length, processedCount: processed.size, updatedAt: new Date(now).toISOString() });
     const started = Date.now();
-    const selectedRevisions = new Map(batch.map(({row})=>[row.id,createHash('sha256').update(JSON.stringify(row)).digest('hex')]));
+    const selectedRevisions = new Map(batch.map(item=>[item.row.id,item.sourceHash??createHash('sha256').update(JSON.stringify(item.row)).digest('hex')]));
     try {
       if (provider.name === 'noop' || provider.name === 'resilient(noop)') throw Error('no_provider');
       const parsed = scrubRecord(parseIncrementalSummary(await provider.summarize(INCREMENTAL_SUMMARY_SYSTEM, JSON.stringify({ observations: batch.map(x => x.projected) }))));
@@ -214,6 +232,7 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
         keyDecisions: union('keyDecisions'), filesModified: union('filesModified'), concepts: union('concepts'),
         observationCount: processed.size, processedObservationIds: [...processed], sourceOffsets: offsets, sourceProjectionSnapshots:pins, schedulingTurn:(old?.schedulingTurn??0)+1, segments, revision: LONG_SESSION_REVISION };
       await withLock(`obs:${id}`,async()=>{
+        workView?.validate();
         const currentSession=await kv.get(KV.sessions,id);
         if (!currentSession || JSON.stringify([currentSession.id,currentSession.project,currentSession.cwd,currentSession.agentId,currentSession.startedAt])!==sessionIdentity ||
             JSON.stringify(await kv.get(KV.summaries,id))!==summaryBefore) throw Error('source_changed');
@@ -221,6 +240,7 @@ export function registerLongSessionSummarizer(sdk, kv, provider, metricsStore, d
           const current=await kv.get(KV.observations(id),key);
           if (!current || createHash('sha256').update(JSON.stringify(current)).digest('hex')!==revision) throw Error('source_changed');
         }
+        workView?.validate();
         await kv.set(KV.summaries,id,summary);
       });
       const latestSession=await kv.get(KV.sessions,id);

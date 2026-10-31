@@ -2,7 +2,8 @@ import type { StateKV } from "../state/kv.js";
 import type { CompressedObservation } from "../types.js";
 import type { ObservationSourceBudget } from "../functions/observation-source-budget.js";
 export const PAGE_BYTES: number;
-export function createObservationReader(options: {storePath:string;kv:StateKV}): {
+export function createObservationReader(options: {storePath:string;kv:StateKV;workContext?:()=>unknown;workCacheBytes?:number}): {
+ work(scope:string,options:{kind:'summary'|'enrichment';signal?:AbortSignal;inputChars?:number;compressEnabled?:boolean}):Promise<{rows:any[];load(row:any):Promise<any>;validate():void;describe(row:any):any}>;
  record(scope:string,key:string,value:unknown,deletedExisting?:boolean):void;
  snapshot(scope:string):Promise<unknown[]>;
  list<T=unknown>(scope:string,options?:{consistency?:'current-path'|'opened-generation';signal?:AbortSignal}):Promise<T[]>;

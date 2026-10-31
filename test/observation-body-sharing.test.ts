@@ -52,14 +52,14 @@ it('retries a replaced current path once without publishing stale body rows',asy
  await writeFile(f.file+'.next',JSON.stringify({two:{id:'two',sourceRaw:{text:'new'}}}));await rename(f.file+'.next',f.file);f.release();
  const rows=await Promise.all([a,b]);expect(rows).toEqual([[{id:'two',sourceRaw:{text:'new'}}],[{id:'two',sourceRaw:{text:'new'}}]]);expect(rows[0][0]).not.toBe(rows[1][0]);
 });
-it('coalesces the real summarizer and enrichment body paths without model calls',async()=>{
+it.each([false,true])('preserves legacy body coalescing and selected work projections without model calls (work=%s)',async(work)=>{
  const {registerLongSessionSummarizer}=await import('../src/ops/long-session.mjs');const {registerEnrichmentWorker}=await import('../src/ops/background-enrichment.mjs');const {KV}=await import('../src/state/schema.js');
  const f=await fixture(),session:any={id:'synthetic',startedAt:'2026-01-01T00:00:00Z',status:'active',observationCount:1},data=new Map<string,any>();let bodyCalls=0;
- const kv:any={observationReader:f.reader,get:async(s:string,k:string)=>s===KV.sessions?session:data.get(s+'|'+k)??null,set:async(s:string,k:string,v:any)=>data.set(s+'|'+k,v),update:async()=>{},list:async(s:string)=>{if(s===KV.sessions)return [session];if(s===f.scope){bodyCalls++;return f.reader.list(s);}return [];}};
+ const kv:any={observationReader:work?f.reader:{revision:f.reader.revision},get:async(s:string,k:string)=>s===KV.sessions?session:data.get(s+'|'+k)??null,set:async(s:string,k:string,v:any)=>data.set(s+'|'+k,v),update:async()=>{},list:async(s:string)=>{if(s===KV.sessions)return [session];if(s===f.scope){bodyCalls++;return f.reader.list(s);}return [];}};
  const handlers=new Map<string,any>(),sdk:any={registerFunction:(id:string,fn:any)=>handlers.set(id,fn),trigger:vi.fn(async()=>{throw Error('unexpected model');})},logger={info:vi.fn(),warn:vi.fn()},withKeyedLock: any=async(_key:string,work:any)=>work();
  const summarizer=registerLongSessionSummarizer(sdk,kv,{name:'noop'},null,{KV,withKeyedLock,logger,safeAudit:async()=>{},schedule:false});
  const enrich=registerEnrichmentWorker({kv,sdk,KV,withKeyedLock,logger,isGraphEnabled:()=>true,isCompressEnabled:()=>false,readiness:{ensureReady:async()=>false,snapshot:()=>({})},schedule:false});
- try{const a=handlers.get('mem::summarize')({sessionId:'synthetic'}),b=enrich.pump();await vi.waitFor(()=>expect(bodyCalls).toBe(2));f.release();expect(await a).toMatchObject({error:'no_provider',retained:true});await b;expect(f.chunks()).toBe(1);expect(sdk.trigger).not.toHaveBeenCalled();}finally{f.release();await summarizer.stop();await enrich.stop();}
+ try{const a=handlers.get('mem::summarize')({sessionId:'synthetic'}),b=enrich.pump();await vi.waitFor(()=>{expect(bodyCalls).toBe(work?0:2);expect(f.chunks()).toBe(work?2:1);});f.release();expect(await a).toMatchObject({error:'no_provider',retained:true});await b;expect(f.chunks()).toBe(work?2:1);expect(sdk.trigger).not.toHaveBeenCalled();}finally{f.release();await summarizer.stop();await enrich.stop();}
 });
 it('applies a mutation published during follower cloning independently to both callers',async()=>{
  const f=await fixture(),original=structuredClone;let changed=false;

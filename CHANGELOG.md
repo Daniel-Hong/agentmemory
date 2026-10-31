@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — complete observation work selection
+
+- Select unfinished summary and enrichment work from complete, generation-bound scalar metadata, then hydrate and hash-check only selected originals through SDK per-key reads. Preserve pending SDK overlays/deletions, pins, source offsets, ordering, backoff, provider input and publication checks; generic list/search completeness is unchanged.
+- Bound retained metadata admission; oversized projections stay complete and uncached. Do not retain unselected original bodies or classify pre-inference source invalidation as a provider failure. Separate current native-writer read evidence from historical recovery admission without changing write/recovery guards.
+- Small 5.33MB/50-batch comparison preserves model input and normalized result, reducing repeated work scans50→1 plus an existing independent Viewer search projection scan. CPU and sampled memory improve; initial request maximum/event-loop delay do not. Installed SDK0.25/engine0.22.1 twelve-record isolated smoke passes with originals and cleanup verified. Operating UI/graph throughput and large-source memory remain unverified. See docs/customizations/OBSERVATION-WORK-SELECTION.md.
+
+
 ## Unreleased — in-flight observation body reads (development only)
 
 - Coalesce at most two concurrent full-body reads only for the same scope, file/mutation revision and consistency mode. Return independently mutable nested objects and apply each caller’s SDK overlay separately; retain file validation, corruption errors and current-path retry.
@@ -129,6 +136,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.48] — 2026-10-31
 ## [0.9.31-daniel.47] — 2026-10-31
 ## [0.9.31-daniel.46] — 2026-10-30
 ## [0.9.31-daniel.45] — 2026-10-30
@@ -436,6 +444,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.48]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.47...v0.9.31-daniel.48
 [0.9.31-daniel.47]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.46...v0.9.31-daniel.47
 [0.9.31-daniel.46]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.45...v0.9.31-daniel.46
 [0.9.31-daniel.45]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.44...v0.9.31-daniel.45
