@@ -3,7 +3,7 @@
   "kind": "memory",
   "name": "agentmemory",
   "description": "Persistent cross-session memory for OpenClaw via agentmemory.",
-  "version": "0.9.31-daniel.50",
+  "version": "0.9.31-daniel.51",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
