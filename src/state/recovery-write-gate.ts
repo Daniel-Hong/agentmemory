@@ -14,7 +14,9 @@ export function createRecoveryWriteGate(){
    queue.push({exclusive,start(){const token={active:true,exclusive};context.run(token,async()=>{try{resolve(await fn());}catch(error){reject(error);}finally{token.active=false;if(exclusive)writer=false;else readers--;pump();}});}});pump();
   });
  }
- return {read:<T>(fn:()=>Promise<T>)=>run(false,fn),exclusive:<T>(fn:()=>Promise<T>)=>run(true,fn)};
+ return {read:<T>(fn:()=>Promise<T>)=>run(false,fn),exclusive:<T>(fn:()=>Promise<T>)=>run(true,fn),
+  dispose(){if(readers||writer||queue.length)throw Error('RECOVERY_GATE_ACTIVE');context.disable();},
+ };
 }
 
 export function createRecordRecoveryGate(){
@@ -26,7 +28,7 @@ export function createRecordRecoveryGate(){
   let entry=entries.get(id);if(!entry){entry={gate:createRecoveryWriteGate(),references:0};entries.set(id,entry);}
   entry.references++;
   try{return await (exclusive?entry.gate.exclusive(fn):entry.gate.read(fn));}
-  finally{if(--entry.references===0)entries.delete(id);}
+  finally{if(--entry.references===0){entry.gate.dispose();if(entries.get(id)===entry)entries.delete(id);}}
  }
  return {
   read<T>(scope:string,key:string,fn:()=>Promise<T>):Promise<T>{

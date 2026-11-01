@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — record recovery context lifetime
+
+- Disable a per-record async context only after all running, queued and reentrant references settle and its reader/writer/queue is empty. Remove only that same entry; keep independent trace contexts and record-wide recovery ownership.
+- Preserve actual callback ownership after caller timeout or abort, and prevent escaped async descendants or bound callbacks from inheriting a newer owner's exclusive bypass. SDK invocation timeout still preserves uncertain outcome/failure history, including a late actual write.
+- Whole suite: 5,800 pass, 13 existing conditional skips, no failures. Real SDK0.25/engine0.22.1 old/new comparisons reproduce cumulative slowdown with equal work; the fixed 20,000-write run leaves no per-record contexts after each batch (maximum eight concurrent). These are isolated results, not operating throughput or normalized-service claims. See docs/customizations/RECORD-GATE-ALS-LIFETIME.md.
+
 ## Unreleased — JSON wire-order read identity
 
 - Compare full observation JSON wire values independent of object key order, preserving arrays, raw strings and actual nested content changes. Retire pending read overlays only after the current file contains the matching full value; SDK get success alone is insufficient. Keep disk receipts, pinned values and generation checks separate.
