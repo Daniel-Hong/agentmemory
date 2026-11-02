@@ -15,6 +15,7 @@ if (!existsSync(join(plugin, "scripts/plugin-bridge.mjs"))) throw new Error("Run
 
 const FLAVORS = {
   local: { mcp: true, hooks: true },
+  "global-companion": { mcp: true, hooks: "pre-tool" },
   review: { mcp: true, hooks: false },
   skills: { mcp: false, hooks: false },
 };
@@ -44,6 +45,10 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
   rmSync(destination, { recursive: true, force: true });
   mkdirSync(join(destination, ".codex-plugin"), { recursive: true });
   const manifest = structuredClone(sourceManifest);
+  if (hooks === "pre-tool") {
+    manifest.description = manifest.description.replace(/ Optional capture through .*$/, " PreToolUse context enrichment only; capture uses separately configured global hooks.");
+    manifest.interface.longDescription = manifest.interface.longDescription.replace("Automatic capture requires trusted, supported hooks.", "This package retains only PreToolUse enrichment; automatic capture uses separately configured global hooks. Review exact hook definitions before trusting them.");
+  }
   if (!hooks) {
     delete manifest.hooks;
     manifest.description = manifest.description.replace(/ Optional capture through .*$/, "");
@@ -57,6 +62,7 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
     cpSync(join(plugin, ".mcp.codex.json"), join(destination, ".mcp.json"));
     cpSync(join(plugin, "scripts/plugin-bridge.mjs"), join(destination, "scripts/plugin-bridge.mjs"));
     cpSync(join(root, "docs/plugins/codex-local.md"), join(destination, "README.md"));
+    if (hooks === "pre-tool") writeFileSync(join(destination, "README.md"), `# Agent Memory companion for existing global hooks\n\nThis package preserves MCP, skills and the existing PreToolUse matcher and command. It excludes SessionStart, UserPromptSubmit, PostToolUse, PreCompact and Stop to avoid a second registration alongside separately configured global hooks.\n\nThe existing personal global compatibility artifact has 9 event registrations and 13 files including shared helpers and metadata. Those are different units. This package does not install or trust global hooks, change their event IDs or retained outbox, or verify which host dispatched an event. Select this package only after reviewing the host's active hooks. Existing PreToolUse enrichment data and destination rules remain unchanged.\n`);
   } else {
     delete manifest.mcpServers;
     manifest.description = manifest.description.replace("through 55 MCP tools and 17 skills.", "through 17 skills that use the MCP tools of your own Agent Memory daemon.");
@@ -72,9 +78,12 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
   cpSync(join(root, "LICENSE"), join(destination, "LICENSE"));
   if (hooks) {
     mkdirSync(join(destination, "hooks"));
-    cpSync(join(plugin, "hooks/hooks.codex.json"), join(destination, "hooks/hooks.codex.json"));
-    const hookManifest = readFileSync(join(plugin, "hooks/hooks.codex.json"), "utf8");
-    cpSync(join(plugin, "scripts/_capture.mjs"), join(destination, "scripts/_capture.mjs"));
+    const fullHooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.codex.json"), "utf8"));
+    if (!Array.isArray(fullHooks.hooks?.PreToolUse)) throw new Error("PreToolUse manifest required before packaging.");
+    const selectedHooks = hooks === "pre-tool" ? { hooks: { PreToolUse: fullHooks.hooks.PreToolUse } } : fullHooks;
+    const hookManifest = JSON.stringify(selectedHooks, null, 2) + "\n";
+    writeFileSync(join(destination, "hooks/hooks.codex.json"), hookManifest);
+    if (hooks === true) cpSync(join(plugin, "scripts/_capture.mjs"), join(destination, "scripts/_capture.mjs"));
     for (const script of new Set([...hookManifest.matchAll(/scripts\/([\w-]+\.mjs)/g)].map((m) => m[1]))) {
       cpSync(join(plugin, "scripts", script), join(destination, "scripts", script));
     }

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectRestEndpointsInDirectory } from "./skills/rest-endpoints.js";
 import { ESSENTIAL_TOOLS, getAllTools } from "../src/mcp/tools-registry.js";
+import { syncMcpToolSurfaces } from "./docs-sync-mcp.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = "scripts/docs-sync.state.json";
@@ -348,6 +349,15 @@ function main(): void {
     }
     report.push(`${fact.label}: ${olds.join(", ")} -> ${next}`);
     nextState.facts[fact.key] = [next];
+  }
+
+  const mcpTools = nextState.facts.mcpTools?.[0];
+  if (mcpTools) {
+    for (const [path, text] of files) {
+      if (/^(?:README\.md|READMEs\/README\.[^/]+\.md)$/.test(path)) {
+        files.set(path, syncMcpToolSurfaces(text, mcpTools));
+      }
+    }
   }
 
   const changed = [...files].filter(([p, t]) => original.get(p) !== t).map(([p]) => p);
