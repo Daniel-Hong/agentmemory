@@ -2,7 +2,7 @@
 import { execSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.mjs";
+import { captureObservationForHook, isDrainChild, runDrainChild, withEventId } from "./_capture.mjs";
 //#region src/hooks/_capture-filter.ts
 const DEFAULT_DENY_PATTERNS = [
 	"memory_*",
@@ -129,7 +129,7 @@ async function main() {
 	const { imageData, cleanOutput } = extractImageData(toolOutput(data));
 	const cwd = hookCwd(data) || process.cwd();
 	const toolOutputText = truncateCaptureOutput(cleanOutput, captureOutputMax());
-	captureObservation(withEventId({
+	captureObservationForHook(withEventId({
 		hookType: "post_tool_use",
 		sessionId,
 		project: resolveProject(cwd),
@@ -147,7 +147,7 @@ async function main() {
 		tool_output: toolOutputText,
 		image_data: imageData
 	}), OBSERVE_TIMEOUT_MS);
-	setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
+	setTimeout(() => process.exit(process.exitCode ?? 0), EXIT_CAP_MS).unref();
 }
 function toolOutput(data) {
 	if (data.tool_response !== void 0) return data.tool_response;
@@ -185,7 +185,7 @@ function extractImageData(output) {
 		cleanOutput: output
 	};
 }
-main().catch(() => process.exit(0));
+main().catch(() => process.exit(process.exitCode ?? 0));
 //#endregion
 export {};
 

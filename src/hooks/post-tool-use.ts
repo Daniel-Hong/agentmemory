@@ -5,7 +5,7 @@ import {
   truncateCaptureOutput,
 } from "./_capture-filter.js";
 import { resolveProject, hookCwd } from "./_project.js";
-import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.js";
+import { captureObservationForHook as captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.js";
 
 function isSdkChildContext(payload: unknown): boolean {
   if (process.env["AGENTMEMORY_SDK_CHILD"] === "1") return true;
@@ -62,7 +62,7 @@ async function main() {
     { tool_name: toolName, tool_input: toolInput, tool_output: toolOutputText, image_data: imageData },
   );
   void captureObservation(body, OBSERVE_TIMEOUT_MS);
-  setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
+  setTimeout(() => process.exit(process.exitCode ?? 0), EXIT_CAP_MS).unref();
 }
 
 function toolOutput(data: Record<string, unknown>): unknown {
@@ -109,4 +109,4 @@ function extractImageData(output: unknown): { imageData: string | undefined; cle
   return { imageData: undefined, cleanOutput: output };
 }
 
-main().catch(() => process.exit(0));
+main().catch(() => process.exit(process.exitCode ?? 0));

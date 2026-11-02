@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { resolveProject, hookCwd } from "./_project.js";
-import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.js";
+import { captureObservationForHook as captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.js";
 
 function isSdkChildContext(payload: unknown): boolean {
   if (process.env["AGENTMEMORY_SDK_CHILD"] === "1") return true;
@@ -46,7 +46,7 @@ async function main() {
     ),
     OBSERVE_TIMEOUT_MS,
   );
-  setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
+  setTimeout(() => process.exit(process.exitCode ?? 0), EXIT_CAP_MS).unref();
 }
 
-main().catch(() => process.exit(0));
+main().catch(() => process.exit(process.exitCode ?? 0));

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — native SDK capture v2 preparation
+
+- Add an explicitly opted-in full-six-hook Codex package that preserves normalized capture originals before POST in a separate private v2 store. Keep global registrations, context/session behavior, old spools and historical unknown outcomes unchanged.
+- Bound canonical inputs to8MiB, chunks256KiB, originals256MiB and references5MiB; preserve partial/conflict data and originals after matching SDK ACK without automatic expiry. Expose quota/preservation/unknown exits instead of silently claiming capture success.
+- Use existing Linux flock with inherited file descriptors for cross-process admission and kernel crash release. Refuse unsafe ownership/modes, links/nonregular inputs and mixed legacy root layouts. Hold uncertain sends; only known non-send or explicit retryable admission rejection retries.
+- Reject C HTTP redirects and enforce a shared monotonic new-POST/network budget; keep required state finalization outside any hard-wall claim. Large/image guarded source restoration remains unsupported rather than bypassing server guards.
+- This is isolated implementation/test preparation, not installation or operating normalization. New-source required SDK large execution is not claimed from earlier source evidence. See docs/customizations/CAPTURE-SDK-V2.md.
+
 ## Unreleased — upstream and hook compatibility preparation
 
 - Merge official upstream through `c6c476d` while preserving personal ALS lifetime, storage/receipt, source retention and Viewer focus/details behavior. Include the upstream private/external engine doctor guard, truthful connected/available worker labels and Cline native settings path.
@@ -165,6 +173,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.31-daniel.53] — 2026-11-02
 ## [0.9.31-daniel.52] — 2026-11-02
 ## [0.9.31-daniel.51] — 2026-11-01
 ## [0.9.31-daniel.50] — 2026-10-31
@@ -477,6 +486,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.53]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.52...v0.9.31-daniel.53
 [0.9.31-daniel.52]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.51...v0.9.31-daniel.52
 [0.9.31-daniel.51]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.50...v0.9.31-daniel.51
 [0.9.31-daniel.50]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.49...v0.9.31-daniel.50

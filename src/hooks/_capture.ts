@@ -1,5 +1,9 @@
+import {deliverSdkCaptureV2,drainSdkCapturesV2,SDK_CAPTURE_V2_FLAG,type V2DeliveryResult,type V2PostResult} from "../capture/sdk-delivery-v2.js";
+import {scrubRecord} from "../functions/privacy.js";
+import {performance} from "node:perf_hooks";
 import {sendCapture,restoreSdkOriginal} from "../capture/delivery.js";
 import { createHash } from "node:crypto";
+import { writeSync } from "node:fs";
 import { capturePayloadDigest } from "../capture/receipt-digest.js";
 import { spawn } from "node:child_process";
 import { resolveClientSecret } from "../secret-store.js";
@@ -29,7 +33,7 @@ const DRAIN_MAX_RECORDS = 500;
 const DRAIN_DEADLINE_MS = 20_000;
 const DRAIN_REQUEST_TIMEOUT_MS = 5000;
 
-export type CaptureOutcome = "delivered" | "duplicate" | "rejected" | "spooled" | "dropped";
+export type CaptureOutcome = "delivered" | "duplicate" | "rejected" | "spooled" | "dropped" | "held";
 export type CaptureHandoffOutcome = CaptureOutcome | "pending" | "held";
 
 interface CaptureTarget {
@@ -168,6 +172,81 @@ export async function captureObservation(body: ObserveBody, timeoutMs: number): 
     reason = name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable';
   }
   return appendSpool(REST_URL, eventId, payload, reason, { preserveImages: true }).spooled ? 'spooled' : 'dropped';
+}
+
+let nativeCapturesPending = 0;
+let nativeCaptureFailed = false;
+let nativeCapturePriorExitCode: typeof process.exitCode;
+let nativeExitReporterInstalled = false;
+
+function reportNativeCaptureFailure(code: string, detail?: V2DeliveryResult): void {
+  nativeCaptureFailed = true;
+  process.exitCode ||= 1;
+  try {
+    writeSync(2, JSON.stringify({
+      code,
+      pendingSpoolAcknowledged: detail?.referenceAcknowledged ?? false,
+      ...(detail ? {sourceAcknowledged:detail.sourceAcknowledged} : {}),
+      sdkOriginalRetention: detail?.sourceAcknowledged ? "verified-v2" : "unconfirmed",
+      serverCompletion: "unconfirmed",
+      automaticHostRetry: "unverified",
+    }) + "\n");
+  } catch {}
+}
+
+export async function captureObservationForHook(body: ObserveBody, timeoutMs: number): Promise<CaptureOutcome> {
+  if (!nativeExitReporterInstalled) {
+    nativeExitReporterInstalled = true;
+    process.once("exit", () => {
+      if (nativeCapturesPending > 0) reportNativeCaptureFailure("CAPTURE_LOCAL_HANDOFF_UNCONFIRMED");
+    });
+  }
+  if (nativeCapturesPending++ === 0 && !nativeCaptureFailed) nativeCapturePriorExitCode = process.exitCode;
+  process.exitCode ||= 1;
+  let detail: V2DeliveryResult | undefined;
+  let outcome: CaptureOutcome;
+  if (process.argv.includes(SDK_CAPTURE_V2_FLAG)) {
+    detail = await captureObservationV2(body, timeoutMs).catch(() => ({outcome:"dropped" as const,code:"STORE_OR_DELIVERY_UNCONFIRMED",sourceAcknowledged:false,referenceAcknowledged:false}));
+    outcome = detail.outcome;
+  } else outcome = await captureObservation(body, timeoutMs).catch(() => "dropped" as const);
+  nativeCapturesPending--;
+  if (outcome === "dropped" || outcome === "held") reportNativeCaptureFailure(detail?.code ?? "CAPTURE_LOCAL_HANDOFF_FAILED", detail);
+  if (nativeCapturesPending === 0 && !nativeCaptureFailed && process.exitCode === 1) process.exitCode = nativeCapturePriorExitCode;
+  return outcome;
+}
+
+function connectionRefused(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const value=error as {code?:unknown;cause?:unknown;errors?:unknown[]};
+  if(value.code==="ECONNREFUSED")return true;
+  if(Array.isArray(value.errors)&&value.errors.length)return value.errors.every(connectionRefused);
+  return value.cause!==undefined&&connectionRefused(value.cause);
+}
+async function postRawV2(body:Record<string,unknown>,timeoutMs:number,deadline?:number):Promise<V2PostResult>{
+  const serialized=JSON.stringify(body),headers=authHeaders();
+  const remaining=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.floor(deadline-performance.now()));
+  if(remaining<=0)return {status:0,body:null,notSent:true};
+  try{
+    const response=await fetch(`${REST_URL}/agentmemory/observe`,{method:'POST',headers,body:serialized,redirect:'error',signal:AbortSignal.timeout(remaining)});
+    return {status:response.status,body:await response.json().catch(()=>({}))};
+  }catch(error){
+    if(connectionRefused(error))return {status:0,body:null,notSent:true};
+    throw error;
+  }
+}
+async function captureObservationV2(body:ObserveBody,timeoutMs:number):Promise<V2DeliveryResult>{
+  if(!spoolPolicy().enabled)return {outcome:"dropped",code:"CAPTURE_PRESERVATION_DISABLED",sourceAcknowledged:false,referenceAcknowledged:false};
+  const started=performance.now();
+  const eventId=body.eventId??deriveEventId(body.hookType,body.sessionId,null,body.data);
+  const payload=scrubRecord(JSON.parse(JSON.stringify({...body,eventId,captureCompletion:"sdk-v1"})),{scrubKeys:true}) as Record<string,unknown>;
+  const options={dir:process.env["AGENTMEMORY_SDK_CAPTURE_V2_DIR"]};
+  const result=await deliverSdkCaptureV2(REST_URL,payload,b=>postRawV2(b,timeoutMs),options);
+  const now=performance.now(),deadline=Math.min(started+timeoutMs,now+250),remaining=Math.floor(deadline-now);
+  if(body.hookType!=="stop"&&(result.outcome==="delivered"||result.outcome==="duplicate")&&remaining>=100){
+    const backlog=await drainSdkCapturesV2(REST_URL,(b,budget)=>postRawV2(b,budget?.remainingMs??remaining,budget?.deadline??deadline),{...options,limit:1,budgetMs:remaining,deadline});
+    if(backlog.held||backlog.error){try{writeSync(2,JSON.stringify({code:"CAPTURE_BACKLOG_HELD",held:backlog.held,error:backlog.error})+"\n");}catch{}}
+  }
+  return result;
 }
 
 async function postRaw(body:Record<string,unknown>,timeoutMs:number,path="/observe"):Promise<{status:number;body:unknown}>{

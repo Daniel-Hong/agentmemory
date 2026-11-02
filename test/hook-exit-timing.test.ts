@@ -15,7 +15,7 @@ describe("hook exit timing", () => {
   const hooks = readdirSync(hooksDir)
     .filter((name) => name.endsWith(".ts") && !name.startsWith("_"))
     .map((name) => ({ name, source: readFileSync(join(hooksDir, name), "utf-8") }))
-    .filter(({ source }) => /setTimeout\(\(\) => process\.exit\(0\), [\w]+\)\.unref\(\)/.test(source));
+    .filter(({ source }) => /setTimeout\(\(\) => process\.exit\((?:0|process\.exitCode \?\? 0)\), [\w]+\)\.unref\(\)/.test(source));
 
   it("finds the hooks that post observations", () => {
     expect(hooks.map((h) => h.name)).toEqual(
@@ -43,7 +43,7 @@ describe("hook exit timing", () => {
     "task-completed.ts",
   ])("%s does not exit before its observe request and spool write can finish", (name) => {
     const hook = hooks.find((h) => h.name === name)!;
-    const exitCap = hook.source.match(/setTimeout\(\(\) => process\.exit\(0\), (\w+)\)\.unref\(\)/)![1];
+    const exitCap = hook.source.match(/setTimeout\(\(\) => process\.exit\((?:0|process\.exitCode \?\? 0)\), (\w+)\)\.unref\(\)/)![1];
     expect(hook.source).toMatch(/captureObservation\(/);
     expect(numericValue(hook.source, exitCap)).toBeGreaterThan(numericValue(hook.source, "OBSERVE_TIMEOUT_MS"));
   });

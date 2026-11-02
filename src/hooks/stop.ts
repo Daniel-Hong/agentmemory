@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { resolveProject, hookCwd } from "./_project.js";
-import { REST_URL, authHeaders, captureObservation, isDrainChild, runDrainChild, stripPrivateData, withEventId } from "./_capture.js";
+import { REST_URL, authHeaders, captureObservationForHook as captureObservation, isDrainChild, runDrainChild, stripPrivateData, withEventId } from "./_capture.js";
 
 // Inlined — see src/hooks/sdk-guard.ts for canonical version. Kept local
 // per-hook so tsdown does not emit a shared hashed chunk that would churn
@@ -52,7 +52,7 @@ async function main() {
   const sessionId = ((data.session_id || data.sessionId || data.conversation_id) as string) || "unknown";
   const reply = data.last_assistant_message;
   if (typeof reply === "string" && reply.trim()) {
-    const capture = setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
+    const capture = setTimeout(() => process.exit(process.exitCode ?? 0), EXIT_CAP_MS).unref();
     const cwd = hookCwd(data) || process.cwd();
     const bounded = boundReply(reply);
     const body = {
@@ -70,7 +70,7 @@ async function main() {
     clearTimeout(capture);
   }
 
-  setTimeout(() => process.exit(0), END_CAP_MS).unref();
+  setTimeout(() => process.exit(process.exitCode ?? 0), END_CAP_MS).unref();
   fetch(`${REST_URL}/agentmemory/session/end`, {
     method: "POST",
     headers: authHeaders(),
@@ -79,4 +79,4 @@ async function main() {
   }).catch(() => {});
 }
 
-main().catch(() => process.exit(0));
+main().catch(() => process.exit(process.exitCode ?? 0));
