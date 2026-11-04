@@ -27,7 +27,7 @@ async function setup(extraData:Record<string,unknown>={}){
  const fence=createStateDurabilityFence({storePath:dir});Object.assign(kv,{durability:fence});const sdk=mockSdk();registerCaptureReceipts(sdk as never,kv as never);
  let postStatus=503,posts=0;
  vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL,options:RequestInit={})=>{
-  const u=new URL(String(input));if(options.method==='POST'){posts++;return new Response('{}',{status:postStatus});}
+  expect(options.redirect).toBe('error');const u=new URL(String(input));if(options.method==='POST'){posts++;return new Response('{}',{status:postStatus});}
   expect(u.pathname).toBe('/agentmemory/capture/receipts');const result=await sdk.fns.get('mem::capture-receipt')!({key:u.searchParams.get('key'),digest:u.searchParams.get('digest'),budgetMs:Number(u.searchParams.get('budgetMs'))});return new Response(JSON.stringify(result),{status:200});
  }));
  const clientDir=join(dir,'client');await mkdir(clientDir);
@@ -49,7 +49,8 @@ describe('actual compatibility collector and body-free durable receipt with file
  });
  it('retains an old differently normalized source and the exact pending original without rewriting either',async()=>{
   const f=await setup({a:'<private>start',b:'end</private>'});
-  const oldRaw=JSON.parse(stripPrivateData(JSON.stringify(scrubRecord(f.body.data))));
+  // Independent fixed result of the historical cross-field private-tag regex.
+  const oldRaw={tool_output:f.body.data.tool_output,a:'[REDACTED]'};
   const oldObs={...f.obs,sourceRaw:{...f.obs.sourceRaw,raw:oldRaw}};
   await f.kv.set(KV.observations(f.body.sessionId),f.obs.id,oldObs);
   await writeFile(f.obsFile,JSON.stringify({[f.obs.id]:oldObs}));const before=await readFile(f.obsFile,'utf8');

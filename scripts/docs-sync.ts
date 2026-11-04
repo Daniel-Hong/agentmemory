@@ -105,6 +105,7 @@ const FACTS: Fact[] = [
   },
   {
     key: "restEndpoints",
+    legacyValues: ["147"],
     label: "REST endpoints",
     value: () => String(collectRestEndpointsInDirectory(join(ROOT, "src/triggers")).length),
     nouns: [

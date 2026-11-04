@@ -17,6 +17,7 @@ import { logger } from "../logger.js";
 import { emitLiveEvent } from "../viewer/live-events.js";
 import { withoutObservationSource } from "./observation-source.js";
 import { budgetLiveObservationSource } from "./observation-source-budget.js";
+import { observationEmbedText } from "../state/memory-utils.js";
 import { buildSyntheticCompression } from "./compress-synthetic.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { scrubRecord, stripPrivateData } from "./privacy.js";
@@ -236,7 +237,7 @@ export function registerCompressFunction(
       const committedRevision = observationRevision(compressed);
       phase = "index";
       await bounded(() => vectorIndexAddGuarded(
-        observationId, sessionId, compressed.title + " " + compressed.narrative,
+        observationId, sessionId, observationEmbedText(compressed),
         { kind: "observation", logId: observationId },
         // File-backed publication uses durable intents; an inline commit would bypass them.
         kv.backend === "file" && kv.durability ? undefined : (embedding, isCurrent) => withKeyedLock(`obs:${sessionId}`, async () => {

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.55] — 2026-11-04
+### Prepared integration (not deployed)
+
+- Integrate official upstream through `a78401f3` (0.9.32) with the personal .54 SDK read-safety fix and .53 full-six native capture implementation. Preserve explicit provider opt-in, source generation/uncertainty checks, native engine identity and certified embedding receipt fingerprints.
+- Retain old index generations when storage completion is SDK-only; do not interpret a replacement or successful SDK call as a disk-durability receipt.
+- Refuse redirects for native context/session side requests and shared capture receipt/restore routes. Preserve source-first handling and unknown-send evidence; installed global compatibility scripts are a separate unchanged scope.
+- Keep normal release archives verified in a single sequential pass and preserve the operating environment file in place without copying secret contents to a backup. Accept only fixed identity-bound personal 0.9.32 candidates; malformed versions and mismatched candidate identities remain refused.
+- Final ordinary regression:6,300 passed,13 conditional skips,0 failures; release-helper tests393 passed. Fresh large SDK execution remains resource-blocked under its unchanged12GiB entry requirement. Existing30 TypeScript diagnostics match the .54 baseline. No deployment, hook activation, provider setting or remote publication is implied. See docs/customizations/UPSTREAM-HOOKS-55.md.
+
 ## [0.9.31-daniel.54] — 2026-11-04
 ### Fixed
 
@@ -205,6 +214,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [0.9.31-daniel.34] — 2026-10-28
 ## [0.9.31-daniel.33] — 2026-10-27
 ## [0.9.31-daniel.1] — 2026-10-27
+
+## [0.9.32] — 2026-11-04
+
+### Upgrade notes
+
+- **Breaking: an API key alone no longer turns on an outside provider.** LLM summaries, compression, consolidation and reflection run only when `AGENTMEMORY_LLM_PROVIDER` names `anthropic`, `openai`, `gemini`, `openrouter` or `minimax` and that provider's key is set. `AGENTMEMORY_ALLOW_AGENT_SDK=true` stays the other route. Cloud embeddings run only when `EMBEDDING_PROVIDER` names the provider; `EMBEDDING_PROVIDER=local` stays on-device, and unset means BM25 and graph search only. If a key is present without a choice, boot, `doctor`, `status` and the viewer name the exact line to add (#1664).
+- `OPENAI_API_KEY_FOR_LLM` is removed. Set `AGENTMEMORY_LLM_PROVIDER` instead (#1664).
+- **Hooks send nothing to a remote `http://` server.** A non-loopback `AGENTMEMORY_URL` must use HTTPS; captures for a plain-HTTP remote server are dropped, not spooled. The secret is sent only to loopback or HTTPS addresses (#1664).
+- The PreCompact hook prints stored memory only with `AGENTMEMORY_INJECT_CONTEXT=true`, the same gate as SessionStart (#1664).
+- The Claude Code plugin asks for the server URL and secret through plugin settings. The secret is kept in the system credential store. The Devin plugin no longer forwards `AGENTMEMORY_SECRET` from the environment (#1664).
+
+### Added
+
+- **iii installs itself on Windows.** A fresh `agentmemory` on win32 downloads the pinned iii zip, checks its SHA-256 and extracts it with the system `tar.exe`, falling back to PowerShell `Expand-Archive` (#1670).
+- MCP tools carry `readOnlyHint` and `destructiveHint` annotations, and the plugin README states what the hooks record, where it is kept and how to delete it. Privacy policy: https://agent-memory.dev/privacy (#1664).
+- `memory_lesson_save` accepts `sourceIds` (#1661).
+- agentmemory is listed in the [OpenAI plugin directory](https://chatgpt.com/plugins/plugins_6ac50a1b89948191906ff15c72357972) for Codex (skills; pair with `agentmemory connect codex`), the Hermes plugin catalog and ClawHub. For Hermes and OpenClaw, install with `hermes plugins install agentmemory` or `openclaw plugins install clawhub:agentmemory`; the README and the Hermes and OpenClaw guides describe both routes beside `agentmemory connect`.
+- Each published release builds a `linux/amd64` and `linux/arm64` image and pushes it to Docker Hub as `ghumarerohit/agentmemory:<version>`; `latest` follows the highest stable version (#1677).
+- The MCP stdio shim records why it exits in `mcp-crash.log` in the data directory (owner-only, rotated at 1 MiB) and saves its fallback store before writing to stderr (#1662, #1674).
+
+### Fixed
+
+- **Worker Compose starts on native Windows.** Worker commands, the worker PATH and project ownership checks with `\\?\` and 8.3 paths are fixed; `agentmemory stop` waits long enough for every worker (#1641). The launcher retries a slow `iii --version` probe and never waits on a hidden install prompt (#1658). `doctor` does not prompt without a terminal or with `CI` set (#1671). `status` and `stop` output no longer include iii SDK debug lines (#1672).
+- **Boot no longer races the state worker.** agentmemory waits up to 120 s for the state worker to register before boot reads, and the keyword rebuild keeps retrying, so a slow start no longer leaves vector recovery paused or the keyword index empty until restart (#1627 by @cbsincool, #1626 by @Tyxiel, #1660).
+- A stale Worker Compose PID reused by an unrelated process after a reboot no longer causes a start crash loop (#1622 by @pei711).
+- The Docker image keeps the optional dependencies that local embeddings need (#1651 by @mothieras).
+- Slot tools are hidden and return 503 when `AGENTMEMORY_SLOTS` is off (#1659).
+- Search: CJK queries recall core observations again (#1553 by @akushonkamen); scoped smart-search fills short pages from a deeper window (#1669 by @dmazhukov); project-filtered recall excludes unscoped memories (#1647 by @reevesc88); search responses keep the original memory type (#1646 by @reevesc88).
+- An OpenAI reply cut off at `max_tokens` fails over instead of being stored as the result (#1495 by @Rex57).
+- Orphaned index generations are reclaimed (#1256 by @inix-x), and the MCP graph stats resource reads a bounded snapshot instead of listing the whole graph (#1260 by @inix-x).
+- Facet tags are removed when lessons are deleted or observations forgotten (#1642 by @xh123637). The session sweep skips rows without an id (#1645 by @dmazhukov). Hook truncation keeps surrogate pairs whole (#1598 by @dmazhukov).
+- Copilot CLI subagent reports are stored with their reply. The `subagentStop` hook reads Copilot's camelCase fields, so a report is no longer empty and a retry is no longer stored twice. The reply is redacted before it is cut to 4000 characters (#1599 by @dmazhukov).
+- The Hermes project git probe no longer inherits the worker's stdin, which could hang on Windows (#1663). The Cline CLI MCP configuration uses its native settings path (#1633).
+- A superseded memory gets a strictly later `updatedAt`, so mesh sync carries the change to peers (#1665 by @egantz).
+- pi includes recalled lessons in search and can read a full lesson by ID, scoped to its project (#1605 by @YeChenglin8888).
+- `npm run build` works under the Windows `cmd.exe` shell (#1362 by @mattamundson).
+- `.env.example` names the Agent SDK route and documents `MAX_OBS_PER_SESSION` as a hard per-session cap (#1675, from #1503 by @Rex57).
+- The Claude Code plugin passes its URL and secret settings to the MCP server as `CLAUDE_PLUGIN_OPTION_AGENTMEMORY_URL` and `CLAUDE_PLUGIN_OPTION_AGENTMEMORY_SECRET`, the names the plugin directory accepts. An empty URL setting no longer hides `AGENTMEMORY_URL` from the environment, and an empty secret setting still never sends `AGENTMEMORY_SECRET` from the environment.
+
+### Changed
+
+- The Claude Code plugin hooks run in exec form (`command` plus `args`), so the plugin path reaches Node as one argument with no shell quoting. The plugin and `connect claude-code --with-hooks` now need Claude Code 2.1.139 or later.
+
+### Known issues
+
+- On Windows, `agentmemory stop` takes about 60 s and each start opens empty console windows for the engine and workers. Both come from iii (iii-hq/iii#2430).
+
 ## [0.9.31] — 2026-10-25
 ### Upgrade notes
 
@@ -496,6 +552,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.55]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.54...v0.9.32-daniel.55
 [0.9.31-daniel.54]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.51...v0.9.31-daniel.54
 
 [0.9.31-daniel.53]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.52...v0.9.31-daniel.53
@@ -520,6 +577,9 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 [0.9.31-daniel.34]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.33...v0.9.31-daniel.34
 [0.9.31-daniel.33]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.1...v0.9.31-daniel.33
 [0.9.31-daniel.1]: https://github.com/rohitg00/agentmemory/compare/v0.9.31...v0.9.31-daniel.1
+
+[0.9.32]: https://github.com/rohitg00/agentmemory/compare/v0.9.31...v0.9.32
+[0.9.32]: https://github.com/rohitg00/agentmemory/compare/v0.9.31...v0.9.32
 [0.9.31]: https://github.com/rohitg00/agentmemory/compare/v0.9.30...v0.9.31
 [0.9.30]: https://github.com/rohitg00/agentmemory/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/rohitg00/agentmemory/compare/v0.9.28...v0.9.29

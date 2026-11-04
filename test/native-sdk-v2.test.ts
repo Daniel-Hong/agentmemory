@@ -10,11 +10,11 @@ beforeEach(()=>{root=mkdtempSync(join(tmpdir(),'am-native-sdk-v2-'));});
 afterEach(()=>{if(!retainRoot)rmSync(root,{recursive:true,force:true});});
 const target='http://127.0.0.1:63000';
 function payload(n=300*1024){return {event_id:'synthetic-native-host-001',session_id:'synthetic-session',cwd:root,tool_name:'Read',tool_input:{file_path:'synthetic.png'},tool_response:'data:image/png;base64,'+'A'.repeat(n)};}
-async function run(script:string,input:Record<string,unknown>,extra:Record<string,string>={}){
+async function run(script:string,input:Record<string,unknown>,extra:Record<string,string>={},sourceOnly=false){
  const log=join(root,'fetch-'+seq+++'.json'),preload=join(root,'preload.mjs');
- writeFileSync(preload,`import {writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const calls=[];globalThis.fetch=async(url,options)=>{const b=JSON.parse(options.body||'{}');calls.push({path:new URL(url).pathname,imageBytes:typeof b.data?.image_data==='string'?Buffer.byteLength(b.data.image_data):0,imageHash:typeof b.data?.image_data==='string'?createHash('sha256').update(b.data.image_data).digest('hex'):null,final:b.final});return new Response(JSON.stringify({eventId:b.eventId,status:'accepted',completion:'sdk',completed:true,durable:false}),{status:201})};process.on('exit',()=>writeFileSync(process.env.SYNTHETIC_FETCH_LOG,JSON.stringify(calls)));`);
+ writeFileSync(preload,`import {writeFileSync} from 'node:fs';import {createHash} from 'node:crypto';const calls=[];globalThis.fetch=async(url,options)=>{const b=JSON.parse(options.body||'{}');calls.push({redirect:options.redirect,path:new URL(url).pathname,imageBytes:typeof b.data?.image_data==='string'?Buffer.byteLength(b.data.image_data):0,imageHash:typeof b.data?.image_data==='string'?createHash('sha256').update(b.data.image_data).digest('hex'):null,final:b.final});return new Response(JSON.stringify({eventId:b.eventId,status:'accepted',completion:'sdk',completed:true,durable:false}),{status:201})};process.on('exit',()=>writeFileSync(process.env.SYNTHETIC_FETCH_LOG,JSON.stringify(calls)));`);
  const env={PATH:'/usr/bin:/bin',HOME:root,TMPDIR:root,AGENTMEMORY_URL:target,AGENTMEMORY_SECRET:'synthetic-only',AGENTMEMORY_SDK_CAPTURE_V2_DIR:join(root,'v2'),AGENTMEMORY_CAPTURE_SPOOL_DIR:join(root,'v1'),SYNTHETIC_FETCH_LOG:log,...extra};
- const child=spawn('/usr/bin/node',['--max-old-space-size=256','--import',preload,resolve('dist/hooks/'+script+'.mjs'),'--agentmemory-sdk-capture-v2'],{cwd:root,env,stdio:['pipe','pipe','pipe']});
+ const child=spawn('/usr/bin/node',['--max-old-space-size=256','--import',preload,...(sourceOnly?['--import',resolve('node_modules/tsx/dist/loader.mjs'),resolve('src/hooks/'+script+'.ts')]:[resolve('dist/hooks/'+script+'.mjs')]),'--agentmemory-sdk-capture-v2'],{cwd:root,env,stdio:['pipe','pipe','pipe']});
  let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);child.stdin.on('error',()=>{});child.stdin.end(JSON.stringify(input));
  const result=await new Promise<{code:number|null,signal:NodeJS.Signals|null}>((resolve,reject)=>{let uncertain:ReturnType<typeof setTimeout>|undefined;const deadline=setTimeout(()=>{child.kill('SIGTERM');uncertain=setTimeout(()=>{retainRoot=true;child.unref();child.stdout.destroy();child.stderr.destroy();reject(Error('synthetic child unreaped at '+root))},2000)},10000);child.once('error',e=>{clearTimeout(deadline);if(uncertain)clearTimeout(uncertain);reject(e)});child.once('close',(code,signal)=>{clearTimeout(deadline);if(uncertain)clearTimeout(uncertain);resolve({code,signal})})});
  expect(existsSync(log),stderr).toBe(true);return {...result,stdout,stderr,calls:JSON.parse(readFileSync(log,'utf8')) as Array<any>};
@@ -27,3 +27,22 @@ it('retains source but reports full reference queue without POST',async()=>{cons
 it('keeps SDK-child and filtered tool bypasses without creating a new store',async()=>{for(const input of [{...payload(),entrypoint:'sdk-ts'},{...payload(),tool_name:'mcp__memory__memory_search'}]){const r=await run('post-tool-use',input);expect(r.code).toBe(0);expect(r.calls).toEqual([])}expect(existsSync(join(root,'v2'))).toBe(false);});
 it('retains Stop observe then keeps its unique nonfinal session end call',async()=>{const r=await run('stop',{session_id:'synthetic-session',cwd:root,last_assistant_message:'synthetic answer'});expect(r.code).toBe(0);expect(r.calls.map(x=>x.path)).toEqual(['/agentmemory/observe','/agentmemory/session/end']);expect(r.calls[1].final).toBe(false);});
 it('preserves and transmits a7MiB image below the complete8MiB envelope limit',async()=>{const input=payload(7*1024*1024),r=await run('post-tool-use',input);expect(r.code,r.stderr).toBe(0);expect(r.calls).toHaveLength(1);expect(r.calls[0].imageBytes).toBe(Buffer.byteLength(input.tool_response));expect(r.calls[0].imageHash).toBe(createHash('sha256').update(input.tool_response).digest('hex'));expect(existsSync(join(root,'v1'))).toBe(false);expect((await new SdkSpoolV2({dir:join(root,'v2')}).usage()).originalBytes).toBeGreaterThan(7*1024*1024);});
+
+it('preserves a large C original before refusing insecure non-loopback transport without a POST',async()=>{
+ const insecure='http://example.invalid';const input=payload();const r=await run('post-tool-use',input,{AGENTMEMORY_URL:insecure},true);
+ expect(r.calls).toEqual([]);expect(r.stderr).toContain('must use HTTPS');
+ const store=new SdkSpoolV2({dir:join(root,'v2')});const refs=await store.pending(insecure);expect(refs).toHaveLength(1);expect(refs[0].state).toBe('pending');
+ const retained=await store.load(insecure,refs[0].sourceId);expect((retained.data as Record<string,unknown>).image_data).toBe(input.tool_response);expect((await store.usage()).originalBytes).toBeGreaterThan(300*1024);
+});
+
+// Full-six side requests must not follow a redirected endpoint or accept its context.
+it.each([
+ ['session-start',{session_id:'redirect-session'},{}],
+ ['pre-tool-use',{session_id:'redirect-session',tool_name:'Read',tool_input:{file_path:'synthetic.txt'}},{AGENTMEMORY_INJECT_CONTEXT:'true'}],
+ ['pre-compact',{session_id:'redirect-session'},{AGENTMEMORY_INJECT_CONTEXT:'true',CLAUDE_MEMORY_BRIDGE:'true'}],
+ ['stop',{session_id:'redirect-session'},{}],
+])('refuses redirect following on native %s side requests',async(script,input,env)=>{
+ const r=await run(script as string,input as Record<string,unknown>,env as Record<string,string>,true);
+ expect(r.code,r.stderr).toBe(0);expect(r.calls.length).toBeGreaterThan(0);
+ for(const call of r.calls)expect(call.redirect,call.path).toBe('error');
+});

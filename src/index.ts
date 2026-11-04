@@ -25,6 +25,7 @@ import {
   getEnvVar,
   loadEmbeddingConfig,
   loadFallbackConfig,
+  embeddingOptInHint,
   loadClaudeBridgeConfig,
   loadTeamConfig,
   loadSnapshotConfig,
@@ -52,6 +53,7 @@ import {
 import { KV } from "./state/schema.js";
 import { withKeyedLock } from "./state/keyed-mutex.js";
 import { StateKV } from "./state/kv.js";
+import { assertStateReady, waitForStateReady } from "./state/state-readiness.js";
 import { VectorIndex } from "./state/vector-index.js";
 import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
@@ -230,7 +232,7 @@ async function main() {
   const fallbackConfig = loadFallbackConfig();
 
   const provider = serializeLongSessionProvider(
-    fallbackConfig.providers.length > 0
+    fallbackConfig.providers.length > 0 && config.provider.provider !== "noop"
       ? createFallbackProvider(config.provider, fallbackConfig)
       : createProvider(config.provider), withKeyedLock);
 
@@ -248,6 +250,8 @@ async function main() {
     );
   } else {
     bootLog(`Embedding provider: none (BM25-only mode)`);
+    const embeddingHint = embeddingOptInHint();
+    if (embeddingHint) bootLog(embeddingHint);
   }
   if (imageEmbeddingProvider) {
     bootLog(
@@ -285,6 +289,16 @@ async function main() {
   try {
     stateBackend = getStateBackend();
   } catch {}
+  const stateReadiness = await waitForStateReady(sdk, {
+    onWaiting: (error) =>
+      bootWarn(`Waiting for the state worker to register state::get and state::list (${error})`),
+  });
+  assertStateReady(stateReadiness);
+  if (stateReadiness.attempts > 1) {
+    bootLog(
+      `State worker ready after ${stateReadiness.waitedMs}ms (${stateReadiness.attempts} attempts)`,
+    );
+  }
   if (!process.env["AGENTMEMORY_STATE_STORE_PATH"] && process.env["AGENTMEMORY_DATA_DIR"]) process.env["AGENTMEMORY_STATE_STORE_PATH"] = join(process.env["AGENTMEMORY_DATA_DIR"], "state_store.db");
   const writerStorePath=process.env["AGENTMEMORY_STATE_STORE_PATH"];
   const engineEvidence=createEngineEpochEvidence({engineUrl:config.engineUrl,enginePidPath:runtimeMetadataPath("iii.pid"),peer:()=>{const socket=(sdk as unknown as {ws?:{_socket?:{remoteAddress?:string;remotePort?:number;localAddress?:string;localPort?:number}}}).ws?._socket;return socket?{remoteAddress:socket.remoteAddress,remotePort:socket.remotePort,localAddress:socket.localAddress,localPort:socket.localPort}:null;}});
@@ -542,8 +556,8 @@ async function main() {
     graphWeight,
   );
 
-  const hybridRanker = (query: string, limit: number, targetLayer?: SearchLayer, authorizeGraph?: Parameters<HybridSearch["search"]>[3]) =>
-    hybridSearch.search(query, limit, targetLayer, authorizeGraph);
+  const hybridRanker = (query: string, limit: number, targetLayer?: SearchLayer, authorizeGraph?: Parameters<HybridSearch["search"]>[3], request?: Parameters<HybridSearch["search"]>[4]) =>
+    hybridSearch.search(query, limit, targetLayer, authorizeGraph, request);
   registerSmartSearchFunction(sdk, kv, hybridRanker);
   setHybridRanker(hybridRanker);
   registerRecentSearchesSweepFunction(sdk, kv);
@@ -737,7 +751,7 @@ async function main() {
     `Ready. ${embeddingProvider ? "Triple-stream (BM25+Vector+Graph)" : "BM25+Graph"} search active.`,
   );
   bootLog(
-    `REST API: 159 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
+    `REST API: 160 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,

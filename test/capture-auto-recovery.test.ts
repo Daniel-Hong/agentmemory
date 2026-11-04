@@ -32,7 +32,8 @@ it('blocks an old normalization checkpoint without resetting its budget, history
  const inbox:any=await x.kv.get(KV.captureInbox,x.key);
  inbox.payload.data={a:'<private>start',b:'end</private>'};
  await x.kv.set(KV.captureInbox,x.key,inbox);
- const oldRaw=JSON.parse(stripPrivateData(JSON.stringify(scrubRecord(inbox.payload.data))));
+ // Fixed historical normalization: the old regex spanned two JSON fields.
+ const oldRaw={a:'[REDACTED]'};
  const oldObs={...x.obs,sourceRaw:{...x.obs.sourceRaw,raw:oldRaw}};
  await x.kv.set(KV.observations(x.sessionId),x.observationId,oldObs);
  const row={version:1,kind:'item',id:'synthetic-recovery',key:x.key,sessionId:x.sessionId,observationId:x.observationId,eventId:x.eventId,sourceDigest:captureSourceDigest(inbox.payload.hookType,inbox.payload.timestamp,oldRaw),projection:createHash('sha256').update(oldObs.title+' '+oldObs.narrative).digest('hex'),phase:'checking',reason:'VERIFICATION_PENDING',verificationAttempts:2,nextAttemptAt:0,createdAt:inbox.acceptedAt,updatedAt:inbox.acceptedAt};

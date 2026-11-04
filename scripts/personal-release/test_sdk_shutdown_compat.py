@@ -211,13 +211,13 @@ class ManifestTests(unittest.TestCase):
         load('test_dashboard_kit').TransactionTests.setUp(self)
         self.runtime.USER_ENV['HOME'] = str(self.root)
 
-    def test_version31_is_admitted_but_other_minors_are_refused(self):
+    def test_versions31_and32_still_require_identity_and_other_minors_are_refused(self):
         kit_path = self.tx.root / 'kit.json'
         original = self.runtime.read_json(kit_path)
-        for version in ('0.9.31-daniel.33', '0.9.32-daniel.1'):
+        for version in ('0.9.31-daniel.33', '0.9.32-daniel.1', '0.9.33-daniel.1'):
             value = {**original, 'version': version}
             kit_path.write_text(json.dumps(value))
-            if version.startswith('0.9.31'):
+            if version.startswith(('0.9.31', '0.9.32')):
                 with self.assertRaisesRegex(RuntimeError, 'CANDIDATE_IDENTITY_MISMATCH'):
                     self.runtime.Runtime(self.tx.root, paths=self.paths, owner=os.getuid(), anchor=self.root)
             else:

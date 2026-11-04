@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { writeSync } from "node:fs";
 import { capturePayloadDigest } from "../capture/receipt-digest.js";
 import { spawn } from "node:child_process";
-import { resolveClientSecret } from "../secret-store.js";
+import { hookAuthHeaders, reportBlockedTransport, resolveHookEndpoint, secretTransportAllowed } from "./_endpoint.js";
 import { deriveEventId, hasHostIdentity } from "../capture/event-id.js";
 import {
   appendSpool,
@@ -26,8 +26,8 @@ import {
 export {restoreSdkSourcePayload} from "../capture/delivery.js";
 export { stripPrivateData } from "../functions/privacy.js";
 
-export const REST_URL = process.env["AGENTMEMORY_URL"] || "http://localhost:3111";
-const SECRET = resolveClientSecret(REST_URL);
+const ENDPOINT = resolveHookEndpoint();
+export const REST_URL = ENDPOINT.url;
 const DRAIN_CHILD_ENV = "AGENTMEMORY_CAPTURE_DRAIN_CHILD";
 const DRAIN_MAX_RECORDS = 500;
 const DRAIN_DEADLINE_MS = 20_000;
@@ -53,9 +53,11 @@ export interface ObserveBody {
 }
 
 export function authHeaders(): Record<string, string> {
-  const h: Record<string, string> = { "Content-Type": "application/json" };
-  if (SECRET) h["Authorization"] = `Bearer ${SECRET}`;
-  return h;
+  return hookAuthHeaders(ENDPOINT);
+}
+
+export function transportBlocked(): boolean {
+  return reportBlockedTransport(ENDPOINT);
 }
 
 export function withEventId(
@@ -78,8 +80,11 @@ function classify(status: number): SendOutcome {
 }
 
 async function post(body: Record<string, unknown>, timeoutMs: number, target?: CaptureTarget): Promise<{ outcome: SendOutcome; mark: SentMark | null; acknowledged?: boolean }> {
-  const res = await fetch(`${target?.url ?? REST_URL}/agentmemory/observe`, {
+  const url = target?.url ?? REST_URL;
+  if (reportBlockedTransport({url,secret:'',blocked:!secretTransportAllowed(url)})) throw new Error('insecure transport');
+  const res = await fetch(`${url}/agentmemory/observe`, {
     method: "POST",
+    redirect: "error",
     headers: target?.headers ?? authHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
@@ -97,12 +102,13 @@ function classifyReply(status: number, result: unknown): { outcome: SendOutcome;
 }
 
 async function durableReceipt(body: ObserveBody, target: CaptureTarget, deadline: number): Promise<boolean> {
+  if (!secretTransportAllowed(target.url)) return false;
   try {
     const key='cap_'+createHash('sha256').update(`${body.project}\u0000${body.sessionId}\u0000${body.eventId}`).digest('hex').slice(0,40);
     const digest=capturePayloadDigest(body);
     const budgetMs=Math.min(15_000,deadline-Date.now());if(budgetMs<=0)return false;
     const query=new URLSearchParams({key,digest,budgetMs:String(budgetMs)});
-    const response=await fetch(`${target.url}/agentmemory/capture/receipts?${query}`,{method:'GET',headers:target.headers,signal:AbortSignal.timeout(budgetMs)});
+    const response=await fetch(`${target.url}/agentmemory/capture/receipts?${query}`,{method:'GET',redirect:'error',headers:target.headers,signal:AbortSignal.timeout(budgetMs)});
     if(!response.ok)return false;
     const receipt=await response.json() as Record<string,unknown>;
     return receipt.key===key&&receipt.state==='completed'&&receipt.durable===true;
@@ -223,6 +229,7 @@ function connectionRefused(error: unknown): boolean {
   return value.cause!==undefined&&connectionRefused(value.cause);
 }
 async function postRawV2(body:Record<string,unknown>,timeoutMs:number,deadline?:number):Promise<V2PostResult>{
+  if(transportBlocked())return {status:0,body:null,notSent:true};
   const serialized=JSON.stringify(body),headers=authHeaders();
   const remaining=deadline===undefined?timeoutMs:Math.min(timeoutMs,Math.floor(deadline-performance.now()));
   if(remaining<=0)return {status:0,body:null,notSent:true};
@@ -250,7 +257,8 @@ async function captureObservationV2(body:ObserveBody,timeoutMs:number):Promise<V
 }
 
 async function postRaw(body:Record<string,unknown>,timeoutMs:number,path="/observe"):Promise<{status:number;body:unknown}>{
- const response=await fetch(`${REST_URL}/agentmemory${path}`,{method:'POST',headers:authHeaders(),body:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)});
+ if(transportBlocked())throw new Error('insecure transport');
+ const response=await fetch(`${REST_URL}/agentmemory${path}`,{method:'POST',redirect:'error',headers:authHeaders(),body:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)});
  return {status:response.status,body:await response.json().catch(()=>({}))};
 }
 

@@ -27,7 +27,7 @@
 
 - TDD: 기존 구현에서 새 회귀 4개 중 3개 실패/1개 통과를 확인했다. 실패는 전체 조회 불가 시 저장된 중복도 실패하는 것과 단건 조회 이전 전체 조회를 실행하는 것이었다.
 - 초기 green 실행의 fixture에는 검색 색인이 요구하는 facts/concepts/files가 빠져 2개 실패했다. fixture를 실제 소비 형식에 맞췄다. 제품 코드를 우회하지 않았다.
-- 관련 observe/capture/훅 deadline 16파일 **147개 통과/0실패**. 첫 sandbox 실행은 136통과/11실패였으며 실패 기록을 보존했다. 동일 시험을 로컬 HTTP listener가 허용된 임시 HOME 환경에서 다시 실행해 147개 통과했다. 첫 JSON reporter의 오류는 STACK_TRACE_ERROR로 축약돼 있어 실패별 원인을 모두 단정하지 않는다.
+- 관련 observe/capture/훅 deadline 16파일 **160개 통과/0실패**. 첫 sandbox 실행은 136통과/11실패였으며 실패 기록을 보존했다. 동일 시험을 로컬 HTTP listener가 허용된 임시 HOME 환경에서 다시 실행해 160개 통과했다. 첫 JSON reporter의 오류는 STACK_TRACE_ERROR로 축약돼 있어 실패별 원인을 모두 단정하지 않는다.
 - build 성공. `tsc --noEmit`은 기존과 같은 24개 진단으로 exit 2이며 새 진단 0개다. 타입 검사 전체 성공으로 보고하지 않는다.
 - 신규 회귀는 tool/prompt의 durable replay, 원문 무변경, 검색 색인 복구, live prompt ledger, 상한에 도달한 기존 기록의 중복 응답, 새 ID의 상한 유지, 단건 조회 오류의 실패 전파를 확인한다.
 - 전체 suite 및 실제 운영/Windows 훅은 이번 변경으로 재검증하지 않았다.

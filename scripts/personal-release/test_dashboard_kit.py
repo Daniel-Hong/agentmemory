@@ -211,6 +211,46 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(result['extraOpen'])
         self.assertEqual(set(result['env']), {'PATH', 'HOME', 'LANG'})
 
+    def test_version_032_personal_candidate_keeps_fixed_identity_validation(self):
+        root = self.tx.root
+        release = json.loads((root / 'release.json').read_text())
+        release['packageVersion'] = '0.9.32-daniel.55'
+        (root / 'release.json').write_text(json.dumps(release))
+        kit = json.loads((root / 'kit.json').read_text())
+        kit['version'] = release['packageVersion']
+        kit['files']['release.json'] = self.runtime.sha(root / 'release.json')
+        (root / 'kit.json').write_text(json.dumps(kit))
+        current = self.runtime.Runtime(root, paths=self.paths, owner=os.getuid(), anchor=self.root,
+                                       service_uid=os.getuid(), service_gid=os.getgid(), system=self.system)
+        self.assertEqual(current.kit['version'], '0.9.32-daniel.55')
+        kit['version'] = '0.9.32-daniel.55;arbitrary'
+        (root / 'kit.json').write_text(json.dumps(kit))
+        with self.assertRaisesRegex(RuntimeError, 'INVALID_VERSION'):
+            self.runtime.Runtime(root, paths=self.paths, owner=os.getuid(), anchor=self.root,
+                                 service_uid=os.getuid(), service_gid=os.getgid(), system=self.system)
+
+    def test_latest_backup_keeps_exact_environment_in_place_without_any_secret_copy(self):
+        extra = self.paths['runtime'] / 'other/.env'
+        self.write(extra, b'synthetic distinct file')
+        before = self.paths['env'].read_bytes()
+        self.tx.preflight(); self.tx.stop(); self.tx.backup_latest()
+        self.assertEqual(self.paths['env'].read_bytes(), before)
+        self.assertFalse((self.tx.backup / 'env').exists())
+        self.assertFalse((self.tx.backup / 'runtime/.env').exists())
+        names = list(self.tx.baseline['protectedFiles'])
+        self.assertFalse((self.tx.backup / 'protected' / str(names.index(str(self.paths['env'])))).exists())
+        self.assertEqual((self.tx.backup / 'runtime/other/.env').read_bytes(), b'synthetic distinct file')
+        proof = json.loads((self.tx.backup / 'backup.json').read_text())
+        self.assertEqual(proof['environmentPreservation']['mode'], 'retained_in_place_hash_verified')
+        self.assertFalse(proof['environmentPreservation']['secretBytesCopied'])
+
+    def test_environment_changed_after_preflight_is_never_copied_or_restored(self):
+        self.tx.preflight(); self.tx.stop()
+        self.paths['env'].write_bytes(b'SYNTHETIC_CHANGED=retained')
+        with self.assertRaisesRegex(RuntimeError, 'PROTECTED_FILE_CHANGED'):
+            self.tx.backup_latest()
+        self.assertEqual(self.paths['env'].read_bytes(), b'SYNTHETIC_CHANGED=retained')
+
     def test_retained_npm_symlinks_are_backed_up_without_following_external_links(self):
         link = self.paths['legacy'] / 'node_modules/.bin/dependency'
         link.parent.mkdir()

@@ -105,13 +105,27 @@ def verify_map(table):
 
 
 def verify_archive(path, expected_sha, files):
-    require(not Path(path).is_symlink() and sha(path) == expected_sha, 'ARCHIVE_CHANGED')
-    with tarfile.open(path) as archive:
-        members = archive.getmembers()
-        require(len(members) == len(files) and {m.name for m in members} == set(files) and all(m.isfile() for m in members), 'ARCHIVE_SET_CHANGED')
-        for name, digest in files.items():
-            require(hashlib.file_digest(archive.extractfile(name), 'sha256').hexdigest() == digest, 'ARCHIVE_READBACK_FAILED')
-
+    def require(ok, code):
+        if not ok: raise RuntimeError(code)
+    def identity(s):
+        return (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+    require(isinstance(files,dict) and bool(files), 'ARCHIVE_SET_CHANGED')
+    require(not any(os.path.islink(p) for p in [path]), 'ARCHIVE_CHANGED')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(fd,'rb') as source:
+        before=os.fstat(source.fileno())
+        require(stat.S_ISREG(before.st_mode),'ARCHIVE_CHANGED')
+        require(hashlib.file_digest(source,'sha256').hexdigest()==expected_sha,'ARCHIVE_CHANGED')
+        source.seek(0);seen=set()
+        with tarfile.open(fileobj=source,mode='r|gz') as archive:
+            for member in archive:
+                require(member.isfile() and member.name in files and member.name not in seen,'ARCHIVE_SET_CHANGED')
+                seen.add(member.name)
+                with archive.extractfile(member) as content:
+                    require(hashlib.file_digest(content,'sha256').hexdigest()==files[member.name],'ARCHIVE_READBACK_FAILED')
+        require(seen==set(files),'ARCHIVE_SET_CHANGED')
+        require(identity(os.fstat(source.fileno()))==identity(before),'ARCHIVE_CHANGED')
+        require(identity(os.stat(path,follow_symlinks=False))==identity(before),'ARCHIVE_CHANGED')
 
 def atomic(path, data, mode=0o600):
     path = Path(path)
@@ -238,7 +252,7 @@ class Runtime:
         require('shutdownCompletion' not in self.kit or self.kit['shutdownCompletion'] == 'sdk-v1', 'SHUTDOWN_PROTOCOL_UNSUPPORTED')
         require(self.kit.get('executionClosureReviewed') is True and bool(self.kit.get('reviewedBy', '').strip()), 'ADMINISTRATOR_REVIEW_REQUIRED')
         require(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,79}', self.kit['id']) is not None, 'INVALID_CANDIDATE')
-        require(re.fullmatch(r'0\.9\.(?:30|31)-daniel\.[1-9][0-9]*', self.kit['version']) is not None and re.fullmatch('[a-f0-9]{40}', self.kit['sourceCommit']) is not None, 'INVALID_VERSION')
+        require(re.fullmatch(r'0\.9\.(?:30|31|32)-daniel\.[1-9][0-9]*', self.kit['version']) is not None and re.fullmatch('[a-f0-9]{40}', self.kit['sourceCommit']) is not None, 'INVALID_VERSION')
         for name, digest in self.kit['files'].items():
             require(Path(name).name == name and not name.startswith('.'), 'UNSAFE_KIT_PATH')
             trusted(self.root / name, owner, self.anchor)
@@ -843,6 +857,31 @@ class Runtime:
                 os.close(descriptor)
         return {'preserved': True}
 
+    def backup_runtime_without_environment(self):
+        environment = self.paths['env']
+        source, target = self.paths['runtime'], self.backup / 'runtime'
+        require(environment.parent == source, 'ENV_SCOPE_CHANGED')
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        prior = environment.lstat()
+        require(stat.S_ISREG(prior.st_mode), 'ENV_PRESERVATION_FAILED')
+        before = sha(environment)
+        require(before == self.baseline['protectedFiles'].get(str(environment)), 'PROTECTED_FILE_CHANGED')
+        target.mkdir(mode=0o700, parents=True)
+        snapshot = None
+        for child in sorted(source.iterdir()):
+            require(not child.is_symlink(), 'TREE_SYMLINK_REFUSED')
+            if child == environment:
+                continue
+            if child.name == 'hook-outbox':
+                snapshot = self.queues.snapshot_queue(child, target / child.name)
+            else:
+                self.copy_private(child, target / child.name)
+        original = self.queues.stopped_hashes(source, self, 'hook-outbox')
+        require(original.pop(environment.name, None) == before, 'PROTECTED_FILE_CHANGED')
+        require(original == self.queues.stopped_hashes(target, self, 'hook-outbox'), 'BACKUP_READBACK_MISMATCH')
+        require(sha(environment) == before and identity(environment.lstat()) == identity(prior) and not (target / environment.name).exists(), 'ENV_PRESERVATION_FAILED')
+        return snapshot
+
     def backup_latest(self):
         self.paths['backup'].mkdir(mode=0o700, parents=True, exist_ok=True)
         trusted(self.paths['backup'], self.owner, self.anchor)
@@ -850,17 +889,18 @@ class Runtime:
         self.backup.mkdir(mode=0o700, parents=True)
         self.before_data = self.queues.stopped_hashes(self.paths['data'], self)
         snapshots = [self.queues.backup_tree(self.paths['data'], self.backup / 'data', 'capture-spool', self, self.copy_private),
-                     self.queues.backup_tree(self.paths['runtime'], self.backup / 'runtime', 'hook-outbox', self, self.copy_private)]
+                     self.backup_runtime_without_environment()]
         self.copy_private(self.paths['legacy'], self.backup / 'retained-package', allowed_root=self.paths['legacy'])
-        for name in ('env', 'engine', 'feedback'):
+        for name in ('engine', 'feedback'):
             if self.paths[name].exists():
                 self.copy_private(self.paths[name], self.backup / name)
         for index, name in enumerate(self.baseline['protectedFiles']):
-            self.copy_private(Path(name), self.backup / 'protected' / str(index))
+            if Path(name) != self.paths['env']:
+                self.copy_private(Path(name), self.backup / 'protected' / str(index))
         require(self.queues.stopped_hashes(self.paths['data'], self) == self.before_data, 'COLD_DATA_CHANGED')
         if self.kit.get('shutdownCompletion') == 'sdk-v1':
             self.backup_shared_source()
-        emit(self.backup / 'backup.json', {'normalShutdown': self.stop_receipt, 'dataHashes': self.before_data, 'activeQueueSnapshots': snapshots, 'liveDataRewound': False})
+        emit(self.backup / 'backup.json', {'normalShutdown': self.stop_receipt, 'dataHashes': self.before_data, 'activeQueueSnapshots': snapshots, 'environmentPreservation': {'mode': 'retained_in_place_hash_verified', 'secretBytesCopied': False, 'automaticRestore': False}, 'liveDataRewound': False})
         self.record('latest_private_backup_verified')
 
     sha = staticmethod(sha)
