@@ -2,7 +2,7 @@
 import { execSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { REST_URL, authHeaders, captureObservation, isDrainChild, runDrainChild, stripPrivateData, withEventId } from "./_capture.mjs";
+import { REST_URL, authHeaders, captureObservationForHook, isDrainChild, runDrainChild, stripPrivateData, withEventId } from "./_capture.mjs";
 //#region src/hooks/_project.ts
 function resolveProject(cwd) {
 	const explicit = process.env["AGENTMEMORY_PROJECT_NAME"];
@@ -77,10 +77,10 @@ async function main() {
 	const sessionId = data.session_id || data.sessionId || data.conversation_id || "unknown";
 	const reply = data.last_assistant_message;
 	if (typeof reply === "string" && reply.trim()) {
-		const capture = setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
+		const capture = setTimeout(() => process.exit(process.exitCode ?? 0), EXIT_CAP_MS).unref();
 		const cwd = hookCwd(data) || process.cwd();
 		const bounded = boundReply(reply);
-		await captureObservation(withEventId({
+		await captureObservationForHook(withEventId({
 			hookType: "stop",
 			sessionId,
 			project: resolveProject(cwd),
@@ -93,7 +93,7 @@ async function main() {
 		}, {}), OBSERVE_TIMEOUT_MS).catch(() => {});
 		clearTimeout(capture);
 	}
-	setTimeout(() => process.exit(0), END_CAP_MS).unref();
+	setTimeout(() => process.exit(process.exitCode ?? 0), END_CAP_MS).unref();
 	fetch(`${REST_URL}/agentmemory/session/end`, {
 		method: "POST",
 		headers: authHeaders(),
@@ -104,7 +104,7 @@ async function main() {
 		signal: AbortSignal.timeout(5e3)
 	}).catch(() => {});
 }
-main().catch(() => process.exit(0));
+main().catch(() => process.exit(process.exitCode ?? 0));
 //#endregion
 export {};
 

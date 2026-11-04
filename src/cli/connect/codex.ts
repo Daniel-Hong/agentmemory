@@ -14,6 +14,7 @@ import {
 import {
   buildMergedHooks,
   findPluginRoot,
+  inspectCodexHookOverlap,
   type HookManifest,
 } from "./codex-hooks.js";
 
@@ -66,7 +67,7 @@ export const adapter: ConnectAdapter = {
   category: "native",
   docs: "https://github.com/rohitg00/agentmemory#codex-cli-codex-plugin-platform",
   protocolNote:
-    "→ Using MCP. Hooks ship via the Codex plugin; on Codex Desktop, also pass --with-hooks to install the global hooks.json workaround.",
+    "→ Using MCP. Hooks ship via the Codex plugin. Use --with-hooks only when selecting global hooks instead; inspect /hooks before enabling overlapping sources.",
 
   detect(): boolean {
     return existsSync(CODEX_DIR);
@@ -76,6 +77,8 @@ export const adapter: ConnectAdapter = {
     const exists = existsSync(CODEX_TOML);
     const current = exists ? readFileSync(CODEX_TOML, "utf-8") : "";
     const wired = isWiredText(current);
+
+    reportCodexHookOverlap();
 
     if (wired && !opts.force) {
       logAlreadyWired("Codex CLI", CODEX_TOML);
@@ -147,6 +150,10 @@ function installCodexHooks(opts: ConnectOptions): ConnectResult {
   const existing = readJsonSafe<HookManifest>(CODEX_HOOKS);
   const merged = buildMergedHooks(existing, pluginRoot);
 
+  p.log.warn(
+    "Global hooks may also run alongside enabled and trusted plugin hooks; inspect /hooks and choose one AgentMemory hook source before activation. This installer does not disable plugin hooks or change trust.",
+  );
+
   if (opts.dryRun) {
     p.log.info(
       `[dry-run] Would ${existing ? "merge" : "create"} ${CODEX_HOOKS} with ${Object.keys(merged.hooks).length} event(s)`,
@@ -164,10 +171,10 @@ function installCodexHooks(opts: ConnectOptions): ConnectResult {
 
   logInstalled("Codex hooks", CODEX_HOOKS);
   p.log.warn(
-    "Codex runs only trusted hooks: launch `codex` (the TUI) once and choose \"Trust all and continue\" at the \"Hooks need review\" prompt. `codex exec` never shows the prompt, so hooks stay inert until then.",
+    "Codex runs only trusted hooks. Inspect /hooks in the supported local host and review the exact definitions before approving them. Installation alone does not establish trust or dispatch.",
   );
   p.log.info(
-    "User-scope hooks reference absolute paths under the bundled plugin/ dir. Re-run `agentmemory connect codex --with-hooks` after upgrading agentmemory to refresh them, then re-approve in the TUI.",
+    "User-scope hooks reference absolute paths under the bundled plugin/ dir. Review these references after upgrading. When MCP is already wired, connect returns before installing hooks; --force also rewrites the MCP entry, so review that change separately.",
   );
 
   return {
@@ -175,4 +182,19 @@ function installCodexHooks(opts: ConnectOptions): ConnectResult {
     mutatedPath: CODEX_HOOKS,
     ...(backupPath !== undefined && { backupPath }),
   };
+}
+
+function reportCodexHookOverlap(): void {
+  const existing = readJsonSafe<HookManifest>(CODEX_HOOKS);
+  if (!existing) return;
+  try {
+    const pluginRoot = findPluginRoot();
+    const bundled = JSON.parse(readFileSync(join(pluginRoot, "hooks", "hooks.codex.json"), "utf-8")) as HookManifest;
+    const events = inspectCodexHookOverlap(existing, bundled, pluginRoot);
+    if (events.length > 0) p.log.warn(
+      `AgentMemory global registrations overlap bundled plugin definitions: ${events.join(", ")}. If plugin hooks are enabled and trusted, both may run. Inspect /hooks and choose one AgentMemory hook source; this check changes neither source and does not prove duplicate dispatch.`,
+    );
+  } catch {
+    p.log.warn("AgentMemory hook overlap could not be inspected; review /hooks before selecting a hook source.");
+  }
 }

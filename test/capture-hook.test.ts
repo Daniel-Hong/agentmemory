@@ -135,11 +135,11 @@ describe("hooks capture when the server is unavailable", () => {
     expect(spoolLines(dir2, port2)).toHaveLength(0);
   });
 
-  it("does not spool when the spool is turned off", async () => {
+  it("reports failure without spooling when preservation is turned off", async () => {
     const dir = mkdtempSync(join(tmpdir(), "am-hook-spool-"));
     const port = await closedPort();
     const env = { AGENTMEMORY_URL: `http://127.0.0.1:${port}`, AGENTMEMORY_CAPTURE_SPOOL_DIR: dir, AGENTMEMORY_CAPTURE_SPOOL: "false" };
-    expect((await runHook("post-tool-use.mjs", toolPayload("disabled"), env)).exitCode).toBe(0);
+    expect((await runHook("post-tool-use.mjs", toolPayload("disabled"), env)).exitCode).toBe(1);
     expect(spoolLines(dir, port)).toHaveLength(0);
   });
 
@@ -267,7 +267,7 @@ describe("hooks keep accepted observations until the server saved them", () => {
     const received: Array<Record<string, unknown>> = [];
     const port = await markServer(received, () => ({ bootId: "aaaaaaaaaaaaaaaaaaaaaaaa", durableAfterMs: 60_000 }));
     const env = { AGENTMEMORY_URL: `http://127.0.0.1:${port}`, AGENTMEMORY_CAPTURE_SPOOL_DIR: dir, AGENTMEMORY_CAPTURE_SPOOL: "false" };
-    expect((await runHook("post-tool-use.mjs", toolPayload("spool-off"), env)).exitCode).toBe(0);
+    expect((await runHook("post-tool-use.mjs", toolPayload("spool-off"), env)).exitCode).toBe(1);
     expect(received).toHaveLength(0);
     expect(existsSync(dir) ? readdirSync(dir) : []).toHaveLength(0);
   });

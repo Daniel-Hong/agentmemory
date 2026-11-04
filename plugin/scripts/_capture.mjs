@@ -1,9 +1,763 @@
-import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { performance } from "node:perf_hooks";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir, platform } from "node:os";
-import { spawn } from "node:child_process";
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { spawn, spawnSync } from "node:child_process";
+//#region src/capture/sdk-spool-v2.ts
+const MiB = 1024 * 1024;
+const BLOCK = 4096;
+const INPUT_LIMIT = 8 * MiB;
+const ORIGINAL_LIMIT = 256 * MiB;
+const QUEUE_LIMIT = 5 * MiB;
+const CHUNK_LIMIT = 256 * 1024;
+const ID = /^[a-f0-9]{64}$/;
+function fail(code) {
+	throw Object.assign(new Error(code), { code });
+}
+function code(error) {
+	return error?.code;
+}
+function digest$1(value) {
+	return createHash("sha256").update(value).digest("hex");
+}
+function charge(size) {
+	return Math.max(BLOCK, Math.ceil(size / BLOCK) * BLOCK);
+}
+function canonical$1(value) {
+	if (Array.isArray(value)) return "[" + value.map(canonical$1).join(",") + "]";
+	if (value && typeof value === "object") return "{" + Object.keys(value).sort().map((key) => JSON.stringify(key) + ":" + canonical$1(value[key])).join(",") + "}";
+	return JSON.stringify(value);
+}
+function sourceValue(body, ignoreStringTimestamp) {
+	const value = { ...body };
+	if (ignoreStringTimestamp && typeof value.timestamp === "string") delete value.timestamp;
+	if (body.hookType === "prompt_submit" && body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
+		const data = { ...body.data };
+		if (typeof data.prompt === "string" && data.backfill === true) delete data.backfill;
+		value.data = data;
+	}
+	return value;
+}
+function sameSource(a, b) {
+	const ignoreTimestamp = typeof a.timestamp === "string" && typeof b.timestamp === "string";
+	return isDeepStrictEqual(sourceValue(a, ignoreTimestamp), sourceValue(b, ignoreTimestamp));
+}
+function sourceFingerprint(body) {
+	return digest$1(canonical$1({
+		stringTimestamp: typeof body.timestamp === "string",
+		value: sourceValue(body, true)
+	}));
+}
+function ownerIdentity(pid = process.pid) {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+		if (!start || !/^\d+$/.test(start)) fail("STORE_BUSY");
+		return {
+			pid,
+			start,
+			boot: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+		};
+	} catch (error) {
+		if (code(error) === "ENOENT") return null;
+		fail("STORE_BUSY");
+	}
+}
+function validOwner(value) {
+	const owner = value;
+	return !!owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && typeof owner.start === "string" && typeof owner.boot === "string";
+}
+function alive(owner) {
+	if (!validOwner(owner)) fail("STORE_BUSY");
+	const current = ownerIdentity(owner.pid);
+	return !!current && current.start === owner.start && current.boot === owner.boot;
+}
+function privateStat(stat, directory) {
+	const uid = process.geteuid?.();
+	if (uid === void 0 || stat.uid !== uid || (stat.mode & 4095) !== (directory ? 448 : 384)) fail("STORE_UNSAFE");
+	if (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) fail("STORE_UNSAFE");
+}
+function regularRead(path, max) {
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const stat = fstatSync(fd);
+		privateStat(stat, false);
+		if (stat.size > max) fail("STORE_UNSAFE");
+		return readFileSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+function syncDirectory$1(path, privateDirectory = true) {
+	const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isDirectory()) fail("STORE_UNSAFE");
+		if (privateDirectory) privateStat(stat, true);
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+function checkDirectory(path, privateDirectory = true) {
+	const stat = lstatSync(path);
+	if (!stat.isDirectory() || stat.isSymbolicLink()) fail("STORE_UNSAFE");
+	if (privateDirectory) privateStat(stat, true);
+}
+function ensureDirectory(path, privateRoot) {
+	const absolute = resolve(path);
+	const root = parse(absolute).root;
+	const isPrivate = (value) => value === privateRoot || value.startsWith(privateRoot + "/");
+	let cursor = root;
+	for (const part of absolute.slice(root.length).split("/").filter(Boolean)) {
+		cursor = join(cursor, part);
+		try {
+			checkDirectory(cursor, isPrivate(cursor));
+		} catch (error) {
+			if (code(error) !== "ENOENT") throw error;
+			try {
+				mkdirSync(cursor, { mode: 448 });
+				syncDirectory$1(join(cursor, ".."), isPrivate(join(cursor, "..")));
+			} catch (createError) {
+				if (code(createError) !== "EEXIST") throw createError;
+			}
+			checkDirectory(cursor, isPrivate(cursor));
+		}
+	}
+}
+function measure(path) {
+	const stat = lstatSync(path);
+	privateStat(stat, stat.isDirectory());
+	return Math.max(charge(stat.size), stat.blocks * 512) + (stat.isDirectory() ? readdirSync(path).reduce((sum, name) => sum + measure(join(path, name)), 0) : 0);
+}
+function limit(value, maximum) {
+	if (value === void 0) return maximum;
+	if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) fail("STORE_OPTIONS_INVALID");
+	return value;
+}
+/** Linux-only durable source storage. The lock covers all targets and every quota decision.
+* Source/staging files are never reclaimed. Disk charges are conservative logical bytes,
+* rounded to 4 KiB and at least stat.blocks*512; they are not filesystem hard quotas.
+* The queue includes a 4 KiB lease plus queue/root directory charges (12 KiB minimum).
+* Writes additionally reserve a parent-directory block, and 256 bytes per new chunk-directory entry.
+* /usr/bin/flock is required; no lock fallback, lease deletion, or source cleanup exists. */
+var SdkSpoolV2 = class {
+	dir;
+	originals;
+	queue;
+	lease;
+	maxOriginalBytes;
+	maxQueueBytes;
+	maxInputBytes;
+	chunkBytes;
+	onPhase;
+	constructor(options = {}) {
+		const path = options.dir ?? process.env.AGENTMEMORY_SDK_CAPTURE_V2_DIR ?? join(homedir(), ".local", "share", "agentmemory", "capture-spool-sdk-v2");
+		if (!isAbsolute(path)) fail("STORE_OPTIONS_INVALID");
+		this.dir = resolve(path);
+		this.originals = join(this.dir, "originals");
+		this.queue = join(this.dir, "queue");
+		this.lease = join(this.queue, "lease.lock");
+		this.maxOriginalBytes = limit(options.maxOriginalBytes, ORIGINAL_LIMIT);
+		this.maxQueueBytes = limit(options.maxQueueBytes, QUEUE_LIMIT);
+		if (this.maxOriginalBytes < BLOCK || this.maxQueueBytes < 3 * BLOCK) fail("STORE_OPTIONS_INVALID");
+		this.maxInputBytes = limit(options.maxInputBytes, INPUT_LIMIT);
+		this.chunkBytes = limit(options.chunkBytes, CHUNK_LIMIT);
+		this.onPhase = options.onPhase;
+	}
+	phase(name) {
+		this.onPhase?.(name);
+	}
+	init() {
+		ensureDirectory(this.dir, this.dir);
+		for (const name of readdirSync(this.dir)) {
+			if (name !== "originals" && name !== "queue") fail("STORE_UNSAFE");
+			checkDirectory(join(this.dir, name));
+		}
+		for (const path of [this.originals, this.queue]) ensureDirectory(path, this.dir);
+	}
+	rawUsage() {
+		return {
+			originalBytes: measure(this.originals),
+			queueBytes: measure(this.queue) + BLOCK
+		};
+	}
+	budget(kind, additional) {
+		const usage = this.rawUsage();
+		if (kind === "original" && usage.originalBytes + additional > this.maxOriginalBytes) fail("ORIGINALS_FULL");
+		if (kind === "queue" && usage.queueBytes + additional > this.maxQueueBytes) fail("QUEUE_FULL");
+	}
+	writeFile(path, bytes) {
+		const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+		try {
+			privateStat(fstatSync(fd), false);
+			writeFileSync(fd, bytes);
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+	}
+	atomicJson(path, value, kind, beforePublish) {
+		const bytes = Buffer.from(canonical$1(value));
+		if (kind) this.budget(kind, charge(bytes.length) + BLOCK);
+		const temp = path + "." + randomUUID() + ".tmp";
+		this.writeFile(temp, bytes);
+		if (beforePublish) this.phase(beforePublish);
+		renameSync(temp, path);
+		syncDirectory$1(join(path, ".."));
+	}
+	async locked(operation) {
+		let fd;
+		try {
+			if (process.platform !== "linux") fail("STORE_LOCK_UNSUPPORTED");
+			this.init();
+			fd = openSync(this.lease, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 384);
+			const stat = fstatSync(fd);
+			privateStat(stat, false);
+			if (stat.size !== 0) fail("STORE_UNSAFE");
+			const deadline = performance.now() + 150;
+			while (true) {
+				const lock = spawnSync("/usr/bin/flock", [
+					"--exclusive",
+					"--nonblock",
+					"--conflict-exit-code",
+					"73",
+					"3"
+				], {
+					stdio: [
+						"ignore",
+						"ignore",
+						"ignore",
+						fd
+					],
+					timeout: 150
+				});
+				if (lock.error || lock.signal || lock.status !== 0 && lock.status !== 73) fail("STORE_LOCK_UNSUPPORTED");
+				if (lock.status === 0) break;
+				if (performance.now() >= deadline) fail("STORE_BUSY");
+				await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+			}
+			fsyncSync(fd);
+			syncDirectory$1(this.queue);
+			return operation();
+		} catch (error) {
+			if (typeof code(error) === "string" && /^(SOURCE_|ORIGINALS_|QUEUE_|STORE_)/.test(code(error))) throw error;
+			return fail("STORE_IO");
+		} finally {
+			if (fd !== void 0) closeSync(fd);
+		}
+	}
+	key(target, eventId) {
+		return digest$1(digest$1(target) + "\0" + eventId);
+	}
+	conflictKey(target, eventId, body) {
+		return digest$1(this.key(target, eventId) + "\0conflict\0" + sourceFingerprint(body));
+	}
+	source(target, sourceId) {
+		if (!ID.test(sourceId)) fail("SOURCE_UNVERIFIED");
+		try {
+			const folder = join(this.originals, sourceId);
+			checkDirectory(folder);
+			const manifest = JSON.parse(regularRead(join(folder, "manifest.json"), 64 * 1024).toString());
+			if (!manifest || manifest.v !== 2 || manifest.sourceId !== sourceId || manifest.targetHash !== digest$1(target) || typeof manifest.eventId !== "string" || !Number.isSafeInteger(manifest.bytes) || manifest.bytes <= 0 || manifest.bytes > this.maxInputBytes || !ID.test(manifest.hash) || typeof manifest.conflict !== "boolean" || typeof manifest.completed !== "boolean" || !Array.isArray(manifest.chunks) || !manifest.chunks.length || manifest.chunks.length > this.maxInputBytes) fail("SOURCE_UNVERIFIED");
+			let bytes = 0;
+			const chunks = manifest.chunks.map((chunk, index) => {
+				if (chunk.name !== String(index).padStart(6, "0") + ".chunk" || !Number.isSafeInteger(chunk.bytes) || chunk.bytes <= 0 || chunk.bytes > CHUNK_LIMIT || !ID.test(chunk.hash)) fail("SOURCE_UNVERIFIED");
+				const value = regularRead(join(folder, chunk.name), CHUNK_LIMIT);
+				bytes += value.length;
+				if (bytes > this.maxInputBytes || value.length !== chunk.bytes || digest$1(value) !== chunk.hash) fail("SOURCE_UNVERIFIED");
+				return value;
+			});
+			const data = Buffer.concat(chunks);
+			if (data.length !== manifest.bytes || digest$1(data) !== manifest.hash) fail("SOURCE_UNVERIFIED");
+			const body = JSON.parse(data.toString("utf8"));
+			if (!body || Array.isArray(body) || typeof body !== "object" || body.eventId !== manifest.eventId || canonical$1(body) !== data.toString("utf8")) fail("SOURCE_UNVERIFIED");
+			if (sourceId !== (manifest.conflict ? this.conflictKey(target, manifest.eventId, body) : this.key(target, manifest.eventId))) fail("SOURCE_UNVERIFIED");
+			this.phase("source_verified");
+			return {
+				manifest,
+				body
+			};
+		} catch (error) {
+			if (code(error) === "STORE_UNSAFE") throw error;
+			fail("SOURCE_UNVERIFIED");
+		}
+	}
+	async retain(target, eventId, body) {
+		let normalized;
+		let bytes;
+		try {
+			normalized = JSON.parse(JSON.stringify(body));
+			if (!normalized || Array.isArray(normalized) || typeof normalized !== "object" || normalized.eventId !== eventId || !eventId || typeof target !== "string" || !target) fail("SOURCE_UNVERIFIED");
+			bytes = Buffer.from(canonical$1(normalized));
+		} catch {
+			fail("SOURCE_UNVERIFIED");
+		}
+		if (bytes.length > this.maxInputBytes) fail("SOURCE_TOO_LARGE");
+		return this.locked(() => {
+			let sourceId = this.key(target, eventId);
+			let conflict = false;
+			try {
+				lstatSync(join(this.originals, sourceId));
+				const prior = this.source(target, sourceId);
+				if (sameSource(prior.body, normalized)) return {
+					sourceId,
+					duplicate: true,
+					conflict: false,
+					completed: prior.manifest.completed,
+					body: prior.body
+				};
+				conflict = true;
+				sourceId = this.conflictKey(target, eventId, normalized);
+				try {
+					lstatSync(join(this.originals, sourceId));
+					const priorConflict = this.source(target, sourceId);
+					if (!priorConflict.manifest.conflict || !sameSource(priorConflict.body, normalized)) fail("SOURCE_UNVERIFIED");
+					return {
+						sourceId,
+						duplicate: true,
+						conflict: true,
+						completed: false,
+						body: priorConflict.body
+					};
+				} catch (error) {
+					if (code(error) !== "ENOENT") throw error;
+				}
+			} catch (error) {
+				if (code(error) !== "ENOENT") throw error;
+			}
+			const chunks = [];
+			for (let offset = 0; offset < bytes.length; offset += this.chunkBytes) chunks.push(bytes.subarray(offset, offset + this.chunkBytes));
+			const manifest = {
+				v: 2,
+				sourceId,
+				targetHash: digest$1(target),
+				eventId,
+				bytes: bytes.length,
+				hash: digest$1(bytes),
+				chunks: chunks.map((value, index) => ({
+					name: String(index).padStart(6, "0") + ".chunk",
+					bytes: value.length,
+					hash: digest$1(value)
+				})),
+				conflict,
+				completed: false
+			};
+			const manifestBytes = canonical$1(manifest);
+			if (Buffer.byteLength(manifestBytes) > 64 * 1024) fail("SOURCE_TOO_LARGE");
+			this.budget("original", BLOCK + charge((chunks.length + 1) * 256) + charge(Buffer.byteLength(manifestBytes)) + chunks.reduce((sum, value) => sum + charge(value.length), 0));
+			const stage = join(this.originals, ".stage-" + randomUUID());
+			mkdirSync(stage, { mode: 448 });
+			syncDirectory$1(this.originals);
+			for (let index = 0; index < chunks.length; index++) {
+				this.writeFile(join(stage, manifest.chunks[index].name), chunks[index]);
+				this.phase("chunk_fsynced");
+			}
+			this.writeFile(join(stage, "manifest.json"), manifestBytes);
+			this.phase("manifest_fsynced");
+			syncDirectory$1(stage);
+			this.phase("source_before_publish");
+			renameSync(stage, join(this.originals, sourceId));
+			syncDirectory$1(this.originals);
+			this.phase("source_published");
+			const verified = this.source(target, sourceId);
+			return {
+				sourceId,
+				duplicate: false,
+				conflict,
+				completed: false,
+				body: verified.body
+			};
+		});
+	}
+	async load(target, sourceId) {
+		if (!ID.test(sourceId)) fail("SOURCE_UNVERIFIED");
+		return this.locked(() => this.source(target, sourceId).body);
+	}
+	refPath(sourceId) {
+		if (!ID.test(sourceId)) fail("SOURCE_UNVERIFIED");
+		return join(this.queue, sourceId + ".ref");
+	}
+	readRef(target, sourceId) {
+		try {
+			const ref = JSON.parse(regularRead(this.refPath(sourceId), BLOCK).toString());
+			if (!ref || ref.v !== 2 || ref.sourceId !== sourceId || ref.targetHash !== digest$1(target) || ![
+				"pending",
+				"sending",
+				"held"
+			].includes(ref.state) || !Number.isSafeInteger(ref.attempts) || ref.attempts < 0 || !Number.isSafeInteger(ref.nextAttemptAt) || ref.nextAttemptAt < 0 || ref.state === "sending" && !validOwner(ref.owner)) fail("SOURCE_UNVERIFIED");
+			return ref;
+		} catch (error) {
+			if (code(error) === "ENOENT" || code(error) === "STORE_UNSAFE") throw error;
+			fail("SOURCE_UNVERIFIED");
+		}
+	}
+	writeRef(ref) {
+		this.atomicJson(this.refPath(ref.sourceId), ref, "queue");
+		this.phase("reference_published");
+	}
+	async enqueue(target, sourceId) {
+		return this.locked(() => {
+			const { manifest } = this.source(target, sourceId);
+			if (manifest.conflict) fail("SOURCE_CONFLICT");
+			if (manifest.completed) return;
+			try {
+				this.readRef(target, sourceId);
+				return;
+			} catch (error) {
+				if (code(error) !== "ENOENT") throw error;
+			}
+			this.writeRef({
+				v: 2,
+				targetHash: digest$1(target),
+				sourceId,
+				state: "pending",
+				attempts: 0,
+				nextAttemptAt: 0
+			});
+		});
+	}
+	async pending(target) {
+		return this.locked(() => {
+			const result = [];
+			for (const file of readdirSync(this.queue).filter((file) => /^[a-f0-9]{64}\.ref$/.test(file))) {
+				if (JSON.parse(regularRead(join(this.queue, file), BLOCK).toString()).targetHash !== digest$1(target)) continue;
+				const ref = this.readRef(target, file.slice(0, -4));
+				if (ref.state === "sending" && !alive(ref.owner)) {
+					ref.state = "held";
+					ref.reason = "UNKNOWN_SEND";
+					delete ref.owner;
+					this.writeRef(ref);
+				}
+				try {
+					if (this.source(target, ref.sourceId).manifest.completed) continue;
+				} catch {
+					ref.state = "held";
+				}
+				result.push(ref);
+			}
+			return result.map(({ sourceId, state, attempts, nextAttemptAt }) => ({
+				sourceId,
+				state,
+				attempts,
+				nextAttemptAt
+			}));
+		});
+	}
+	async markSending(target, sourceId) {
+		return this.locked(() => {
+			const source = this.source(target, sourceId);
+			if (source.manifest.conflict || source.manifest.completed) fail("SOURCE_HELD");
+			const ref = this.readRef(target, sourceId);
+			if (ref.state !== "pending") fail("SOURCE_HELD");
+			if (ref.nextAttemptAt > Date.now()) fail("SOURCE_BACKOFF");
+			const owner = ownerIdentity();
+			if (!owner) fail("STORE_BUSY");
+			ref.state = "sending";
+			ref.owner = owner;
+			this.writeRef(ref);
+			this.phase("send_intent_fsynced");
+		});
+	}
+	async acknowledge(target, sourceId) {
+		return this.locked(() => {
+			const source = this.source(target, sourceId);
+			if (source.manifest.conflict) fail("SOURCE_CONFLICT");
+			if (!source.manifest.completed) {
+				if (this.readRef(target, sourceId).state !== "sending") fail("SOURCE_HELD");
+				source.manifest.completed = true;
+				this.atomicJson(join(this.originals, sourceId, "manifest.json"), source.manifest, "original", "ack_before_publish");
+				this.phase("ack_fsynced");
+			}
+			try {
+				unlinkSync(this.refPath(sourceId));
+				syncDirectory$1(this.queue);
+			} catch (error) {
+				if (code(error) !== "ENOENT") throw error;
+			}
+		});
+	}
+	async retry(target, sourceId, _reason) {
+		return this.locked(() => {
+			const ref = this.readRef(target, sourceId);
+			if (ref.state !== "sending" || !ref.owner || !alive(ref.owner)) fail("SOURCE_HELD");
+			ref.attempts = Math.min(1e6, ref.attempts + 1);
+			ref.nextAttemptAt = Date.now() + Math.min(3e5, 1e3 * 2 ** Math.min(9, ref.attempts - 1));
+			ref.state = "pending";
+			ref.reason = "RETRY";
+			delete ref.owner;
+			this.writeRef(ref);
+		});
+	}
+	async hold(target, sourceId, _reason) {
+		return this.locked(() => {
+			const ref = this.readRef(target, sourceId);
+			ref.state = "held";
+			ref.reason = "HELD";
+			delete ref.owner;
+			this.writeRef(ref);
+		});
+	}
+	async usage() {
+		return this.locked(() => this.rawUsage());
+	}
+};
+const STORE_CODES = new Set([
+	"SOURCE_TOO_LARGE",
+	"ORIGINALS_FULL",
+	"QUEUE_FULL",
+	"SOURCE_CONFLICT",
+	"SOURCE_UNVERIFIED",
+	"SOURCE_HELD",
+	"SOURCE_BACKOFF",
+	"STORE_BUSY",
+	"STORE_IO",
+	"STORE_OPTIONS_INVALID",
+	"STORE_UNSAFE",
+	"STORE_LOCK_UNSUPPORTED"
+]);
+function safeCode(error) {
+	const code = error?.code;
+	return typeof code === "string" && STORE_CODES.has(code) ? code : "STORE_OR_DELIVERY_UNCONFIRMED";
+}
+function createStore(options) {
+	return new SdkSpoolV2({
+		...options.storeOptions,
+		dir: options.dir
+	});
+}
+function held(code, sourceAcknowledged = true, referenceAcknowledged = true) {
+	return {
+		outcome: "held",
+		code,
+		sourceAcknowledged,
+		referenceAcknowledged
+	};
+}
+async function park(store, target, sourceId, code) {
+	try {
+		await store.hold(target, sourceId, code);
+	} catch {
+		return held("QUEUE_STATE_UNCONFIRMED");
+	}
+	return held(code);
+}
+async function sendReference(store, target, sourceId, post, deadline) {
+	try {
+		await store.markSending(target, sourceId);
+	} catch (error) {
+		return held(safeCode(error));
+	}
+	let body;
+	try {
+		body = await store.load(target, sourceId);
+	} catch {
+		return park(store, target, sourceId, "SOURCE_UNVERIFIED");
+	}
+	let response;
+	const budget = deadline === void 0 ? void 0 : {
+		deadline,
+		remainingMs: Math.max(0, Math.floor(deadline - performance.now()))
+	};
+	try {
+		response = budget && budget.remainingMs <= 0 ? {
+			status: 0,
+			body: null,
+			notSent: true
+		} : await post(body, budget);
+	} catch {
+		return park(store, target, sourceId, "SDK_SEND_UNCERTAIN");
+	}
+	const value = response.body && typeof response.body === "object" ? response.body : {};
+	if (response.status >= 200 && response.status < 300 && value.eventId === body.eventId && value.completion === "sdk" && value.completed === true && value.durable === false) {
+		try {
+			await store.acknowledge(target, sourceId);
+		} catch {
+			return {
+				...held("SDK_ACK_STATE_UNCONFIRMED"),
+				sdkReplyConfirmed: true
+			};
+		}
+		return {
+			outcome: value.status === "duplicate" ? "duplicate" : "delivered",
+			sourceAcknowledged: true,
+			referenceAcknowledged: true,
+			sdkReplyConfirmed: true
+		};
+	}
+	const knownNotSent = response.status === 0 && response.notSent === true;
+	const knownAdmissionRejection = response.status === 503 && value.status === "rejected" && value.retryable === true && value.eventId === body.eventId;
+	if (knownNotSent || knownAdmissionRejection) {
+		try {
+			await store.retry(target, sourceId, "RETRY");
+		} catch {
+			return held("QUEUE_STATE_UNCONFIRMED");
+		}
+		return {
+			outcome: "spooled",
+			code: knownNotSent ? "SDK_CONNECTION_NOT_ESTABLISHED" : "SDK_ADMISSION_REJECTED",
+			sourceAcknowledged: true,
+			referenceAcknowledged: true
+		};
+	}
+	return park(store, target, sourceId, response.status === 503 && value.reason === "SDK_COMPLETION_ONLY" ? "SDK_COMPLETION_ONLY" : "SDK_ACK_UNVERIFIED");
+}
+async function deliverSdkCaptureV2(target, body, post, options = {}) {
+	let store, sourceId, storedBody;
+	try {
+		store = createStore(options);
+		if (typeof body.eventId !== "string" || !body.eventId) return {
+			outcome: "dropped",
+			code: "SOURCE_UNVERIFIED",
+			sourceAcknowledged: false,
+			referenceAcknowledged: false
+		};
+		const retained = await store.retain(target, body.eventId, body);
+		sourceId = retained.sourceId;
+		storedBody = retained.body;
+		if (retained.conflict) return held("SOURCE_CONFLICT", true, false);
+		if (retained.completed) return {
+			outcome: "duplicate",
+			sourceAcknowledged: true,
+			referenceAcknowledged: true,
+			sdkReplyConfirmed: true
+		};
+	} catch (error) {
+		return {
+			outcome: "dropped",
+			code: safeCode(error),
+			sourceAcknowledged: false,
+			referenceAcknowledged: false
+		};
+	}
+	try {
+		await store.enqueue(target, sourceId);
+	} catch (error) {
+		return {
+			outcome: "dropped",
+			code: safeCode(error),
+			sourceAcknowledged: true,
+			referenceAcknowledged: false
+		};
+	}
+	let pending;
+	try {
+		pending = (await store.pending(target)).find((record) => record.sourceId === sourceId);
+	} catch (error) {
+		return held(safeCode(error));
+	}
+	if (!pending) {
+		try {
+			if ((await store.retain(target, storedBody.eventId, storedBody)).completed) return {
+				outcome: "duplicate",
+				sourceAcknowledged: true,
+				referenceAcknowledged: true,
+				sdkReplyConfirmed: true
+			};
+		} catch {}
+		return held("QUEUE_STATE_UNCONFIRMED");
+	}
+	if (pending.state !== "pending") return held(pending.state === "sending" ? "SDK_SEND_IN_PROGRESS_OR_UNCERTAIN" : "SOURCE_HELD");
+	if (pending.nextAttemptAt > Date.now()) return {
+		outcome: "spooled",
+		sourceAcknowledged: true,
+		referenceAcknowledged: true
+	};
+	return sendReference(store, target, sourceId, post);
+}
+async function drainSdkCapturesV2(target, post, options = {}) {
+	const result = {
+		attempted: 0,
+		delivered: 0,
+		duplicates: 0,
+		held: 0,
+		remaining: 0,
+		error: void 0
+	};
+	const limit = Math.min(8, Math.max(0, options.limit ?? 8)), budget = Math.min(1500, Math.max(0, options.budgetMs ?? 1500)), start = performance.now();
+	const deadline = Math.min(options.deadline ?? Infinity, start + budget);
+	try {
+		const store = createStore(options), records = await store.pending(target);
+		for (const ref of records) {
+			if (ref.state === "held") {
+				result.held++;
+				continue;
+			}
+			if (ref.state === "sending" || ref.nextAttemptAt > Date.now() || result.attempted >= limit || performance.now() >= deadline) continue;
+			result.attempted++;
+			const sent = await sendReference(store, target, ref.sourceId, post, deadline);
+			if (sent.outcome === "delivered") result.delivered++;
+			else if (sent.outcome === "duplicate") result.duplicates++;
+			else if (sent.outcome === "held" || sent.outcome === "dropped") result.held++;
+		}
+		result.remaining = (await store.pending(target)).length;
+	} catch (error) {
+		result.error = safeCode(error);
+		result.remaining = Math.max(1, result.remaining);
+	}
+	return result;
+}
+//#endregion
+//#region src/functions/privacy.ts
+const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
+const SECRET_PATTERN_SOURCES = [
+	/(?:api[_-]?key|secret|token|password|credential|auth)[\s]*[=:]\s*["']?[A-Za-z0-9_\-/.+]{20,}["']?/gi,
+	/Bearer\s+[A-Za-z0-9._\-+/=]{20,}/gi,
+	/(?<![\p{L}\p{N}\p{M}_])sk-proj-[A-Za-z0-9\-_]{20,}/gu,
+	/(?<![\p{L}\p{N}\p{M}_])(?:sk|pk|rk|ak)-[A-Za-z0-9][A-Za-z0-9\-_]{19,}/gu,
+	/(?<![\p{L}\p{N}\p{M}_])sk-ant-[A-Za-z0-9\-_]{20,}/gu,
+	/gh[pus]_[A-Za-z0-9]{36,}/g,
+	/github_pat_[A-Za-z0-9_]{22,}/g,
+	/xoxb-[A-Za-z0-9\-]+/g,
+	/AKIA[0-9A-Z]{16}/g,
+	/AIza[A-Za-z0-9\-_]{35}/g,
+	/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+	/npm_[A-Za-z0-9]{36}/g,
+	/glpat-[A-Za-z0-9\-_]{20,}/g,
+	/dop_v1_[A-Za-z0-9]{64}/g
+];
+const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
+const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:"'<>]*:[^\s/?#@"'<>]+@/gi;
+function stripPrivateData(input) {
+	let result = input.replace(PRIVATE_TAG_RE, "[REDACTED]");
+	result = result.replace(new RegExp(PRIVATE_KEY_BLOCK_RE.source, PRIVATE_KEY_BLOCK_RE.flags), "[REDACTED_SECRET]");
+	result = result.replace(new RegExp(URL_CREDENTIALS_RE.source, URL_CREDENTIALS_RE.flags), "$1[REDACTED_SECRET]@");
+	for (const source of SECRET_PATTERN_SOURCES) {
+		const pattern = new RegExp(source.source, source.flags);
+		result = result.replace(pattern, "[REDACTED_SECRET]");
+	}
+	return result;
+}
+function scrubRecord(value, options = {}) {
+	if (typeof value === "string") return stripPrivateData(value);
+	if (Array.isArray(value)) return value.map((item) => scrubRecord(item, options));
+	if (value !== null && typeof value === "object") {
+		const proto = Object.getPrototypeOf(value);
+		if (proto !== Object.prototype && proto !== null) return value;
+		const entries = Object.entries(value).map(([key, item]) => [options.scrubKeys ? stripPrivateData(key) : key, item]);
+		const reserved = new Set(entries.map(([key]) => key));
+		const used = /* @__PURE__ */ new Set();
+		return Object.fromEntries(entries.map(([key, item]) => {
+			let unique = key;
+			if (used.has(unique)) {
+				let suffix = 2;
+				do
+					unique = `${key}_${suffix++}`;
+				while (reserved.has(unique) || used.has(unique));
+			}
+			used.add(unique);
+			return [unique, scrubRecord(item, options)];
+		}));
+	}
+	return value;
+}
+function normalizeCaptureData(value) {
+	const serialized = JSON.stringify(value);
+	return serialized === void 0 ? void 0 : scrubRecord(JSON.parse(serialized), { scrubKeys: true });
+}
+//#endregion
 //#region src/cli-data-dir.ts
 function argValue(args, name) {
 	const equals = `${name}=`;
@@ -83,64 +837,6 @@ function resolveDataDir(options = {}) {
 		dataDir: forInstance(defaultDir),
 		source: "default"
 	};
-}
-//#endregion
-//#region src/functions/privacy.ts
-const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
-const SECRET_PATTERN_SOURCES = [
-	/(?:api[_-]?key|secret|token|password|credential|auth)[\s]*[=:]\s*["']?[A-Za-z0-9_\-/.+]{20,}["']?/gi,
-	/Bearer\s+[A-Za-z0-9._\-+/=]{20,}/gi,
-	/(?<![\p{L}\p{N}\p{M}_])sk-proj-[A-Za-z0-9\-_]{20,}/gu,
-	/(?<![\p{L}\p{N}\p{M}_])(?:sk|pk|rk|ak)-[A-Za-z0-9][A-Za-z0-9\-_]{19,}/gu,
-	/(?<![\p{L}\p{N}\p{M}_])sk-ant-[A-Za-z0-9\-_]{20,}/gu,
-	/gh[pus]_[A-Za-z0-9]{36,}/g,
-	/github_pat_[A-Za-z0-9_]{22,}/g,
-	/xoxb-[A-Za-z0-9\-]+/g,
-	/AKIA[0-9A-Z]{16}/g,
-	/AIza[A-Za-z0-9\-_]{35}/g,
-	/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-	/npm_[A-Za-z0-9]{36}/g,
-	/glpat-[A-Za-z0-9\-_]{20,}/g,
-	/dop_v1_[A-Za-z0-9]{64}/g
-];
-const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
-const URL_CREDENTIALS_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:"'<>]*:[^\s/?#@"'<>]+@/gi;
-function stripPrivateData(input) {
-	let result = input.replace(PRIVATE_TAG_RE, "[REDACTED]");
-	result = result.replace(new RegExp(PRIVATE_KEY_BLOCK_RE.source, PRIVATE_KEY_BLOCK_RE.flags), "[REDACTED_SECRET]");
-	result = result.replace(new RegExp(URL_CREDENTIALS_RE.source, URL_CREDENTIALS_RE.flags), "$1[REDACTED_SECRET]@");
-	for (const source of SECRET_PATTERN_SOURCES) {
-		const pattern = new RegExp(source.source, source.flags);
-		result = result.replace(pattern, "[REDACTED_SECRET]");
-	}
-	return result;
-}
-function scrubRecord(value, options = {}) {
-	if (typeof value === "string") return stripPrivateData(value);
-	if (Array.isArray(value)) return value.map((item) => scrubRecord(item, options));
-	if (value !== null && typeof value === "object") {
-		const proto = Object.getPrototypeOf(value);
-		if (proto !== Object.prototype && proto !== null) return value;
-		const entries = Object.entries(value).map(([key, item]) => [options.scrubKeys ? stripPrivateData(key) : key, item]);
-		const reserved = new Set(entries.map(([key]) => key));
-		const used = /* @__PURE__ */ new Set();
-		return Object.fromEntries(entries.map(([key, item]) => {
-			let unique = key;
-			if (used.has(unique)) {
-				let suffix = 2;
-				do
-					unique = `${key}_${suffix++}`;
-				while (reserved.has(unique) || used.has(unique));
-			}
-			used.add(unique);
-			return [unique, scrubRecord(item, options)];
-		}));
-	}
-	return value;
-}
-function normalizeCaptureData(value) {
-	const serialized = JSON.stringify(value);
-	return serialized === void 0 ? void 0 : scrubRecord(JSON.parse(serialized), { scrubKeys: true });
 }
 //#endregion
 //#region src/capture/event-id.ts
@@ -1244,6 +1940,119 @@ async function captureObservation(body, timeoutMs) {
 	}
 	return appendSpool(REST_URL, eventId, payload, reason, { preserveImages: true }).spooled ? "spooled" : "dropped";
 }
+let nativeCapturesPending = 0;
+let nativeCaptureFailed = false;
+let nativeCapturePriorExitCode;
+let nativeExitReporterInstalled = false;
+function reportNativeCaptureFailure(code, detail) {
+	nativeCaptureFailed = true;
+	process.exitCode ||= 1;
+	try {
+		writeSync(2, JSON.stringify({
+			code,
+			pendingSpoolAcknowledged: detail?.referenceAcknowledged ?? false,
+			...detail ? { sourceAcknowledged: detail.sourceAcknowledged } : {},
+			sdkOriginalRetention: detail?.sourceAcknowledged ? "verified-v2" : "unconfirmed",
+			serverCompletion: "unconfirmed",
+			automaticHostRetry: "unverified"
+		}) + "\n");
+	} catch {}
+}
+async function captureObservationForHook(body, timeoutMs) {
+	if (!nativeExitReporterInstalled) {
+		nativeExitReporterInstalled = true;
+		process.once("exit", () => {
+			if (nativeCapturesPending > 0) reportNativeCaptureFailure("CAPTURE_LOCAL_HANDOFF_UNCONFIRMED");
+		});
+	}
+	if (nativeCapturesPending++ === 0 && !nativeCaptureFailed) nativeCapturePriorExitCode = process.exitCode;
+	process.exitCode ||= 1;
+	let detail;
+	let outcome;
+	if (process.argv.includes("--agentmemory-sdk-capture-v2")) {
+		detail = await captureObservationV2(body, timeoutMs).catch(() => ({
+			outcome: "dropped",
+			code: "STORE_OR_DELIVERY_UNCONFIRMED",
+			sourceAcknowledged: false,
+			referenceAcknowledged: false
+		}));
+		outcome = detail.outcome;
+	} else outcome = await captureObservation(body, timeoutMs).catch(() => "dropped");
+	nativeCapturesPending--;
+	if (outcome === "dropped" || outcome === "held") reportNativeCaptureFailure(detail?.code ?? "CAPTURE_LOCAL_HANDOFF_FAILED", detail);
+	if (nativeCapturesPending === 0 && !nativeCaptureFailed && process.exitCode === 1) process.exitCode = nativeCapturePriorExitCode;
+	return outcome;
+}
+function connectionRefused(error) {
+	if (!error || typeof error !== "object") return false;
+	const value = error;
+	if (value.code === "ECONNREFUSED") return true;
+	if (Array.isArray(value.errors) && value.errors.length) return value.errors.every(connectionRefused);
+	return value.cause !== void 0 && connectionRefused(value.cause);
+}
+async function postRawV2(body, timeoutMs, deadline) {
+	const serialized = JSON.stringify(body), headers = authHeaders();
+	const remaining = deadline === void 0 ? timeoutMs : Math.min(timeoutMs, Math.floor(deadline - performance.now()));
+	if (remaining <= 0) return {
+		status: 0,
+		body: null,
+		notSent: true
+	};
+	try {
+		const response = await fetch(`${REST_URL}/agentmemory/observe`, {
+			method: "POST",
+			headers,
+			body: serialized,
+			redirect: "error",
+			signal: AbortSignal.timeout(remaining)
+		});
+		return {
+			status: response.status,
+			body: await response.json().catch(() => ({}))
+		};
+	} catch (error) {
+		if (connectionRefused(error)) return {
+			status: 0,
+			body: null,
+			notSent: true
+		};
+		throw error;
+	}
+}
+async function captureObservationV2(body, timeoutMs) {
+	if (!spoolPolicy().enabled) return {
+		outcome: "dropped",
+		code: "CAPTURE_PRESERVATION_DISABLED",
+		sourceAcknowledged: false,
+		referenceAcknowledged: false
+	};
+	const started = performance.now();
+	const eventId = body.eventId ?? deriveEventId(body.hookType, body.sessionId, null, body.data);
+	const payload = scrubRecord(JSON.parse(JSON.stringify({
+		...body,
+		eventId,
+		captureCompletion: "sdk-v1"
+	})), { scrubKeys: true });
+	const options = { dir: process.env["AGENTMEMORY_SDK_CAPTURE_V2_DIR"] };
+	const result = await deliverSdkCaptureV2(REST_URL, payload, (b) => postRawV2(b, timeoutMs), options);
+	const now = performance.now(), deadline = Math.min(started + timeoutMs, now + 250), remaining = Math.floor(deadline - now);
+	if (body.hookType !== "stop" && (result.outcome === "delivered" || result.outcome === "duplicate") && remaining >= 100) {
+		const backlog = await drainSdkCapturesV2(REST_URL, (b, budget) => postRawV2(b, budget?.remainingMs ?? remaining, budget?.deadline ?? deadline), {
+			...options,
+			limit: 1,
+			budgetMs: remaining,
+			deadline
+		});
+		if (backlog.held || backlog.error) try {
+			writeSync(2, JSON.stringify({
+				code: "CAPTURE_BACKLOG_HELD",
+				held: backlog.held,
+				error: backlog.error
+			}) + "\n");
+		} catch {}
+	}
+	return result;
+}
 async function postRaw(body, timeoutMs, path = "/observe") {
 	const response = await fetch(`${REST_URL}/agentmemory${path}`, {
 		method: "POST",
@@ -1281,6 +2090,6 @@ async function runDrainChild() {
 	}));
 }
 //#endregion
-export { REST_URL, authHeaders, captureObservation, handoffObservation, isDrainChild, restoreObservationOriginal, restoreSdkSourcePayload, runDrainChild, stripPrivateData, withEventId };
+export { REST_URL, authHeaders, captureObservation, captureObservationForHook, handoffObservation, isDrainChild, restoreObservationOriginal, restoreSdkSourcePayload, runDrainChild, stripPrivateData, withEventId };
 
 //# sourceMappingURL=_capture.mjs.map

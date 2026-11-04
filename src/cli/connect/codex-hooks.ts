@@ -31,6 +31,32 @@ export function findPluginRoot(startUrl: string = import.meta.url): string {
   );
 }
 
+/** Static registration overlap; does not establish plugin enablement, trust or dispatch. */
+export function inspectCodexHookOverlap(
+  existing: unknown,
+  bundled: HookManifest,
+  pluginRoot: string,
+): string[] {
+  if (!existing || typeof existing !== "object") return [];
+  const hooks = (existing as { hooks?: unknown }).hooks;
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return [];
+  const scriptsDir = normalizePathForCommandMatch(join(pluginRoot, "scripts"));
+  return Object.entries(hooks).filter(([event, entries]) =>
+    Object.hasOwn(bundled.hooks, event) && Array.isArray(entries) && entries.some((entry) =>
+      entry && Array.isArray(entry.hooks) && entry.hooks.some((handler: unknown) => {
+        if (!handler || typeof handler !== "object") return false;
+        const { type, command } = handler as HookHandler;
+        if (type !== "command" || typeof command !== "string") return false;
+        const normalized = normalizePathForCommandMatch(command);
+        return normalized.includes(`${scriptsDir}/`) || (
+          /\/agentmemory(?:-personal)?\//i.test(normalized) &&
+          /\/scripts\/(?:codex-compat\/)?[a-z-]+\.mjs(?=["'\s]|$)/i.test(normalized)
+        );
+      }),
+    ),
+  ).map(([event]) => event).sort();
+}
+
 /**
  * Build the merged hooks.json content.
  *

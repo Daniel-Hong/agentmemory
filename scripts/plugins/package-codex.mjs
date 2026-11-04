@@ -15,6 +15,8 @@ if (!existsSync(join(plugin, "scripts/plugin-bridge.mjs"))) throw new Error("Run
 
 const FLAVORS = {
   local: { mcp: true, hooks: true },
+  "local-sdk-v2": { mcp: true, hooks: "sdk-v2" },
+  "global-companion": { mcp: true, hooks: "pre-tool" },
   review: { mcp: true, hooks: false },
   skills: { mcp: false, hooks: false },
 };
@@ -44,6 +46,10 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
   rmSync(destination, { recursive: true, force: true });
   mkdirSync(join(destination, ".codex-plugin"), { recursive: true });
   const manifest = structuredClone(sourceManifest);
+  if (hooks === "pre-tool") {
+    manifest.description = manifest.description.replace(/ Optional capture through .*$/, " PreToolUse context enrichment only; capture uses separately configured global hooks.");
+    manifest.interface.longDescription = manifest.interface.longDescription.replace("Automatic capture requires trusted, supported hooks.", "This package retains only PreToolUse enrichment; automatic capture uses separately configured global hooks. Review exact hook definitions before trusting them.");
+  }
   if (!hooks) {
     delete manifest.hooks;
     manifest.description = manifest.description.replace(/ Optional capture through .*$/, "");
@@ -57,6 +63,8 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
     cpSync(join(plugin, ".mcp.codex.json"), join(destination, ".mcp.json"));
     cpSync(join(plugin, "scripts/plugin-bridge.mjs"), join(destination, "scripts/plugin-bridge.mjs"));
     cpSync(join(root, "docs/plugins/codex-local.md"), join(destination, "README.md"));
+    if (hooks === "sdk-v2") writeFileSync(join(destination, "README.md"), `# Agent Memory native SDK capture v2 (prepared policy)\n\nThis is the full six-hook local package. Global hooks are not installed or changed. SessionStart, PreToolUse and PreCompact preserve their context/session behavior. Only UserPromptSubmit, PostToolUse and Stop receive the explicit --agentmemory-sdk-capture-v2 flag; Stop retains its nonfinal session end. The selected MCP contract is unchanged.\n\nUbuntu/Linux requires the already installed /usr/bin/flock; no fallback or new privileged helper is installed. The approved default storage is HOME/.local/share/agentmemory/capture-spool-sdk-v2. A development-only isolated-directory override is available as AGENTMEMORY_SDK_CAPTURE_V2_DIR and must be reviewed before host activation.\n\nThe privacy-scrubbed canonical envelope limit is 8 MiB, chunk limit 256 KiB, originals budget 256 MiB and reference queue budget 5 MiB. Directory/file allocation and partial/conflict data count conservatively; these are not a filesystem hard quota. There is no automatic deletion or expiry of originals. Old spools and unknown history are not read, moved, replayed or deleted. Full quota or preservation failure returns an explicit failure; this cannot promise acceptance of unlimited future input.\n\nComplete source publication and hash readback precede its reference and every POST to the same endpoint; C v2 POSTs refuse redirects. Only a matching SDK completion ACK is recorded; it is not a disk-flush receipt. Known-not-sent or explicit admission rejection may retry via the reference. Uncertain sending is held, never silently marked complete. Ordinary later prompt/tool invocations may opportunistically drain at most one eligible reference with a monotonic POST-admission/network-wait budget capped at 250ms and the remaining invocation budget. Source readback and JSON serialization consume that budget; an expired budget starts no POST and keeps a known-not-sent reference for backoff. Required synchronous state fsync and the final consistent report may finish after the deadline, so this is not a hard wall-clock guarantee for disk I/O. There is no perpetual scheduler or host retry guarantee. Stop does not perform this extra drain.\n\nLarge/image normal observe retransmission can use the verified original. The existing guarded restore API refuses images and payloads over256 KiB; this package does not bypass that restore guard. Other manual restore requires separate review.\n\nPackaging does not install, enable or trust this policy. Review exact six hook definitions, the new storage policy and the actual endpoint/environment before activation.\n`);
+    if (hooks === "pre-tool") writeFileSync(join(destination, "README.md"), `# Agent Memory companion for existing global hooks\n\nThis package preserves MCP, skills and the existing PreToolUse matcher and command. It excludes SessionStart, UserPromptSubmit, PostToolUse, PreCompact and Stop to avoid a second registration alongside separately configured global hooks.\n\nThe existing personal global compatibility artifact has 9 event registrations and 13 files including shared helpers and metadata. Those are different units. This package does not install or trust global hooks, change their event IDs or retained outbox, or verify which host dispatched an event. Select this package only after reviewing the host's active hooks. Existing PreToolUse enrichment data and destination rules remain unchanged.\n`);
   } else {
     delete manifest.mcpServers;
     manifest.description = manifest.description.replace("through 55 MCP tools and 17 skills.", "through 17 skills that use the MCP tools of your own Agent Memory daemon.");
@@ -72,9 +80,21 @@ for (const [flavor, { mcp, hooks }] of Object.entries(FLAVORS)) {
   cpSync(join(root, "LICENSE"), join(destination, "LICENSE"));
   if (hooks) {
     mkdirSync(join(destination, "hooks"));
-    cpSync(join(plugin, "hooks/hooks.codex.json"), join(destination, "hooks/hooks.codex.json"));
-    const hookManifest = readFileSync(join(plugin, "hooks/hooks.codex.json"), "utf8");
-    cpSync(join(plugin, "scripts/_capture.mjs"), join(destination, "scripts/_capture.mjs"));
+    const fullHooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.codex.json"), "utf8"));
+    if (!Array.isArray(fullHooks.hooks?.PreToolUse)) throw new Error("PreToolUse manifest required before packaging.");
+    const selectedHooks = hooks === "pre-tool" ? { hooks: { PreToolUse: fullHooks.hooks.PreToolUse } } : structuredClone(fullHooks);
+    if (hooks === "sdk-v2") {
+      for (const event of ["UserPromptSubmit", "PostToolUse", "Stop"]) {
+        if (!Array.isArray(selectedHooks.hooks[event])) throw new Error("SDK v2 capture hook missing");
+        for (const entry of selectedHooks.hooks[event]) for (const hook of entry.hooks) {
+          if (hook.type !== "command" || typeof hook.command !== "string") throw new Error("SDK v2 command hook required");
+          hook.command += " --agentmemory-sdk-capture-v2";
+        }
+      }
+    }
+    const hookManifest = JSON.stringify(selectedHooks, null, 2) + "\n";
+    writeFileSync(join(destination, "hooks/hooks.codex.json"), hookManifest);
+    if (hooks === true || hooks === "sdk-v2") cpSync(join(plugin, "scripts/_capture.mjs"), join(destination, "scripts/_capture.mjs"));
     for (const script of new Set([...hookManifest.matchAll(/scripts\/([\w-]+\.mjs)/g)].map((m) => m[1]))) {
       cpSync(join(plugin, "scripts", script), join(destination, "scripts", script));
     }

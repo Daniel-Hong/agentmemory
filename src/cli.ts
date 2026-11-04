@@ -44,6 +44,7 @@ const c = {
 import { generateId } from "./state/schema.js";
 import {
   buildDiagnostics,
+  canAutoFix,
   dryRunPlan,
   parseEnvFile,
   type Diagnostic,
@@ -2165,6 +2166,12 @@ function buildDoctorEffects(): DoctorEffects {
       return state?.kind === "compose" ? state.binPath : privateIiiPath();
     },
     iiiBinaryVersion: (binPath: string) => iiiBinVersion(binPath),
+    externalEngineRunning: async () => {
+      const state = readEngineState();
+      const remoteTarget = shouldUseAgentmemoryUrl() && process.env["AGENTMEMORY_URL"];
+      const managed = state?.kind === "compose" && state.restPort === getRestPort() && !remoteTarget;
+      return !managed && await isEngineRunning();
+    },
     viewerReachable: async (timeoutMs = 2000) => {
       try {
         await discoverViewerPort();
@@ -2466,11 +2473,14 @@ async function runDoctor() {
     }
     failed++;
     p.log.warn(`${d.id} ✗ ${status.detail ?? ""}`.trim());
-    p.log.info(`why: ${d.fixPreview}`);
 
-    if (d.manualOnly) {
-      p.log.info(`(manual fix only — see "${d.id}" docs)`);
+    if (!canAutoFix(d, status)) {
+      p.log.info(`manual fix: ${status.manualFix ?? d.fixPreview}`);
+      skipped++;
+      continue;
     }
+
+    p.log.info(`why: ${d.fixPreview}`);
 
     if (applyAll) {
       const r = await applyFixWithReport(d, ctx, false);

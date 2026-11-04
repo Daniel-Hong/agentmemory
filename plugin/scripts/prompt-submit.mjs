@@ -2,7 +2,7 @@
 import { execSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { captureObservation, isDrainChild, runDrainChild, withEventId } from "./_capture.mjs";
+import { captureObservationForHook, isDrainChild, runDrainChild, withEventId } from "./_capture.mjs";
 //#region src/hooks/_project.ts
 function resolveProject(cwd) {
 	const explicit = process.env["AGENTMEMORY_PROJECT_NAME"];
@@ -62,7 +62,7 @@ async function main() {
 	if (isSdkChildContext(data)) return;
 	const sessionId = data.session_id || data.sessionId || data.conversation_id || "unknown";
 	const cwd = hookCwd(data) || process.cwd();
-	captureObservation(withEventId({
+	captureObservationForHook(withEventId({
 		hookType: "prompt_submit",
 		sessionId,
 		project: resolveProject(cwd),
@@ -70,9 +70,9 @@ async function main() {
 		timestamp: (/* @__PURE__ */ new Date()).toISOString(),
 		data: { prompt: data.prompt ?? data.userPrompt }
 	}, data), OBSERVE_TIMEOUT_MS);
-	setTimeout(() => process.exit(0), EXIT_CAP_MS).unref();
+	setTimeout(() => process.exit(process.exitCode ?? 0), EXIT_CAP_MS).unref();
 }
-main().catch(() => process.exit(0));
+main().catch(() => process.exit(process.exitCode ?? 0));
 //#endregion
 export {};
 
