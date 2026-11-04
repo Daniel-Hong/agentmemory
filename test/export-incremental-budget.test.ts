@@ -219,3 +219,25 @@ describe("ExportBudget", () => {
     expect(budget.fits(["x".repeat(80)])).toBe(false);
   });
 });
+
+it('unselected summaries use their complete count instead of reading all bodies',async()=>{
+ const kv=countingKV(),sdk=mockSdk(),original=kv.list;Object.assign(kv,{countSummaries:async()=>99});
+ kv.list=async(scope:string)=>{if(scope===KV.summaries)throw Error('unsafe_bulk_summary_read');return original(scope)};
+ registerExportImportFunction(sdk as never,kv as never);
+ const result:any=await sdk.trigger({function_id:'mem::export',payload:{collections:['memories'],collectionLimit:1}});
+ expect(result.summaries).toEqual([]);expect(result.collectionPagination.totals.summaries).toBe(99);
+ expect(kv.listCalls).not.toContain(KV.summaries);
+});
+it('preflight summary budget refusal stays an explicit incomplete export result',async()=>{
+ const kv=countingKV(),sdk=mockSdk(),original=kv.list;
+ kv.list=async(scope:string)=>{if(scope===KV.summaries)throw Object.assign(Error('summary_collection_too_large'),{code:'SUMMARY_COLLECTION_TOO_LARGE',bytes:91*1024*1024});return original(scope)};
+ registerExportImportFunction(sdk as never,kv as never);
+ const result:any=await sdk.trigger({function_id:'mem::export',payload:{}});
+ expect(result).toMatchObject({success:false,oversized:true,stoppedAt:'summaries'});
+});
+it('a failed observation read never becomes a successful empty export',async()=>{
+ const kv=countingKV(),sdk=mockSdk(),original=kv.list;seedSessions(kv,1,10);
+ kv.list=async(scope:string)=>{if(scope.startsWith('mem:obs:'))throw Error('storage_read_failed');return original(scope)};
+ registerExportImportFunction(sdk as never,kv as never);
+ await expect(sdk.trigger({function_id:'mem::export',payload:{}})).rejects.toThrow('storage_read_failed');
+});

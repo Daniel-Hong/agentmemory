@@ -8,6 +8,12 @@ export function networkErrorCode(error) {
 export function safeFailureDetails(error) {
   const details = error?.diagnostics ?? {};
   const result = {};
+  // Fixed protocol identifiers only; never copy invocation payloads, keys, raw
+  // messages, stack traces or arbitrary user-defined function names.
+  if (['state::get','state::set','state::update','state::delete','state::list','state::list_groups','mem::summarize'].includes(error?.function_id)) {
+    result.sdkFunction = error.function_id;
+    if (['TIMEOUT','payload_too_large','invocation_failed','CONNECTION_CLOSED','GET_ERROR','SET_ERROR'].includes(error?.code)) result.sdkErrorCode = error.code;
+  }
   for (const key of ['category','errorCode','field','doneReason']) {
     if (typeof details[key] === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(details[key])) result[key] = details[key];
   }

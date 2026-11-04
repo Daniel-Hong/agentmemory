@@ -181,6 +181,14 @@ describe("MCP Resources", () => {
     expect(data[0].sessionId).toBe("ses_2");
   });
 
+  it("project recent uses the bounded project selection API instead of listing every summary", async () => {
+    const selected=[{sessionId:"selected",project:"myapp",createdAt:"2026-01-01T00:00:00Z",title:"selected"}];
+    const recent=vi.fn(async()=>selected);Object.assign(kv,{getRecentProjectSummaries:recent});
+    kv.list=async()=>{throw Error("bulk_summary_sdk_forbidden")};
+    const result:any=await sdk.getFunction("mcp::resources::read")!(makeReq({uri:"agentmemory://project/myapp/recent"}));
+    expect(result.status_code).toBe(200);expect(JSON.parse(result.body.contents[0].text)).toEqual(selected);
+    expect(recent).toHaveBeenCalledWith("myapp",5);
+  });
   it("reads agentmemory://memories/latest", async () => {
     const memories: Memory[] = [
       {

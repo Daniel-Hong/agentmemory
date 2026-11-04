@@ -1,7 +1,6 @@
-// The pinned engine rejects WebSocket frames over 16 MiB; an oversized
-// function result drops the worker and 404s every endpoint. Refuse the
-// payload as one clean error instead. The cap sits under the frame limit
-// to leave headroom for the SDK's framing overhead.
+// Retain the existing conservative application payload budget. It was chosen
+// under the older 16 MiB framing assumption; it is not the current SDK's
+// 64 MiB message limit. Refusals must not tear down the shared SDK connection.
 const FRAME_LIMIT_BYTES = 16 * 1024 * 1024;
 export const SAFE_PAYLOAD_BYTES = 15 * 1024 * 1024;
 
@@ -24,7 +23,7 @@ export function oversizedPayloadError(
   const mib = (bytes / (1024 * 1024)).toFixed(1);
   return {
     success: false,
-    error: `Response is ${mib} MiB, over the ~${SAFE_PAYLOAD_BYTES / (1024 * 1024)} MiB engine transport frame limit; ${hint}`,
+    error: `Response is ${mib} MiB, over the ${SAFE_PAYLOAD_BYTES / (1024 * 1024)} MiB application payload budget; ${hint}`,
     oversized: true,
     bytes,
     limitBytes: SAFE_PAYLOAD_BYTES,

@@ -1479,15 +1479,12 @@ export function registerMcpEndpoints(
               body: { error: "Invalid percent-encoding in URI" },
             };
           }
-          const summaries = await kv.list<SessionSummary>(KV.summaries);
-          const filtered = summaries
-            .filter((s) => s.project === projectName)
-            .sort(
-              (a, b) =>
-                new Date(b.createdAt).getTime() -
-                new Date(a.createdAt).getTime(),
-            )
-            .slice(0, 5);
+          const filtered = typeof kv.getRecentProjectSummaries === "function"
+            ? await kv.getRecentProjectSummaries(projectName, 5)
+            : (await kv.list<SessionSummary>(KV.summaries))
+              .filter((s) => s.project === projectName)
+              .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+              .slice(0, 5);
           return {
             status_code: 200,
             body: {
@@ -1763,8 +1760,10 @@ export function registerMcpEndpoints(
               };
             }
             const session = await kv.get<Session>(KV.sessions, sessionId);
-            const summaries = await kv.list<SessionSummary>(KV.summaries);
-            const summary = summaries.find((s) => s.sessionId === sessionId);
+            const summary = await kv.get<SessionSummary>(KV.summaries, sessionId);
+            if (summary && summary.sessionId !== sessionId) {
+              throw new Error("summary_identity_mismatch");
+            }
             return {
               status_code: 200,
               body: {

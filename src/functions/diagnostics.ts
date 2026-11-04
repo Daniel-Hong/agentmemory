@@ -438,7 +438,9 @@ export function registerDiagnosticsFunction(sdk: IIIClient, kv: StateKV): void {
       }
 
       if (categories.includes("summaries")) {
-        const summaries = await kv.list<SessionSummary>(KV.summaries);
+        const summaries = typeof kv.getSummaryMetadata === "function"
+          ? await kv.getSummaryMetadata()
+          : await kv.list<SessionSummary>(KV.summaries);
         let summaryIssues = 0;
         for (const s of summaries) {
           // typeof guard before .trim() — a corrupted row with title=null

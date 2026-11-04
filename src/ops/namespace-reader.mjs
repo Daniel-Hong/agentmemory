@@ -9,7 +9,7 @@ const sameOpenedGeneration=(before,after)=>signature(before)===signature(after)|
 
 // iii namespaces contain one JSON object followed by an opaque rkyv archive trailer.
 // Keep at most one entry's JSON text; selected values and caller projections are optional.
-export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,withReadChunk,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity,consistency='current-path'}={}){
+export async function readNamespaceEntries(path,{keys,onEntry,measureValueBytes=false,onValueBytes,maxEntryBytes=Infinity,chunkSize=64*1024,withReadChunk,signal,onRead,onOpen,onProgress,checkIntervalBytes=0,maxSelectedBytes=Infinity,allowProjectionOverflow,maxFileBytes=Infinity,consistency='current-path'}={}){
   if(!['current-path','opened-generation'].includes(consistency))throw fail('state_namespace_consistency_invalid');
   if(!Number.isSafeInteger(chunkSize)||chunkSize<1)throw fail('state_namespace_chunk_invalid');
   if(withReadChunk!==undefined&&typeof withReadChunk!=='function')throw fail('state_namespace_chunk_coordinator_invalid');
@@ -17,16 +17,29 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
   if(maxSelectedBytes!==Infinity&&(!Number.isSafeInteger(maxSelectedBytes)||maxSelectedBytes<0))throw fail('state_namespace_projection_limit_invalid');
   if(maxFileBytes!==Infinity&&(!Number.isSafeInteger(maxFileBytes)||maxFileBytes<1))throw fail('state_namespace_file_limit_invalid');
   if(allowProjectionOverflow!==undefined&&typeof allowProjectionOverflow!=='function')throw fail('state_namespace_projection_policy_invalid');
+  if(onValueBytes!==undefined&&typeof onValueBytes!=='function')throw fail('state_namespace_byte_observer_invalid');
+  if(maxEntryBytes!==Infinity&&(!Number.isSafeInteger(maxEntryBytes)||maxEntryBytes<1))throw fail('state_namespace_entry_limit_invalid');
   const progress=createReadProgress(onProgress);progress('open');
   const handle=await open(path,'r'),utf8=new TextDecoder('utf-8',{fatal:true});
   const values=new Map(),seen=new Set();let stream,fileBytes=null,complete=false;
   let state='start',key='',keyText='',keyQuoted=false,keyEscape=false,valueParts=[],valueStart=null,valueQuoted=false,valueEscape=false,valueDepth=0,valueKind='';
   let rawStarted=false,rawQuoted=false,rawEscape=false,rawDepth=0,prefixComplete=false,entries=0,bytesRead=0,maxEntryChars=0,lastSignatureCheck=0,selectedBytes=0,privateProjection=false;
+  let valueBytes=0;
+  function appendValue(part){
+    if(measureValueBytes||onValueBytes||maxEntryBytes!==Infinity){
+      valueBytes+=Buffer.byteLength(part,'utf8');
+      if(valueBytes>maxEntryBytes)throw fail('state_namespace_entry_limit');
+      // Synchronous admission observer: it may refuse before joining/parsing a
+      // large value, but cannot certify a partially read namespace as valid.
+      onValueBytes?.(key,valueBytes);
+    }
+    valueParts.push(part);
+  }
   async function consume(text){
     const delimiter=/["\\]/g,structural=/["{}\[\]]/g;
     if(state==='value')valueStart=0;
     async function finish(end){
-      if(valueStart!==null)valueParts.push(text.slice(valueStart,end));
+      if(valueStart!==null)appendValue(text.slice(valueStart,end));
       const json=valueParts.join('');maxEntryChars=Math.max(maxEntryChars,json.length);
       if(keys?.has(key)&&maxSelectedBytes!==Infinity&&!privateProjection){
         selectedBytes+=Buffer.byteLength(json,'utf8')+Buffer.byteLength(key,'utf8');
@@ -38,7 +51,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
       }
       let value;try{value=JSON.parse(json);}catch{throw fail('state_namespace_corrupt');}
       if(keys?.has(key))values.set(key,value);
-      if(onEntry){const pending=onEntry(key,value);if(pending&&typeof pending.then==='function')await pending;}
+      if(onEntry){const pending=measureValueBytes?onEntry(key,value,valueBytes):onEntry(key,value);if(pending&&typeof pending.then==='function')await pending;}
       entries++;valueParts=[];valueStart=null;state='after';
     }
     for(let i=0;i<text.length;i++){
@@ -61,7 +74,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
         }else if(state==='colon'){if(white(char))continue;if(char!==':')throw fail('state_namespace_corrupt');state='before_value';}
         else if(state==='before_value'){
           if(white(char))continue;
-          valueStart=i;valueParts=[];valueDepth=0;valueQuoted=false;valueEscape=false;
+          valueStart=i;valueParts=[];valueBytes=0;valueDepth=0;valueQuoted=false;valueEscape=false;
           valueKind=char==='"'?'string':char==='{'||char==='['?'compound':'primitive';state='value';again=true;
         }else if(state==='value'){
           if(valueKind==='primitive'){
@@ -76,7 +89,7 @@ export async function readNamespaceEntries(path,{keys,onEntry,chunkSize=64*1024,
         }else if(state==='done'){if(!white(char))throw fail('state_namespace_corrupt');}
       }
     }
-    if(state==='value'&&valueStart!==null){valueParts.push(text.slice(valueStart));valueStart=0;}
+    if(state==='value'&&valueStart!==null){appendValue(text.slice(valueStart));valueStart=0;}
   }
   try{
     progress('stat');

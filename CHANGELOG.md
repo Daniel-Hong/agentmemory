@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.9.31-daniel.54] — 2026-11-04
+### Fixed
+
+- Avoid full summary namespace SDK responses in session handoff, project recent context and summary diagnosis. Keep IDs, source generations, pending overlays and explicit failures.
+- Check cold summary collection byte budgets before shared SDK reads; serialize the check/read with tracked summary mutations and preserve uncertain outcomes. Read refusal is not a mutation failure.
+- Preserve export refusal semantics, fail on unreadable export observations, and verify replacement summary inventory before any deletion. No operating reprocessing or deletion is performed by this preparation.
+- Retain only fixed SDK function/error identifiers in failure diagnostics. Existing data formats, engine, client hooks and historical uncertainty remain unchanged.
+
+
 ## Unreleased — record recovery context lifetime
 
 - Disable a per-record async context only after all running, queued and reentrant references settle and its reader/writer/queue is empty. Remove only that same entry; keep independent trace contexts and record-wide recovery ownership.
@@ -470,6 +481,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.31-daniel.54]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.51...v0.9.31-daniel.54
 [0.9.31-daniel.51]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.50...v0.9.31-daniel.51
 [0.9.31-daniel.50]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.49...v0.9.31-daniel.50
 [0.9.31-daniel.49]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.48...v0.9.31-daniel.49

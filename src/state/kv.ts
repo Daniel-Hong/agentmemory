@@ -9,6 +9,7 @@ import { createObservationReader } from '../ops/observation-pages.mjs'
 import { createAuditReader } from '../ops/audit-reader.mjs'
 import { createSummaryCount } from '../ops/summary-count.mjs'
 import { createGraphFileList } from '../ops/graph-file-list.mjs'
+import { SAFE_PAYLOAD_BYTES } from './frame-guard.js'
 import { resolveGraphScope, notifyGraphGenerationChange } from './graph-generation.js'
 import { ensureGraphConsistency, noteGraphSnapshotWrite } from './graph-consistency.js'
 import { withGraphIndexMutation, withGraphSnapshotIndexBarrier, withGraphSnapshotUnknownMutation } from './graph-retrieval-index.js'
@@ -72,6 +73,7 @@ export function applyUpdateOps(oldValue: unknown, ops: UpdateOp[]): unknown {
 
 const MIN_ID_TIME = Date.UTC(2020, 0, 1)
 const MAX_ID_TIME = Date.UTC(2100, 0, 1)
+let summaryLockSequence = 0
 
 export function generatedIdTime(id: unknown): number | null {
   if (typeof id !== 'string') return null
@@ -116,6 +118,7 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
 }
 
 export class StateKV {
+  private readonly summaryNamespaceLock = `summary-namespace:${++summaryLockSequence}`
   private writerLease?:FileWriterLease
   private writerStorePath?:string
   private uncertainMutation=false
@@ -149,21 +152,29 @@ export class StateKV {
   }
 
   private guardedMutation<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>{if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(Error('WRITER_EPOCH_UNVERIFIED'));return fn()})}
+    const operation=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(Error('WRITER_EPOCH_UNVERIFIED'));return fn()}
+    const serialized=async()=>{try{return await operation()}catch(error){this.markMutationUncertain(scope);throw error}}
+    // Keep queued mutations visible to the durability/shutdown fence. The gate
+    // belongs inside the tracked operation, rather than before performMutation.
+    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>scope==='mem:summaries'?withKeyedLock(this.summaryNamespaceLock,serialized):operation())}
     return this.recoveryWrite ? this.recoveryWrite.read(scope,key,perform) : perform()
+  }
+
+  private markMutationUncertain(scope:string):void {
+    this.uncertainMutation=true
+    this.observationReader?.invalidateCaptureSummary(scope)
+    this.graphFileList?.invalidate(scope)
   }
 
   private performMutation<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
     const finish = this.observationReader?.beginMutation?.(scope)
     try {
       return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
-        this.uncertainMutation=true
-        this.observationReader?.invalidateCaptureSummary(scope)
-        this.graphFileList?.invalidate(scope)
+        this.markMutationUncertain(scope)
         throw error
       }).finally(() => finish?.())
     } catch (error) {
-      this.uncertainMutation=true
+      this.markMutationUncertain(scope)
       finish?.()
       throw error
     }
@@ -198,9 +209,9 @@ export class StateKV {
       try {
         return await this.guardedMutation(scope, key, () => {
           if(scope==='mem:summaries'&&this.summaryCount)return withKeyedLock(`summary-state:${key}`,async()=>{
-            const projection=knownValue&&!knownValue.deleted?this.summaryCount!.prepare(knownValue.value):undefined
+            const projection=knownValue&&!knownValue.deleted?this.summaryCount!.prepare(knownValue.value,{wire:false}):undefined
             const result=await operation(scope)
-            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection)
+            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection,result&&typeof result==='object'&&Object.hasOwn(result,'old_value')&&Object.hasOwn(result,'new_value')?Reflect.get(result,'new_value'):undefined)
             else if(result&&typeof result==='object'&&Object.hasOwn(result,'new_value'))this.summaryCount!.record(key,true,this.summaryCount!.prepare(Reflect.get(result,'new_value')))
             else this.summaryCount!.invalidate()
             return result
@@ -283,15 +294,50 @@ export class StateKV {
     return result
   }
 
+  async getSummaryMetadata(): Promise<Pick<import('../types.js').SessionSummary,'sessionId'|'project'|'createdAt'|'title'>[]> {
+    return withKeyedLock(this.summaryNamespaceLock,async()=>{
+      if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+      if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+      const rows=this.summaryCount?await this.summaryCount.metadata():(await this.list<import('../types.js').SessionSummary>('mem:summaries')).map(({sessionId,project,createdAt,title})=>({sessionId,project,createdAt,title}))
+      if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+      if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+      return rows
+    })
+  }
+
+  async getRecentProjectSummaries(project:string,limit=5): Promise<import('../types.js').SessionSummary[]> {
+    return withKeyedLock(this.summaryNamespaceLock,async()=>{
+      if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+      if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+      const rows=this.summaryCount?await this.summaryCount.recent(project,limit):(await this.list<import('../types.js').SessionSummary>('mem:summaries')).filter(row=>row.project===project).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,limit)
+      if(this.uncertainMutation)throw Error('summary_projection_mutation_uncertain')
+      if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+      return rows
+    })
+  }
+
   async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation' }): Promise<T[]> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
     if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope)
     if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope, { consistency: options?.observationConsistency })
-    const values = await this.sdk.trigger<{ scope: string }, T[]>({
+    const read = () => this.sdk.trigger<{ scope: string }, T[]>({
       function_id: 'state::list',
       payload: { scope },
     })
+    const values = scope==='mem:summaries'&&this.summaryCount
+      ? await withKeyedLock(this.summaryNamespaceLock,async()=>{
+        if(this.uncertainMutation)throw Error('summary_list_mutation_uncertain')
+        if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+        const bytes=await this.summaryCount!.sdkListBytes(SAFE_PAYLOAD_BYTES)
+        if(this.uncertainMutation)throw Error('summary_list_mutation_uncertain')
+        if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+        if(bytes>SAFE_PAYLOAD_BYTES)throw Object.assign(Error('summary_collection_too_large'),{code:'SUMMARY_COLLECTION_TOO_LARGE',status:413,bytes,limitBytes:SAFE_PAYLOAD_BYTES})
+        const rows=await read()
+        if(this.writerLease&&!fileWriterReadCurrent(this.writerLease))throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+        return rows
+      })
+      : await read()
     if (this.backend !== 'redis' || !Array.isArray(values)) return values
     return orderLikeInsertion(values)
   }

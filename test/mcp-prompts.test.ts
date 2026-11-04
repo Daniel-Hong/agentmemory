@@ -164,6 +164,27 @@ describe("MCP Prompts", () => {
     expect(result.body.messages[0].content.text).toContain("ses_1");
   });
 
+  it("session_handoff does not enumerate unrelated summaries", async () => {
+    await kv.set("mem:sessions", "target", {id:"target"});
+    await kv.set("mem:summaries", "target", {sessionId:"target",title:"selected",narrative:"selected only"});
+    kv.list=async()=>{throw Error("unbounded_summary_list_forbidden")};
+    const result:any=await sdk.getFunction("mcp::prompts::get")!(makeReq({name:"session_handoff",arguments:{session_id:"target"}}));
+    expect(result.status_code).toBe(200);
+    expect(result.body.messages[0].content.text).toContain("selected only");
+  });
+  it("missing exact summary retains the existing no-summary response without enumeration", async () => {
+    await kv.set("mem:sessions", "target", {id:"target"});
+    kv.list=async()=>{throw Error("unbounded_summary_list_forbidden")};
+    const result:any=await sdk.getFunction("mcp::prompts::get")!(makeReq({name:"session_handoff",arguments:{session_id:"target"}}));
+    expect(result.status_code).toBe(200);
+    expect(result.body.messages[0].content.text).toContain("No summary available");
+  });
+  it("mismatched stored summary identity fails closed", async () => {
+    await kv.set("mem:sessions", "target", {id:"target"});
+    await kv.set("mem:summaries", "target", {sessionId:"other",title:"wrong identity"});
+    const result:any=await sdk.getFunction("mcp::prompts::get")!(makeReq({name:"session_handoff",arguments:{session_id:"target"}}));
+    expect(result.status_code).toBe(500);
+  });
   it("detect_patterns returns analysis", async () => {
     sdk.overrideTrigger("mem::patterns", async () => ({
       fileCoOccurrence: [{ files: ["a.ts", "b.ts"], count: 5 }],

@@ -7,7 +7,10 @@ export interface NamespaceReadInfo {
 export interface NamespaceReadOptions {
   consistency?:'current-path'|'opened-generation';
   keys?:Set<string>;
-  onEntry?:(key:string,value:unknown)=>unknown;
+  onEntry?:(key:string,value:unknown,serializedBytes?:number)=>unknown;
+  measureValueBytes?:boolean;
+  onValueBytes?:(key:string,bytes:number)=>void;
+  maxEntryBytes?:number;
   chunkSize?:number;
   signal?:AbortSignal;
   onOpen?:(info:{fileBytes:number})=>unknown;

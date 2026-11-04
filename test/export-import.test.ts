@@ -790,3 +790,12 @@ describe("Export collection allowlist", () => {
     expect(result.collectionPagination?.hasMore).toBe(false);
   });
 });
+
+it('replace import verifies summary inventory before deleting any existing record',async()=>{
+ const kv=mockKV(),sdk=mockSdk();await kv.set(KV.sessions,'existing',{...testSession,id:'existing'});
+ const deleted=vi.fn(kv.delete);kv.delete=deleted;
+ Object.assign(kv,{getSummaryMetadata:async()=>{throw Error('summary_inventory_unverified')}});
+ registerExportImportFunction(sdk as never,kv as never);
+ await expect(sdk.trigger({function_id:'mem::import',payload:{strategy:'replace',exportData:{version:'0.9.31',sessions:[],memories:[],summaries:[],observations:{}}}})).rejects.toThrow('summary_inventory_unverified');
+ expect(deleted).not.toHaveBeenCalled();
+});

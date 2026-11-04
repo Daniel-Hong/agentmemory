@@ -21,6 +21,7 @@ it('keeps real SDK transport alive for active projections over a namespace above
   expect(code,'fixture evidence retained at '+root).toBe(0);expect(stopRequested).toBe(false);
   const line=stdout.split('\n').find(l=>l.startsWith('SYNTHETIC_RESULT '));expect(line).toBeDefined();const result=JSON.parse(line!.slice('SYNTHETIC_RESULT '.length));
   expect(result.old).toMatchObject({code:'TIMEOUT',summaryFullLists:1,closeCode:1009});
+  expect(result.guarded).toMatchObject({code:'SUMMARY_COLLECTION_TOO_LARGE',summaryFullLists:0,closes:0,writeCompleted:true,connectionState:'connected'});
   expect(result.sourceBytes).toBeGreaterThan(64*1024*1024);
   expect(result.next).toMatchObject({semanticTotal:25,providerCalls:1,evictedStaleSessions:0,summaryFullLists:0,closes:0,connectionState:'connected',probeCompleted:true});
   expect(result.cleanup).toMatchObject({clientsStopped:true,serversClosed:true,portsReleased:true,syntheticStateRemoved:true,errors:[]});

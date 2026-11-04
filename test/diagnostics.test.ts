@@ -866,3 +866,14 @@ describe("Diagnostics Functions", () => {
     });
   });
 });
+
+it("summary diagnosis uses complete metadata without fetching all summary bodies",async()=>{
+ const functions=new Map<string,Function>();
+ const sdk={registerFunction:(id:any,fn:Function)=>functions.set(typeof id==='string'?id:id.id,fn),registerTrigger:()=>{}};
+ const metadata=vi.fn(async()=>[{sessionId:'valid',title:'ok'},{sessionId:'broken',title:null}]);
+ const kv={getSummaryMetadata:metadata,list:async()=>{throw Error('bulk_summary_sdk_forbidden')}};
+ registerDiagnosticsFunction(sdk as never,kv as never);
+ const result:any=await functions.get('mem::diagnose')!({categories:['summaries']});
+ expect(metadata).toHaveBeenCalledTimes(1);
+ expect(result.checks.some((x:any)=>x.name==='summary-missing-title:broken')).toBe(true);
+});
