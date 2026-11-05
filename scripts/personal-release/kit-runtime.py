@@ -260,6 +260,9 @@ class Runtime:
         require({p.name for p in self.root.iterdir()} == set(self.kit['files']) | {'kit.json'}, 'KIT_FILE_SET_CHANGED')
         self.release = read_json(self.root / 'release.json')
         self.baseline = read_json(self.root / 'baseline.json')
+        self.service_provider_selection = self.release.get('serviceProviderSelection')
+        if 'serviceProviderSelection' in self.release:
+            require(isinstance(self.service_provider_selection, dict) and self.service_provider_selection == {'llm': 'openai'}, 'UNSUPPORTED_SERVICE_PROVIDER_SELECTION')
         require(self.release['sourceCommit'] == self.kit['sourceCommit'] and self.release['packageVersion'] == self.kit['version'] and sha(self.root / 'package.tgz') == self.kit['packageSha256'], 'CANDIDATE_IDENTITY_MISMATCH')
         require(self.release['artifactHashes'] == self.release['verificationFiles'], 'ARTIFACT_TABLE_MISMATCH')
         self.sdk_native_compat = False
@@ -350,7 +353,8 @@ class Runtime:
         native = ' --native-compat' if self.sdk_native_compat else ''
         native_stop = native + ' --data-dir ' + str(self.paths['data']) if self.sdk_native_compat else ''
         native_env = ('Environment="AGENTMEMORY_NATIVE_III_BIN=' + str(self.paths['engine']) + '"\nEnvironment="AGENTMEMORY_III_CONFIG=' + str(self.paths['data'] / 'iii-config.yaml') + '"\n') if self.sdk_native_compat else ''
-        return ('[Service]\nExecStart=\nExecStart=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' --data-dir ' + str(self.paths['data']) + native + '\nExecStop=\nExecStop=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' stop' + native_stop + '\nExecStartPre=\nExecStartPre=/usr/bin/python3 -I -B ' + str(self.public / 'kit-runtime.py') + ' --guard\nEnvironment="AGENTMEMORY_FEEDBACK_DIR=' + str(self.paths['feedback']) + '"\nEnvironment="AGENTMEMORY_RECEIPT_DIR=' + str(self.receipt.parent) + '"\n' + native_env).encode()
+        provider_env = 'Environment=\"AGENTMEMORY_LLM_PROVIDER=openai\"\n' if self.service_provider_selection else ''
+        return ('[Service]\nExecStart=\nExecStart=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' --data-dir ' + str(self.paths['data']) + native + '\nExecStop=\nExecStop=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' stop' + native_stop + '\nExecStartPre=\nExecStartPre=/usr/bin/python3 -I -B ' + str(self.public / 'kit-runtime.py') + ' --guard\nEnvironment="AGENTMEMORY_FEEDBACK_DIR=' + str(self.paths['feedback']) + '"\nEnvironment="AGENTMEMORY_RECEIPT_DIR=' + str(self.receipt.parent) + '"\n' + native_env + provider_env).encode()
 
     def post_files(self):
         result = dict(self.baseline['protectedFiles'])
@@ -1009,7 +1013,10 @@ class Runtime:
                 require(health.get('version') == self.kit['version'] and health.get('status') in ('healthy', 'degraded') and health.get('storageDurability', {}).get('mutationFailures') == 0, 'NEW_RUNTIME_NOT_READY')
                 require(control.get('status') == 'paused' and control.get('pausedRequested') is True and control.get('activeOperations') == 0 and control.get('error') is None, 'PAUSE_NOT_PRESERVED')
                 require(isinstance(self.api('sessions?includeSummary=false').get('sessions'), list), 'SESSION_API_FAILED')
-                require(isinstance(self.api('config/flags').get('flags'), list), 'FLAGS_API_FAILED')
+                flags = self.api('config/flags')
+                require(isinstance(flags.get('flags'), list), 'FLAGS_API_FAILED')
+                if self.service_provider_selection:
+                    require(flags.get('provider') == 'llm', 'SELECTED_LLM_PROVIDER_NOT_READY')
                 require(self.api('feedback/settings').get('scheduleEnabled') is False, 'SCHEDULE_MUST_REMAIN_OFF')
                 break
             except Exception:

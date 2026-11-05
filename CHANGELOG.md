@@ -5,11 +5,13 @@
 ## [0.9.32-daniel.55] — 2026-11-04
 ### Prepared integration (not deployed)
 
+- Prepare an optional fixed OpenAI selection in the existing managed service drop-in, preserving `.env` and the old key/model/endpoint. Reject other values and require an active configured LLM before acceptance. Actual settings/trust activation remains separately gated.
+
 - Integrate official upstream through `a78401f3` (0.9.32) with the personal .54 SDK read-safety fix and .53 full-six native capture implementation. Preserve explicit provider opt-in, source generation/uncertainty checks, native engine identity and certified embedding receipt fingerprints.
 - Retain old index generations when storage completion is SDK-only; do not interpret a replacement or successful SDK call as a disk-durability receipt.
 - Refuse redirects for native context/session side requests and shared capture receipt/restore routes. Preserve source-first handling and unknown-send evidence; installed global compatibility scripts are a separate unchanged scope.
 - Keep normal release archives verified in a single sequential pass and preserve the operating environment file in place without copying secret contents to a backup. Accept only fixed identity-bound personal 0.9.32 candidates; malformed versions and mismatched candidate identities remain refused.
-- Final ordinary regression:6,300 passed,13 conditional skips,0 failures; release-helper tests393 passed. Fresh large SDK execution remains resource-blocked under its unchanged12GiB entry requirement. Existing30 TypeScript diagnostics match the .54 baseline. No deployment, hook activation, provider setting or remote publication is implied. See docs/customizations/UPSTREAM-HOOKS-55.md.
+- Final ordinary regression:6,300 passed,13 conditional skips,0 failures; release-helper tests397 passed. The fresh SDK boundary passed on the byte-identical product under its separately approved11GiB bounded profile; original12GiB execution is not claimed. Existing30 TypeScript diagnostics match the .54 baseline. No deployment, hook activation, provider setting or remote publication is implied. See docs/customizations/UPSTREAM-HOOKS-55.md.
 
 ## [0.9.31-daniel.54] — 2026-11-04
 ### Fixed
