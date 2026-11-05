@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Capture status read admission
+
+- Admit one inbox status calculation per controller and keep admission until all started history checks settle, including sibling read failures. Overlapping callers receive an explicitly unchecked inbox instead of duplicating SDK reads.
+- Preserve the unavailable status notice for an unchecked inbox. Keep physical per-key resolution checks and the four-read limit; full-count latency and outer timeout cancellation remain separate limitations.
+
 ### Deployment verification and code preservation
 
 - Keep each CLI safety check bounded at 15 seconds while allowing 60 seconds for its nine-case fixture. Preserve the blocked-read 15ms deadline and give the subsequent successful readback its own default budget. Production deadlines are unchanged.

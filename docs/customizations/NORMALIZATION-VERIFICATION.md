@@ -20,8 +20,14 @@ Compatibility generation can add JavaScript files after the SDK manifest was gen
 
 ## Remaining diagnostics and limits
 
-The full capture status calculation reads the inbox and then checks SDK completion history per record, four calls at a time. The outer status reporter stops waiting after five seconds but does not cancel that calculation. A synthetic479-record/45ms-history-read experiment reproduced timeout survival and duplicate work from overlapping callers. The assumed latency is not a measured operating latency or a production contribution estimate. This diagnostic can remain unavailable while actual capture succeeds; it must not be shown as an empty queue or as proof of loss. A follow-up should bound or share this read-only work while preserving fresh evidence and error semantics.
+The deployed full capture status calculation reads the inbox and then checks SDK completion history per record, four calls at a time. The outer status reporter stops waiting after five seconds but does not cancel that calculation. A synthetic479-record/45ms-history-read experiment reproduced timeout survival and duplicate work from overlapping callers. The assumed latency is not a measured operating latency or a production contribution estimate. This diagnostic can remain unavailable while actual capture succeeds; it must not be shown as an empty queue or as proof of loss. A follow-up should bound or share this read-only work while preserving fresh evidence and error semantics.
 
 An oversized legacy audit log is intentionally retained outside monthly queries. Historical spool reconciliation gaps and flush uncertainties remain explicit. No deletion, bulk replay, budget reset or protection weakening is used to clear notices. A complete global integrity scan and automatic recovery of every large or damaged payload are not claimed.
 
 Publication excludes host configuration, runtime data, backups, deployment archives and live proof records. Unrelated modifications in another checkout remain untouched.
+
+## Prepared status admission correction
+
+The source-only follow-up admits one inbox calculation per controller and holds admission until all already-started reads settle, even if a sibling fails. An overlapping caller receives `inbox:null`; aggregate status retains the unavailable notice. No result cache, retry, deadline increase, write or proof relaxation is introduced. The operating package is unchanged until a separately verified deployment.
+
+An attempted values-only history batch was rejected in review: embedded record keys cannot establish the physical KV key that the existing completion proof uses. Per-key checks and four-read concurrency therefore remain. The 479-record synthetic45ms-read scenario still exceeds the outer five-second wait, but overlapping requests no longer multiply its reads. This assumption is not an operating latency measurement. A genuinely keyed batch or cancellable/paged status contract remains a separate design task.

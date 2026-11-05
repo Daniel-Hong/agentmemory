@@ -477,7 +477,7 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     });
   }
 
-  if (input.capture === null) {
+  if (input.capture === null || input.capture?.inbox === null) {
     problems.push({
       level: "info",
       code: "capture-check-unavailable",

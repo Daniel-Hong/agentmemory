@@ -697,15 +697,20 @@ export function registerCaptureFunctions(
     return results;
   }
 
+  let inboxStatusReading=false;
   async function status(): Promise<CaptureStatus> {
     await automaticRecovery.initialize().catch(()=>{});
     let inbox: CaptureStatus["inbox"] = null;
+    if(!inboxStatusReading){
+    inboxStatusReading=true;
     try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
       refreshInbox(records);
       let sdkCompleted=0;
       if(sdkCompletion)for(let at=0;at<records.length;at+=4){
-        sdkCompleted+=(await Promise.all(records.slice(at,at+4).map(r=>sdkRecordCompleted(r)))).filter(Boolean).length;
+        const checked=await Promise.allSettled(records.slice(at,at+4).map(r=>sdkRecordCompleted(r)));
+        if(checked.some(r=>r.status==='rejected'))throw Error('CAPTURE_STATUS_HISTORY_UNAVAILABLE');
+        sdkCompleted+=checked.filter(r=>r.status==='fulfilled'&&r.value).length;
       }
       const live = records.filter((r) => r.status !== "dead" && r.storageCompletion !== "sdk");
       const next = live
@@ -724,7 +729,8 @@ export function registerCaptureFunctions(
         nextAttemptAt: next ?? null,
         lastError: lastFailed?.lastError ?? null,
       };
-    } catch {}
+    } catch {} finally {inboxStatusReading=false;}
+    }
     const seen = new Set<string>();
     const spool: SpoolSummary[] = [];
     for (const target of spoolTargets) {

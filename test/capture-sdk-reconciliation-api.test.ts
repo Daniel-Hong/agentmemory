@@ -52,3 +52,41 @@ it('bounds SDK archive status history reads to four while preserving validated c
  expect(active).toBe(0);
  expect(peak).toBeLessThanOrEqual(4);
 });
+
+it('keeps timed-out or overlapping inbox calculations single while returning unavailable rather than stale counts',async()=>{
+ const f=await fixture();await f.call();
+ const list=f.kv.list.bind(f.kv);let release!:()=>void,entered!:()=>void,inboxReads=0;
+ const began=new Promise<void>(resolve=>entered=resolve),blocked=new Promise<void>(resolve=>release=resolve);
+ f.kv.list=async(scope)=>{if(scope===KV.captureInbox){inboxReads++;entered();await blocked;}return list(scope)};
+ const first=f.control.status();await began;
+ expect(await Promise.race([first.then(()=>false),new Promise(resolve=>setTimeout(()=>resolve('caller_timed_out'),5))])).toBe('caller_timed_out');
+ const overlapping=await f.control.status();
+ expect(overlapping.inbox).toBeNull();expect(inboxReads).toBe(1);
+ release();const result=await first;expect(result.inbox?.sdkCompleted).toBe(1);
+ result.inbox!.sdkCompleted=999;
+ const history=await f.kv.get<any>(KV.captureReview,key);history.sdkResolution.version=99;await f.kv.set(KV.captureReview,key,history);
+ expect((await f.control.status()).inbox?.sdkCompleted).toBe(0);expect(inboxReads).toBe(2);
+});
+it('retains physical history-key verification rather than counting a mis-keyed resolution as complete',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),history=await f.kv.get<any>(KV.captureReview,key);
+ const {sdkResolutionId,sdkResolutionState,...ordinary}=rec;await f.kv.set(KV.captureInbox,key,ordinary);
+ await f.kv.set(KV.captureReview,key,{...history,key:'cap_'+'f'.repeat(40)});
+ expect((await f.control.status()).inbox?.sdkCompleted).toBe(0);
+});
+it('releases the status admission after the underlying read fails so a fresh retry can succeed',async()=>{
+ const f=await fixture();await f.call();const list=f.kv.list.bind(f.kv);let fail=true;
+ f.kv.list=async scope=>{if(scope===KV.captureInbox&&fail)throw Error('synthetic_read_failure');return list(scope)};
+ expect((await f.control.status()).inbox).toBeNull();fail=false;expect((await f.control.status()).inbox?.sdkCompleted).toBe(1);
+});
+
+it('holds admission until every already-started history read settles after a sibling read fails',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),other='cap_'+'e'.repeat(40);
+ await f.kv.set(KV.captureInbox,other,{...rec,key:other});
+ const get=f.kv.get.bind(f.kv),list=f.kv.list.bind(f.kv);let release!:()=>void,entered!:()=>void,lists=0;
+ const began=new Promise<void>(resolve=>entered=resolve),blocked=new Promise<void>(resolve=>release=resolve);
+ f.kv.list=async scope=>{if(scope===KV.captureInbox)lists++;return list(scope)};
+ f.kv.get=async(scope,k)=>{if(scope!==KV.captureReview)return get(scope,k);if(k===key)throw Error('synthetic_sibling_failure');entered();await blocked;return get(scope,k)};
+ const first=f.control.status();await began;await new Promise(resolve=>setTimeout(resolve,0));
+ const second=f.control.status();await new Promise(resolve=>setTimeout(resolve,0));
+ try{expect(lists).toBe(1);}finally{release();await Promise.all([first,second]);}
+});

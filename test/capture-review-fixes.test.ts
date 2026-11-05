@@ -180,6 +180,13 @@ function capture(spool: ReturnType<typeof spoolSummaryWith>[], dead = 0): Captur
 }
 
 describe("capture status", () => {
+  it("keeps the unavailable notice when only the inbox calculation is busy or failed", () => {
+    const current=capture([]);current.inbox=null;
+    const report=evaluateStatus(statusInputs(current));
+    expect(report.problems.find(p=>p.code==='capture-check-unavailable')?.level).toBe('info');
+    expect(report.status).not.toBe('ok');
+  });
+
   it("says capture was not checked when the capture status is unavailable", () => {
     const report = evaluateStatus(statusInputs(null));
     const p = report.problems.find((x) => x.code === "capture-check-unavailable");
