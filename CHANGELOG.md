@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Deployment verification and code preservation
+
+- Keep each CLI safety check bounded at 15 seconds while allowing 60 seconds for its nine-case fixture. Preserve the blocked-read 15ms deadline and give the subsequent successful readback its own default budget. Production deadlines are unchanged.
+
+- Refresh an existing server SDK inventory after Codex compatibility generation; reject audit failures instead of leaving an apparently complete stale manifest. Regression reproduces the missing generated runtime entries. This is source-only packaging tooling; the operating .55 package was already audited after generation.
+- Preserve the exact modified iii0.22.1 KV/save-loop patch and synthetic successor examples for writer exclusion, immutable epoch binding, bounded admission observation and enrollment-added review evidence. Host selectors and operational records are excluded.
+- Document representative native HTTP/SDK/storage verification and the remaining full capture-status scan/timeout limitation without claiming disk flush or historical unknown resolution.
+
 ## [0.9.32-daniel.55] — 2026-11-04
 ### Prepared integration (not deployed)
 

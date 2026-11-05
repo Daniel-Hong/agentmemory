@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { auditServerSdkBundle } from "./audit-server-sdk-bundle.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sha256 = value => createHash("sha256").update(value).digest("hex");
@@ -27,6 +28,11 @@ export async function buildCodexCompat(root = repoRoot) {
     await writeFile(join(destination, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
     outputs.push(manifest);
   }
+  const sdkManifest = join(root, "dist/server-sdk-bundle.json");
+  let refreshSdkManifest = true;
+  try { await readFile(sdkManifest); }
+  catch (error) { if (error.code === "ENOENT") refreshSdkManifest = false; else throw error; }
+  if (refreshSdkManifest) await writeFile(sdkManifest, JSON.stringify(await auditServerSdkBundle(root), null, 2) + "\n");
   return outputs;
 }
 

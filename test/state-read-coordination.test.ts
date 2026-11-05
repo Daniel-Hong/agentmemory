@@ -2,8 +2,8 @@ import{afterEach,expect,it}from'vitest';import{mkdtemp,writeFile,rm}from'node:fs
 const dirs:string[]=[];afterEach(async()=>{for(const d of dirs.splice(0))await rm(d,{recursive:true,force:true});});const turn=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
 async function fixture(timeoutMs=15000){const dir=await mkdtemp(join(tmpdir(),'am-coord-fence-'));dirs.push(dir);await writeFile(join(dir,'scope.bin'),'{"key":1}');const fence=createStateDurabilityFence({storePath:dir,timeoutMs,pollIntervalMs:1});return{fence,kv:{get:async()=>1}};}
 it('expires physical admission in the original deadline after capture without forgetting dirty keys or mutating failure budgets',async()=>{
- const {fence,kv}=await fixture(15);expect(fence.withBulkRead).toBeTypeOf('function');let release:any,gets=0;const bulk=fence.withBulkRead(()=>new Promise(resolve=>release=resolve));await turn();await fence.mutate('scope','key',async()=>{});
- const pending=fence.waitForKeys({get:async()=>{gets++;return kv.get();}},[{scope:'scope',key:'key'}]);
+ const {fence,kv}=await fixture();expect(fence.withBulkRead).toBeTypeOf('function');let release:any,gets=0;const bulk=fence.withBulkRead(()=>new Promise(resolve=>release=resolve));await turn();await fence.mutate('scope','key',async()=>{});
+ const pending=fence.waitForKeys({get:async()=>{gets++;return kv.get();}},[{scope:'scope',key:'key'}],{deadline:Date.now()+15});
  try{await expect(pending).rejects.toMatchObject({code:'STATE_DURABILITY_TIMEOUT'});expect(gets).toBe(1);expect(fence.keys()).toHaveLength(1);expect(fence.snapshot().mutationFailures).toBe(0);expect(fence.snapshot().measurements.totals).toMatchObject({completed:1,failed:1,failedStages:{readback:1}});expect(fence.snapshot().readSharing.startedReads).toBe(0);}
  finally{release();await bulk;await fence.drain();}
  await expect(fence.waitForKeys(kv,[{scope:'scope',key:'key'}])).resolves.toMatchObject({synced:true});
