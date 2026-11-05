@@ -477,6 +477,9 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     });
   }
 
+  const proofPage=input.capture?.inbox?.sdkProofPage;
+  if(proofPage&&(proofPage.offset!==0||proofPage.checked!==proofPage.total))problems.push({level:'info',code:'capture-sdk-proof-partial',message:`SDK capture originals are retained; this page checked ${proofPage.checked} of ${proofPage.total} records. Whole-inbox completion was not verified.`,fix:'Use the bounded capture proof pages with the returned generation. Restart from the first page if sources change. SDK response evidence is not crash-durable flush proof.'});
+
   if (input.capture === null || input.capture?.inbox === null) {
     problems.push({
       level: "info",

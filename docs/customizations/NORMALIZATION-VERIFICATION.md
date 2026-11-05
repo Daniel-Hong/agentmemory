@@ -31,3 +31,7 @@ Publication excludes host configuration, runtime data, backups, deployment archi
 The source-only follow-up admits one inbox calculation per controller and holds admission until all already-started reads settle, even if a sibling fails. An overlapping caller receives `inbox:null`; aggregate status retains the unavailable notice. No result cache, retry, deadline increase, write or proof relaxation is introduced. The operating package is unchanged until a separately verified deployment.
 
 An attempted values-only history batch was rejected in review: embedded record keys cannot establish the physical KV key that the existing completion proof uses. Per-key checks and four-read concurrency therefore remain. The 479-record synthetic45ms-read scenario still exceeds the outer five-second wait, but overlapping requests no longer multiply its reads. This assumption is not an operating latency measurement. A genuinely keyed batch or cancellable/paged status contract remains a separate design task.
+
+## Prepared bounded proof pages
+
+Routine status and authenticated capture queries explicitly request at most32 physical-key SDK proof checks. The complete controller query remains available and unchanged by default. The existing capture HTTP route accepts `proofOffset` and `proofGeneration`; no new endpoint, credential or hook permission is introduced. See `CAPTURE-STATUS-PROOF-PAGES.md` for the precise read-only contract. The active operating .55 package has not been replaced by this source change.

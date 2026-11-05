@@ -104,6 +104,8 @@ export interface CaptureProgress {
   stalled: boolean;
   stallAfterMs: number;
 }
+export interface CaptureSdkProofQuery {offset:number;limit:number;generation?:string}
+
 export interface CaptureStatus {
   automaticRecovery?: ReturnType<ReturnType<typeof createCaptureAutoRecovery>["snapshot"]>;
   legacyOutbox?: OutboxMetadata;
@@ -112,6 +114,8 @@ export interface CaptureStatus {
   inbox: {
     pending: number;
     sdkCompleted?: number;
+    sdkRetained?:number;
+    sdkProofPage?:{offset:number;checked:number;completed:number;total:number;nextOffset:number|null;generation:string;checkedAt:string};
     sdkRestorePending?:number;
     sdkResolutionPending?:number;
     retrying: number;
@@ -222,7 +226,7 @@ export interface CaptureController {
   sweep(): Promise<{ processed: number; recovered: number; deadLettered: number }>;
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
-  status(): Promise<CaptureStatus>;
+  status(options?:{sdkProofPage?:CaptureSdkProofQuery}): Promise<CaptureStatus>;
   setAutomaticRecoveryEnabled(value:boolean):ReturnType<ReturnType<typeof createCaptureAutoRecovery>["setEnabled"]>;
   progress(): CaptureProgress;
   durability(): SentMark | null;
@@ -698,7 +702,9 @@ export function registerCaptureFunctions(
   }
 
   let inboxStatusReading=false;
-  async function status(): Promise<CaptureStatus> {
+  async function status(options:{sdkProofPage?:CaptureSdkProofQuery}={}): Promise<CaptureStatus> {
+    const page=options.sdkProofPage;
+    if(page&&(!Number.isSafeInteger(page.offset)||page.offset<0||!Number.isSafeInteger(page.limit)||page.limit<1||page.limit>32||page.generation!==undefined&&!/^[0-9a-f]{64}$/.test(page.generation)||page.offset>0&&page.generation===undefined))throw Object.assign(Error('INVALID_CAPTURE_PROOF_PAGE'),{code:'INVALID_CAPTURE_PROOF_PAGE'});
     await automaticRecovery.initialize().catch(()=>{});
     let inbox: CaptureStatus["inbox"] = null;
     if(!inboxStatusReading){
@@ -707,11 +713,25 @@ export function registerCaptureFunctions(
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
       refreshInbox(records);
       let sdkCompleted=0;
-      if(sdkCompletion)for(let at=0;at<records.length;at+=4){
-        const checked=await Promise.allSettled(records.slice(at,at+4).map(r=>sdkRecordCompleted(r)));
+      let sdkProofPage:NonNullable<CaptureStatus['inbox']>['sdkProofPage'];
+      let sdkRetained:number|undefined;
+      let selected=records;
+      if(sdkCompletion&&page){
+        const ordered=[...records].sort((a,b)=>a.key.localeCompare(b.key));
+        const hash=createHash('sha256');for(const record of ordered)hash.update(JSON.stringify(record)+'\n');
+        const generation=hash.digest('hex');
+        if(page.generation!==undefined&&page.generation!==generation)throw Object.assign(Error('CAPTURE_PROOF_GENERATION_CHANGED'),{code:'CAPTURE_PROOF_GENERATION_CHANGED'});
+        const archived=ordered.filter(r=>r.storageCompletion==='sdk');sdkRetained=archived.length;
+        if(page.offset>archived.length)throw Object.assign(Error('INVALID_CAPTURE_PROOF_PAGE'),{code:'INVALID_CAPTURE_PROOF_PAGE'});
+        selected=archived.slice(page.offset,page.offset+page.limit);
+        sdkProofPage={offset:page.offset,checked:selected.length,completed:0,total:archived.length,nextOffset:page.offset+selected.length<archived.length?page.offset+selected.length:null,generation,checkedAt:new Date().toISOString()};
+      }
+      if(sdkCompletion)for(let at=0;at<selected.length;at+=4){
+        const checked=await Promise.allSettled(selected.slice(at,at+4).map(r=>sdkRecordCompleted(r)));
         if(checked.some(r=>r.status==='rejected'))throw Error('CAPTURE_STATUS_HISTORY_UNAVAILABLE');
         sdkCompleted+=checked.filter(r=>r.status==='fulfilled'&&r.value).length;
       }
+      if(sdkProofPage){sdkProofPage.completed=sdkCompleted;sdkProofPage.checkedAt=new Date().toISOString();}
       const live = records.filter((r) => r.status !== "dead" && r.storageCompletion !== "sdk");
       const next = live
         .map((r) => r.nextAttemptAt)
@@ -722,14 +742,14 @@ export function registerCaptureFunctions(
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       inbox = {
         pending: records.filter((r) => r.status === "pending" && r.storageCompletion !== "sdk").length,
-        ...(sdkCompletion?{sdkCompleted,sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length,sdkResolutionPending:records.filter(r=>r.sdkResolutionState==='pending').length}:{}),
+        ...(sdkCompletion?{...(!sdkProofPage||sdkProofPage.offset===0&&sdkProofPage.checked===sdkProofPage.total?{sdkCompleted}:{}),...(sdkProofPage?{sdkRetained,sdkProofPage}:{}),sdkRestorePending:records.filter(r=>r.sdkRestoreState==='pending').length,sdkResolutionPending:records.filter(r=>r.sdkResolutionState==='pending').length}:{}),
         retrying: records.filter((r) => r.status === "retrying").length,
         dead: records.filter((r) => r.status === "dead").length,
         oldestAcceptedAt: live.map((r) => r.acceptedAt).sort()[0] ?? null,
         nextAttemptAt: next ?? null,
         lastError: lastFailed?.lastError ?? null,
       };
-    } catch {} finally {inboxStatusReading=false;}
+    } catch(error) {if(['CAPTURE_PROOF_GENERATION_CHANGED','INVALID_CAPTURE_PROOF_PAGE'].includes((error as {code?:string}).code??''))throw error;} finally {inboxStatusReading=false;}
     }
     const seen = new Set<string>();
     const spool: SpoolSummary[] = [];

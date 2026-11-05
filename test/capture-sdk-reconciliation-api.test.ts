@@ -90,3 +90,44 @@ it('holds admission until every already-started history read settles after a sib
  const second=f.control.status();await new Promise(resolve=>setTimeout(resolve,0));
  try{expect(lists).toBe(1);}finally{release();await Promise.all([first,second]);}
 });
+
+it('bounds an explicit SDK proof page at 32 physical-key reads without presenting a partial count as total completion',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
+ for(let i=1;i<96;i++){const k='cap_'+String(i).padStart(40,'0');await f.kv.set(KV.captureInbox,k,{...ordinary,key:k});}
+ const get=f.kv.get.bind(f.kv);let reads=0;f.kv.get=async(s,k)=>{if(s===KV.captureReview)reads++;return get(s,k)};
+ const result=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never);
+ expect(reads).toBe(32);expect(result.inbox?.sdkCompleted).toBeUndefined();expect(result.inbox).toMatchObject({sdkRetained:96,sdkProofPage:{offset:0,checked:32,total:96,completed:32,nextOffset:32}});
+ expect(result.inbox?.sdkProofPage?.generation).toMatch(/^[0-9a-f]{64}$/);
+ const page=await f.control.status({sdkProofPage:{offset:32,limit:32,generation:result.inbox!.sdkProofPage!.generation}} as never);
+ expect(reads).toBe(64);expect(page.inbox?.sdkCompleted).toBeUndefined();expect(page.inbox?.sdkProofPage?.offset).toBe(32);
+});
+it('rejects proof page continuation after source generation changes and never counts old proof as current',async()=>{
+ const f=await fixture();await f.call();const first=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never);
+ const rec=await f.kv.get<any>(KV.captureInbox,key);await f.kv.set(KV.captureInbox,key,{...rec,payload:{...rec.payload,data:{changed:'synthetic'}}});
+ await expect(f.control.status({sdkProofPage:{offset:0,limit:32,generation:first.inbox!.sdkProofPage!.generation}} as never)).rejects.toMatchObject({code:'CAPTURE_PROOF_GENERATION_CHANGED'});
+});
+it.each([{offset:-1,limit:32},{offset:0,limit:33},{offset:32,limit:32},{offset:0,limit:0}])('rejects invalid proof page %j before reading',async page=>{
+ const f=await fixture();const list=vi.spyOn(f.kv,'list');await expect(f.control.status({sdkProofPage:page} as never)).rejects.toMatchObject({code:'INVALID_CAPTURE_PROOF_PAGE'});expect(list).not.toHaveBeenCalled();
+});
+
+it('uses the bounded proof page in the authenticated capture HTTP path and rejects stale continuations',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
+ for(let i=1;i<40;i++){const k='cap_'+String(i).padStart(40,'0');await f.kv.set(KV.captureInbox,k,{...ordinary,key:k});}
+ const get=f.kv.get.bind(f.kv);let reads=0;f.kv.get=async(s,k)=>{if(s===KV.captureReview)reads++;return get(s,k)};
+ const call=f.sdk.fns.get('api::capture')!;
+ expect((await call({headers:{},query_params:{}}) as any).status_code).toBe(401);expect(reads).toBe(0);
+ const first=await call({headers:f.headers,query_params:{}}) as any;
+ expect(first.status_code).toBe(200);expect(first.body.capture.inbox.sdkProofPage.checked).toBe(32);expect(reads).toBe(32);
+ expect((await call({headers:f.headers,query_params:{proofOffset:'-1'}}) as any).status_code).toBe(400);
+ expect((await call({headers:f.headers,query_params:{proofOffset:'32',proofGeneration:'a'.repeat(64)}}) as any).status_code).toBe(409);
+});
+
+it('keeps next offsets usable after more than ten thousand retained SDK originals',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
+ const records=Array.from({length:10033},(_,i)=>({...ordinary,key:'cap_'+i.toString(16).padStart(40,'0')})),list=f.kv.list.bind(f.kv);
+ f.kv.list=async scope=>scope===KV.captureInbox?records:list(scope);
+ const first=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never),generation=first.inbox!.sdkProofPage!.generation;
+ const near=await f.control.status({sdkProofPage:{offset:9984,limit:32,generation}} as never);expect(near.inbox?.sdkProofPage?.nextOffset).toBe(10016);
+ const last=await f.control.status({sdkProofPage:{offset:10016,limit:32,generation}} as never);expect(last.inbox?.sdkProofPage).toMatchObject({checked:17,nextOffset:null});
+ const response=await f.sdk.fns.get('api::capture')!({headers:f.headers,query_params:{proofOffset:'10016',proofGeneration:generation}}) as any;expect(response.status_code).toBe(200);expect(response.body.capture.inbox.sdkProofPage.checked).toBe(17);
+});

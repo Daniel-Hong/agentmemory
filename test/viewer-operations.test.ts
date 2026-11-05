@@ -447,3 +447,13 @@ describe("health display refresh explanation", () => {
     expect(stale(true,'live',1000)).toBe('');
   });
 });
+
+it('shows retained SDK sources and partial evidence separately rather than a total completion claim',()=>{
+ const c=fixtures({store:{report:{capture:{inbox:{pending:0,retrying:0,dead:0,sdkRetained:479,sdkProofPage:{offset:0,checked:32,completed:32,total:479}}}}}});
+ const html=c.operationsPanelHtml();expect(html).toContain('원본 보존 479건');expect(html).toContain('검증 32건 / 479건');expect(html).toContain('전체 완료 미확정');expect(html).not.toContain('SDK 저장 완료 · 원본 보존 479건');
+});
+
+it('does not portray a skipped proof page as cumulatively checked evidence',()=>{
+ const c=fixtures({store:{report:{capture:{inbox:{pending:0,retrying:0,dead:0,sdkRetained:479,sdkProofPage:{offset:64,checked:32,completed:30,total:479}}}}}});
+ const html=c.operationsPanelHtml();expect(html).toContain('현재 페이지 65–96');expect(html).toContain('검증 32건');expect(html).toContain('완료 30건');expect(html).not.toContain('96/479 확인');
+});

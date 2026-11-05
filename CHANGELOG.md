@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Bounded capture proof pages
+
+- Limit routine authenticated capture/status checks to 32 physical-key SDK proofs per page. Keep whole retained-source counts separate and omit whole-inbox completion counts for partial pages.
+- Reject continuation when original capture data changes, preserve unchanged bearer authentication and expose page-specific evidence without claiming atomic history across pages or crash-durable flush.
+- Keep the original complete controller query available; one whole inbox metadata read and source-generation hash remain size-dependent. Prepared source changes are not an operating deployment.
+
 ### Capture status read admission
 
 - Admit one inbox status calculation per controller and keep admission until all started history checks settle, including sibling read failures. Overlapping callers receive an explicitly unchecked inbox instead of duplicating SDK reads.

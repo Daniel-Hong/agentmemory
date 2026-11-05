@@ -180,6 +180,13 @@ function capture(spool: ReturnType<typeof spoolSummaryWith>[], dead = 0): Captur
 }
 
 describe("capture status", () => {
+  it("labels a partial SDK proof page without calling the full retained set completed", () => {
+    const current=capture([]);Object.assign(current.inbox!,{sdkRetained:479,sdkProofPage:{offset:0,checked:32,completed:32,total:479,nextOffset:32,generation:'a'.repeat(64),checkedAt:'2026-11-05T00:00:00Z'}});
+    const report=evaluateStatus(statusInputs(current));
+    expect(report.problems.find(p=>p.code==='capture-sdk-proof-partial')?.level).toBe('info');
+    expect(report.problems.find(p=>p.code==='capture-check-unavailable')).toBeUndefined();
+  });
+
   it("keeps the unavailable notice when only the inbox calculation is busy or failed", () => {
     const current=capture([]);current.inbox=null;
     const report=evaluateStatus(statusInputs(current));

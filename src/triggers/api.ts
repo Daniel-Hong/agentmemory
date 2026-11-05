@@ -420,7 +420,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         STATUS_CHECK_TIMEOUT_MS,
       ),
       probeStateStore(kv),
-      valueWithin(getCaptureController()?.status() ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
+      valueWithin(getCaptureController()?.status({sdkProofPage:{offset:0,limit:32}}) ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS),
     ]);
     const observationsIndexed = [...idx.observationCountsBySession().values()].reduce((a, n) => a + n, 0);
@@ -847,6 +847,9 @@ export function registerApiTriggers(
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
       const q=req.query_params??{};
+      const proofOffset=q["proofOffset"],proofGeneration=q["proofGeneration"];
+      if(proofOffset!==undefined&&(typeof proofOffset!=='string'||!/^(0|[1-9][0-9]{0,15})$/.test(proofOffset)||!Number.isSafeInteger(Number(proofOffset)))||proofGeneration!==undefined&&(typeof proofGeneration!=='string'||!/^[0-9a-f]{64}$/.test(proofGeneration))||Number(proofOffset)>0&&proofGeneration===undefined)return {status_code:400,body:{error:'INVALID_CAPTURE_PROOF_PAGE'}};
+      const proofPage={offset:Number(proofOffset)||0,limit:32,...(typeof proofGeneration==='string'?{generation:proofGeneration}:{})};
       const status=q["status"];
       const review=q["review"]==="true";
       const key=asNonEmptyString(q["key"]);
@@ -857,7 +860,7 @@ export function registerApiTriggers(
       if(review && (key&&!/^cap_[a-f0-9]{40}$/.test(key)||eventId&&!isValidEventId(eventId)||cursor&&cursor.length>512||!Number.isSafeInteger(historyOffset)||historyOffset<0||status&&!['pending','retrying','dead','completed'].includes(String(status))))return {status_code:400,body:{error:'INVALID_CAPTURE_QUERY'}};
       try {
         const [summary,list]=await Promise.all([
-          getCaptureController()?.status()??Promise.resolve(null),
+          getCaptureController()?.status({sdkProofPage:proofPage})??Promise.resolve(null),
           sdk.trigger({function_id:'mem::capture-list',payload:{
             ...(status==='pending'||status==='retrying'||status==='dead'||review&&status==='completed'?{status}:{}),limit,
             ...(review?{review:true,...(key?{key}:{}),...(eventId?{eventId}:{}),...(cursor?{cursor}:{}),historyOffset}:{}),
@@ -865,6 +868,8 @@ export function registerApiTriggers(
         ]);
         return {status_code:200,headers:{'Cache-Control':'no-store'},body:{capture:summary,...(list as object)}};
       }catch(error){
+        if((error as {code?:string})?.code==='INVALID_CAPTURE_PROOF_PAGE')return {status_code:400,body:{error:'INVALID_CAPTURE_PROOF_PAGE'}};
+        if((error as {code?:string})?.code==='CAPTURE_PROOF_GENERATION_CHANGED')return {status_code:409,body:{error:'CAPTURE_PROOF_GENERATION_CHANGED',restartFrom:0}};
         if(error instanceof Error && error.message.includes('INVALID_CAPTURE_CURSOR'))return {status_code:400,body:{error:'INVALID_CAPTURE_CURSOR'}};
         return {status_code:503,body:{error:'CAPTURE_REVIEW_UNAVAILABLE'}};
       }
