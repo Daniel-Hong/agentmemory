@@ -110,7 +110,7 @@ async function prove(storePath, admitted, files) {
           const {bytesRead}=await handle.read(data,offset,Math.min(MiB,size-offset),offset);
           requireProof(bytesRead>0 && performance.now()<deadline);offset+=bytesRead;
         }
-        file.verify(namespaceRows(data));
+        file.verify(namespaceRows(data),size);
         await handle.sync();
         const verified=signature(st);
         requireProof(verified===signature(await handle.stat({bigint:true})));
@@ -123,12 +123,23 @@ async function prove(storePath, admitted, files) {
   return async () => {await current();await verifyNames(storePath,true);await verifyNames(storePath);await current();};
 }
 
-export async function verifyVectorCheckpointFiles({storePath,pendingRows,meta,buckets,admitted}) {
+export async function verifyVectorCheckpointFiles({storePath,pendingRows,meta,buckets,admitted,waitForCaptureMeta=false}) {
   const byId=pendingMap(pendingRows), selected=new Map();
   requireProof(byId.size>0 && meta?.v===3 && Number.isSafeInteger(meta.bucketCount) && meta.bucketCount>0 &&
     Number.isSafeInteger(meta.count) && meta.count>=byId.size && Array.isArray(buckets) && buckets.length>0 && buckets.length<=byId.size);
   const expectedMeta=structuredClone(meta);
-  const files=[pendingFile(byId), {scope:META,limit:4*MiB,verify(rows){requireProof(isDeepStrictEqual(rows['vectors:meta'],expectedMeta));}}];
+  const laggingTimestamp = Symbol('laggingCheckpointTimestamp');
+  const deadline = performance.now() + 1500;
+  // Check metadata first. Retrying a small, older timestamp must never reread buckets.
+  const files=[{scope:META,limit:4*MiB,verify(rows,size){
+    const current = rows['vectors:meta'];
+    if (isDeepStrictEqual(current,expectedMeta)) return;
+    if (waitForCaptureMeta && size <= 64*1024 && current &&
+        typeof current.savedAt === 'string' && typeof expectedMeta.savedAt === 'string' &&
+        Date.parse(current.savedAt) < Date.parse(expectedMeta.savedAt) &&
+        isDeepStrictEqual({...current,savedAt:expectedMeta.savedAt},expectedMeta)) throw laggingTimestamp;
+    requireProof(false);
+  }}, pendingFile(byId)];
   const seenBuckets=new Set();
   for (const {bucket,ids} of buckets) {
     requireProof(Number.isSafeInteger(bucket)&&bucket>=0&&bucket<meta.bucketCount&&!seenBuckets.has(bucket)&&Array.isArray(ids)&&ids.length>0&&ids.length<=byId.size);
@@ -144,7 +155,14 @@ export async function verifyVectorCheckpointFiles({storePath,pendingRows,meta,bu
     }});
   }
   requireProof(selected.size===byId.size);
-  return prove(storePath,admitted,files);
+  for (;;) {
+    try { return await prove(storePath,admitted,files); }
+    catch (error) {
+      if (error !== laggingTimestamp) throw error;
+      requireProof(admitted() === true && performance.now() < deadline);
+      await new Promise(resolve=>setTimeout(resolve,Math.min(125,deadline-performance.now())));
+    }
+  }
 }
 
 export async function verifyRemainingVectorPending({storePath,pendingRows,admitted}) {

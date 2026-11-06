@@ -57,7 +57,7 @@ export async function readRetention(kv: StateKV, storePath: string, admitted: ()
 
 export async function reconcileCheckpoint(
   kv: StateKV, storePath: string, selection: RecoverySelection, existing: RetentionReceipt[],
-  authorize: boolean, admitted: () => boolean,
+  authorize: boolean, admitted: () => boolean, waitForCaptureMeta = false,
 ): Promise<RetentionReceipt[]> {
   const { pendingRows, buckets, meta } = selection;
   function check() {
@@ -93,7 +93,7 @@ export async function reconcileCheckpoint(
     throw Error('vector_retention_original_changed');
   const missing = expected.filter(wanted => !existing.some(stamp => isDeepStrictEqual(stamp, wanted)));
   if (missing.length && !authorize) throw Error('vector_retention_manual_verification_required');
-  const recheck = await verifyVectorCheckpointFiles({storePath, pendingRows, meta, buckets, admitted});
+  const recheck = await verifyVectorCheckpointFiles({storePath, pendingRows, meta, buckets, admitted, waitForCaptureMeta});
   await recheck();
 
   // iii has no conditional delete. Preserve the entire WAL. Immutable receipt keys make
@@ -113,6 +113,8 @@ export async function reconcileCheckpoint(
   if (saved.length !== expected.length || !expected.every(stamp => saved.some(actual => isDeepStrictEqual(stamp, actual))))
     throw Error('vector_retention_receipts_changed');
   await confirmPending();
+  if (waitForCaptureMeta && !isDeepStrictEqual(await kv.get(KV.bm25Index, 'vectors:meta'), meta))
+    throw Error('vector_recovery_meta_changed');
   await recheck();
   return saved;
 }

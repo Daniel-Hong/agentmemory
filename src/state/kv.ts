@@ -1,3 +1,5 @@
+import { lstatSync, realpathSync } from 'node:fs'
+import { join } from 'node:path'
 import {bucketScope, reconcileCheckpoint, readRetention, receiptFor, RETAINED_SCOPE, type RetentionReceipt, type RecoverySelection} from './vector-checkpoint-reconciliation.js'
 import {KV} from './schema.js'
 import {createRecordRecoveryGate, createRecoveryWriteGate} from './recovery-write-gate.js'
@@ -173,6 +175,17 @@ export class StateKV {
     }))
   }
 
+  canUseUnloadedDiskIndex(): boolean {
+    // Standalone disk-fenced callers may start with an empty index. Once a receipt
+    // exists, only the normal load/revalidation path can admit its retained WAL.
+    const store = this.checkpointStorePath
+    if (this.durability?.completion !== 'disk' || !store) return false
+    try {
+      return realpathSync(store) === store && lstatSync(store).isDirectory() &&
+        lstatSync(join(store, encodeURIComponent(RETAINED_SCOPE) + '.bin'), {throwIfNoEntry: false}) === undefined
+    } catch { return false }
+  }
+
   async readVectorRetention():Promise<RetentionReceipt[]> {
     if (this.backend !== 'file') return []
     if (!this.checkpointStorePath) throw Error('vector_retention_store_unverified')
@@ -180,8 +193,9 @@ export class StateKV {
       (!this.writerLease || ownsFileWriterLease(this.writerLease,this.checkpointStorePath!)))
   }
 
-  async reconcileVectorCheckpoint(selection:RecoverySelection,current:()=>boolean,expectedRevision:number,authorize:boolean):Promise<RetentionReceipt[]>{
+  async reconcileVectorCheckpoint(selection:RecoverySelection,current:()=>boolean,expectedRevision:number,authorize:boolean,waitForCaptureMeta=false):Promise<RetentionReceipt[]>{
     const gate=this.recoveryWrite, storePath=this.writerStorePath
+    if (waitForCaptureMeta && authorize) throw Error('vector_retention_capture_is_read_only')
     if(!gate || !storePath || !this.recoveryMutationSafe || (authorize && this.durability?.completion!=='sdk'))throw Error('vector_recovery_writer_unverified')
     const keys:Array<{scope:string;key:string}>=[{scope:KV.vectorPendingLog,key:'~clear'},{scope:KV.bm25Index,key:'vectors:meta'},
       ...selection.pendingRows.map(({id})=>({scope:KV.vectorPendingLog,key:id}))]
@@ -194,7 +208,7 @@ export class StateKV {
       if (this.vectorRevision!==expectedRevision) throw Error('vector_recovery_checkpoint_changed')
       const admitted=()=>current() && (!authorize || gate.inExclusive()) && this.recoveryMutationSafe
       const existing=await readRetention(this,storePath,admitted)
-      return reconcileCheckpoint(this,storePath,selection,existing,authorize,admitted)
+      return reconcileCheckpoint(this,storePath,selection,existing,authorize,admitted,waitForCaptureMeta)
     })
     // Read-only rechecks can run within capture's existing record gate. They never acquire another record lock.
     return authorize ? gate.exclusive(keys,verify) : verify()

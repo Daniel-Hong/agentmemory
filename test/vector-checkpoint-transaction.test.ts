@@ -2,6 +2,9 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {mkdtempSync,writeFileSync,rmSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {IndexPersistence} from '../src/state/index-persistence.js';
+import {VectorIndex} from '../src/state/vector-index.js';
+import {createStateDurabilityFence} from '../src/ops/state-durability.mjs';
 import {StateKV} from '../src/state/kv.js';
 import {acquireFileWriterLease} from '../src/ops/file-writer-lease.mjs';
 import {engineFixture} from './helpers/engine-evidence.js';
@@ -39,7 +42,7 @@ function fixture(){
  const kv=new StateKV(sdk as never,{writerLease:lease});
  const selection=(rs=rows)=>({pendingRows:rs,meta,buckets:[{bucket:0,ids:rs.map(row=>row.id)}]});
  const prove=(authorize=true)=>kv.reconcileVectorCheckpoint(selection(),()=>true,kv.vectorCheckpointRevision,authorize);
- return {kv,lease,rows,disk:path,actions,data,selection,receipts,prove,write,onSet:(fn:typeof onSet)=>{onSet=fn;}};
+ return {kv,sdk,store,lease,rows,disk:path,actions,data,selection,receipts,prove,write,onSet:(fn:typeof onSet)=>{onSet=fn;}};
 }
 it('certifies three original rows without modifying their buckets or WAL, including retry or restart',async()=>{
  const x=fixture(),initial=readFileSync(x.disk(bucket)),wal=readFileSync(x.disk(pending));
@@ -95,5 +98,38 @@ it('rejects a checkpoint changed while the SDK was discovering its bucket map',a
   await x.kv.set(bucket,'new-after-load',{id:'new-after-load',s:'s',e:'AACAPw=='});
   await expect(x.kv.reconcileVectorCheckpoint(x.selection(),()=>true,revision,true)).rejects.toThrow(/checkpoint_changed/);
   expect(x.actions.some(a=>a.scope===x.receipts)).toBe(false);
+ }finally{x.lease.close();}
+});
+
+
+it('keeps the standalone disk entry point while requiring a boot check for existing or invalid retention receipts',async()=>{
+ const x=fixture();try{
+  const disk=new StateKV(x.sdk as never,{durability:createStateDurabilityFence({storePath:x.store,completion:'disk'})});
+  const plain=new VectorIndex(),oldCaller=new IndexPersistence(disk,plain);
+  expect(()=>plain.add('new','s',new Float32Array([1]))).not.toThrow();
+  await oldCaller.save();oldCaller.stop();
+  for(const bad of [false,true]){
+   writeFileSync(x.disk(x.receipts),bad?Buffer.from('invalid'):archive({}));
+   const target=new VectorIndex(),fresh=new IndexPersistence(disk,target);
+   try{expect(()=>target.add('new','s',new Float32Array([1]))).toThrow(/VECTOR_RECOVERY_PAUSED/);
+       expect(target.pendingChanges).toBe(0);}finally{fresh.stop();}
+  }
+ }finally{x.lease.close();}
+});
+
+it('revalidates the current SDK metadata after a retained capture waited for disk, without writing',async()=>{
+ const x=fixture();try{
+  await x.prove();
+  const selected=x.selection(), older={...selected.meta,savedAt:'2025-12-31T00:00:00.000Z'};
+  const wal=readFileSync(x.disk(pending)),writes=x.actions.length;
+  writeFileSync(x.disk(index),archive({'vectors:meta':older}));
+  const repair=x.kv.reconcileVectorCheckpoint(selected,()=>true,x.kv.vectorCheckpointRevision,false,true);
+  const timer=setTimeout(()=>{
+    writeFileSync(x.disk(index),archive({'vectors:meta':selected.meta}));
+    // A second publisher advanced SDK state after selection; the old disk value cannot certify that change.
+    x.data.get(index)!.set('vectors:meta',{...selected.meta,savedAt:'2026-01-02T00:00:00.000Z'});
+  },175);
+  try{await expect(repair).rejects.toThrow(/meta_changed/);}finally{clearTimeout(timer);}
+  expect(x.actions).toHaveLength(writes);expect(readFileSync(x.disk(pending))).toEqual(wal);
  }finally{x.lease.close();}
 });

@@ -274,7 +274,8 @@ export class IndexPersistence {
     this.storageGeneration = options.storageGeneration ?? (() => 0);
     this.bootStorageGeneration = this.storageGeneration();
     this.vector?.setChangeListener((id, entry) => this.logChange(id, entry));
-    this.retentionReady = !this.hasRetentionStore();
+    this.retentionReady = !this.hasRetentionStore() ||
+      (!options.requireRecoveryPlan && this.kv.canUseUnloadedDiskIndex?.() === true);
     this.vector?.setMutationGuard(id => {
       if (!this.retentionReady || (id === null ? this.retainedRows.size > 0 : this.retainedRows.has(id)) ||
           (!this.logSuppressed && (this.isStorageHeld() || this.storageBlocked || this.storageRecovering ||
@@ -561,7 +562,7 @@ export class IndexPersistence {
       const rows = [...this.retainedRows.values()];
       const selected = this.checkpointSelection({state: 'buckets', vector: this.vector, savedAt: meta.savedAt,
         checkpointMeta: meta, expectedCount: meta.count}, rows);
-      await this.kv.reconcileVectorCheckpoint(selected, current, revision, false);
+      await this.kv.reconcileVectorCheckpoint(selected, current, revision, false, true);
       return current();
     } catch { return false; }
   }

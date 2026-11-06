@@ -6,6 +6,7 @@
 
 - Support explicit authenticated recovery of a bounded set of vector upserts whose pending and checkpoint records agree in the native store. Preserve the original upserts and record their verified coverage separately. Revalidate coverage on restart and distinguish retained records from pending publication in the index status.
 - Require the current cooperative writer, stable checkpoint, matching physical keys and vector bytes. Conflicting updates, clears or incomplete evidence leave recovery blocked. Automatic recovery and deployment resume cannot authorize new coverage.
+- Preserve standalone disk-mode indexing when the approved file store has no retention records. During capture reconciliation, a lagging checkpoint timestamp can converge for up to 1.5 seconds before the full evidence check. A failed check leaves the capture and original log intact.
 - Record the deployment and operational acceptance separately from this source candidate in the November 7 incident report.
 
 ## [0.9.32-daniel.58] — 2026-11-06 (recovery review candidate)

@@ -134,3 +134,21 @@ it("refuses duplicate physical receipt keys, a symlink and writer loss during re
   let checks=0;
   await expect(retention(receipts,()=>++checks<4)).rejects.toThrow();
 });
+
+it('waits for a previous savedAt to flush, then still checks the complete selected bucket',async()=>{
+ const stale={...metadata,savedAt:'2026-11-06T23:59:59Z'};
+ await put(metaScope,{'vectors:meta':stale});await put(bucket,{v1:{...vector,e:'AAAAAA=='}});
+ const flushed=new Promise<void>((resolve,reject)=>setTimeout(()=>{put(metaScope,{'vectors:meta':metadata}).then(resolve,reject);},175));
+ await expect(verifyVectorCheckpointFiles({...input(),waitForCaptureMeta:true})).rejects.toThrow('VECTOR_CHECKPOINT_UNVERIFIED');
+ await flushed;
+ await put(metaScope,{'vectors:meta':stale});await put(bucket,{v1:vector});
+ const next=new Promise<void>((resolve,reject)=>setTimeout(()=>{put(metaScope,{'vectors:meta':metadata}).then(resolve,reject);},175));
+ const recheck=await verifyVectorCheckpointFiles({...input(),waitForCaptureMeta:true});
+ await next;await recheck();
+});
+it.each(['persistent lag','revoked epoch'])('keeps the original rejection on %s during capture proof',async mode=>{
+ await put(metaScope,{'vectors:meta':{...metadata,savedAt:'2026-11-06T23:59:59Z'}});
+ let active=true;const timer=mode==='revoked epoch'?setTimeout(()=>{active=false},100):undefined;
+ try{await expect(verifyVectorCheckpointFiles({...input(),admitted:()=>active,waitForCaptureMeta:true})).rejects.toThrow('VECTOR_CHECKPOINT_UNVERIFIED');}
+ finally{clearTimeout(timer);}
+});
