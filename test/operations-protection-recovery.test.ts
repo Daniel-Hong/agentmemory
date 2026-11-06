@@ -155,6 +155,24 @@ it('honors future backoff even when stable samples survive a clean restart and a
  const f=fixture({version:2,paused:true,resumePending:false,holds:['memory'],recovery:{attempts:1,nextAttemptAt:130001}});await f.control.init(f.kv);await f.normal();expect(f.control.isPaused()).toBe(true);f.time(130001);await f.guard.refresh();await f.guard.drain();expect(f.control.isPaused()).toBe(false);expect(f.control.snapshot().recovery.attempts).toBe(2);
 });
 
+it.each(['manual', 'deployment'] as const)('limits SDK vector reconciliation to a manual resume (%s)', async source => {
+ const f = fixture({version:2, paused:true, resumePending:false, holds:[source], recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);
+ const calls: boolean[] = [];
+ const handlers = new Map<string, any>();
+ const sdk = {registerFunction:(id:string, fn:any) => handlers.set(id, fn), registerTrigger:() => {}};
+ registerBackgroundControlApi(sdk as any, 'fixture', f.control, async allowReconciliation => {
+  calls.push(allowReconciliation);
+  return true;
+ });
+ const result = await handlers.get('api::background-control-set')({
+  headers:{authorization:'Bearer fixture','x-agentmemory-background':'1','content-type':'application/json'},
+  body:source === 'manual' ? {action:'resume'} : {action:'resume', reason:'deployment'}
+ });
+ expect(result.status_code).toBe(202);
+ expect(calls).toEqual([source === 'manual']);
+});
+
 it('keeps action-only HTTP pauses manual and permits only an explicit deployment reason',async()=>{
  const f=fixture(),handlers=new Map<string,any>();await f.control.init(f.kv);registerBackgroundControlApi({registerFunction:(id:string,fn:any)=>handlers.set(id,fn),registerTrigger:()=>{}} as any,'fixture',f.control);
  const post=(body:any)=>handlers.get('api::background-control-set')({headers:{authorization:'Bearer fixture','x-agentmemory-background':'1','content-type':'application/json'},body});

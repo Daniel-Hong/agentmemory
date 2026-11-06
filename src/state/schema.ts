@@ -12,6 +12,7 @@ export const KV = {
   health: "mem:health",
   embeddings: (obsId: string) => `mem:emb:${obsId}`,
   bm25Index: "mem:index:bm25",
+  vectorRetentionReceipts: "mem:index:vec-retained:v1",
   vectorPendingLog: "mem:index:vec-pending",
   embeddingRetry: "mem:embedding-retry:v1",
   embeddingCommitted: "mem:embedding-committed:v1",

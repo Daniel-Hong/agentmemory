@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.59] — 2026-11-07 (held recovery candidate)
+
+- Support explicit authenticated recovery of a bounded set of vector upserts whose pending and checkpoint records agree in the native store. Preserve the original upserts and record their verified coverage separately. Revalidate coverage on restart and distinguish retained records from pending publication in the index status.
+- Require the current cooperative writer, stable checkpoint, matching physical keys and vector bytes. Conflicting updates, clears or incomplete evidence leave recovery blocked. Automatic recovery and deployment resume cannot authorize new coverage.
+- Record the deployment and operational acceptance separately from this source candidate in the November 7 incident report.
+
 ## [0.9.32-daniel.58] — 2026-11-06 (recovery review candidate)
 
 - Based on the installed .55 Git commit `4605974f337a50ed7e0ef74e3bb635b6e5d5a805` and the scoped .57 held-start changes from `3148e1d0a3df0241b69b2166085b10ed5979b99f`. This is a separate review candidate for the November 6 outage.

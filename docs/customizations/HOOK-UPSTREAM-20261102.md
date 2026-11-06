@@ -43,7 +43,7 @@ Website metadata now uses the same source-derived REST count as docs-sync's
 complete trigger-directory AST collector, rather than counting just three
 upstream trigger files and omitting personal endpoints. `npm run gen-meta`
 regenerated metadata as 0.9.31-daniel.51, 55 tools, 161 REST endpoints, 12 hooks
-and 6300+ test cases. Unavailable live popularity requests retained their prior
+and 6,300-plus test cases. Unavailable live popularity requests retained their prior
 values. No website dependencies were installed and no website build was run.
 
 Verification: five stale MCP fixture cases failed before the helper fix, then

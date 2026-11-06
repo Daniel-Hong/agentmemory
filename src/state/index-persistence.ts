@@ -1,3 +1,4 @@
+import {recoveryUpserts, type RecoveryUpsert, type RecoverySelection} from './vector-checkpoint-reconciliation.js';
 import { VectorIndex, base64ToFloat32, float32ToBase64, type VectorEntry } from "./vector-index.js";
 import type { StateKV } from "./kv.js";
 import { KV } from "./schema.js";
@@ -113,6 +114,7 @@ export interface IndexPersistenceStatus {
   vectorCountShortfall: VectorCountShortfall | null;
   pendingLog?: number;
   pendingLogKnown?: boolean;
+  retainedCheckpointRows?: number;
   pendingLogAcknowledged?: number;
   pendingLogError?: string | null;
 }
@@ -124,6 +126,7 @@ export interface VectorLoadResult {
   state: VectorLoadState;
   savedAt: string | null;
   expectedCount?: number;
+  checkpointMeta?: VectorMeta;
   backfillSince?: string | null;
 }
 
@@ -242,6 +245,8 @@ export class IndexPersistence {
   private hasOpenBucket = false;
   private vectorCountShortfall: VectorCountShortfall | null = null;
   private seq = 0;
+  private retainedRows = new Map<string, RecoveryUpsert>();
+  private retentionReady = true;
   private pendingLog: Map<string, number> = new Map();
   private acknowledgedLog: Map<string, number> = new Map();
   private logChains: Map<string, Promise<void>> = new Map();
@@ -269,7 +274,14 @@ export class IndexPersistence {
     this.storageGeneration = options.storageGeneration ?? (() => 0);
     this.bootStorageGeneration = this.storageGeneration();
     this.vector?.setChangeListener((id, entry) => this.logChange(id, entry));
-    this.vector?.setMutationGuard(() => { if (!this.logSuppressed && (this.isStorageHeld() || this.storageBlocked || this.storageRecovering || this.storageGeneration() !== this.bootStorageGeneration)) throw Object.assign(new Error('VECTOR_RECOVERY_PAUSED'), { code: 'VECTOR_RECOVERY_PAUSED' }); });
+    this.retentionReady = !this.hasRetentionStore();
+    this.vector?.setMutationGuard(id => {
+      if (!this.retentionReady || (id === null ? this.retainedRows.size > 0 : this.retainedRows.has(id)) ||
+          (!this.logSuppressed && (this.isStorageHeld() || this.storageBlocked || this.storageRecovering ||
+            this.storageGeneration() !== this.bootStorageGeneration))) {
+        throw Object.assign(new Error('VECTOR_RECOVERY_PAUSED'), {code: 'VECTOR_RECOVERY_PAUSED'});
+      }
+    });
     this.now = options.now ?? Date.now;
     const interval = options.saveIntervalMs;
     this.saveIntervalMs =
@@ -360,7 +372,8 @@ export class IndexPersistence {
       pendingChanges: this.vector?.pendingChanges ?? 0,
       vector: this.vector ? { ...this.leg } : null,
       vectorCountShortfall: this.vectorCountShortfall,
-      pendingLog: this.pendingLogInspected && !this.pendingLogUnknown ? this.pendingLog.size : undefined,
+      pendingLog: this.pendingLogInspected && !this.pendingLogUnknown ? this.pendingLog.size + this.retainedRows.size : undefined,
+      retainedCheckpointRows: this.retainedRows.size,
       pendingLogKnown: this.pendingLogInspected && !this.pendingLogUnknown,
       pendingLogAcknowledged: this.pendingLogInspected && !this.pendingLogUnknown ? this.acknowledgedLog.size : undefined,
       pendingLogError: this.pendingLogError,
@@ -370,7 +383,7 @@ export class IndexPersistence {
   async replayPendingLog(expectedDimensions = 0): Promise<PendingReplayResult> {
     const result: PendingReplayResult = { entries: 0, added: 0, removed: 0, cleared: false, skipped: 0 };
     const vector = this.vector;
-    if (!vector || this.blockIfStorageHeld() || this.recoveryError) return result;
+    if (!vector || !this.retentionReady || this.blockIfStorageHeld() || this.recoveryError) return result;
     let rows: unknown[];
     try {
       rows = await this.kv.list<unknown>(KV.vectorPendingLog);
@@ -386,6 +399,15 @@ export class IndexPersistence {
     if (!Array.isArray(rows) || rows.some(row => !isPendingVectorRow(row))) {
       this.pendingLogUnknown = true;
       this.pauseRecovery(new Error('Pending vector log contains invalid records'));
+      return result;
+    }
+    if (this.retainedRows.size) {
+      if (rows.length !== this.retainedRows.size ||
+          ![...this.retainedRows.values()].every(original => rows.some(row => isDeepStrictEqual(row, original)))) {
+        this.storageBlocked = true;
+        this.pendingLogUnknown = true;
+        this.pauseRecovery(new Error('Retained vector log changed'));
+      }
       return result;
     }
     const valid = (Array.isArray(rows) ? rows : []).filter(isPendingVectorRow).sort((a, b) => a.q - b.q);
@@ -494,12 +516,60 @@ export class IndexPersistence {
 
   recoveryCutoff(): string | null | undefined { return this.backfillSince; }
 
-  resumeStorageRecovery(expectedDimensions = 0): Promise<boolean> {
+  resumeStorageRecovery(expectedDimensions = 0, manualReconcile = false): Promise<boolean> {
     if (this.storageResume) return this.storageResume;
     this.storageRecovering = true;
-    const work = this.resumeStorageRecoveryOnce(expectedDimensions).finally(() => { this.storageRecovering = false; this.storageResume = null; });
+    const work = this.resumeStorageRecoveryOnce(expectedDimensions,manualReconcile).finally(() => { this.storageRecovering = false; this.storageResume = null; });
     this.storageResume = work;
     return work;
+  }
+
+  private hasRetentionStore(): boolean {
+    return this.kv.backend === 'file' && typeof this.kv.readVectorRetention === 'function';
+  }
+
+  private checkpointSelection(loaded: VectorLoadResult, rows: RecoveryUpsert[]): RecoverySelection {
+    if (rows.length && (!loaded.vector || !loaded.checkpointMeta || loaded.vector.size !== loaded.expectedCount)) {
+      throw Error('vector_recovery_checkpoint_incomplete');
+    }
+    const buckets = new Map<number, string[]>();
+    for (const row of rows) {
+      const entry = loaded.vector?.get(row.id), bucket = this.bucketOfId.get(row.id);
+      if (bucket === undefined || !entry || entry.sessionId !== row.s || float32ToBase64(entry.embedding) !== row.e)
+        throw Error('vector_recovery_checkpoint_mismatch');
+      const ids = buckets.get(bucket) ?? [];
+      ids.push(row.id);
+      buckets.set(bucket, ids);
+    }
+    return {pendingRows: rows, meta: loaded.checkpointMeta ?? null, buckets: [...buckets].map(([bucket, ids]) => ({bucket, ids}))};
+  }
+
+  /** Revalidate existing WAL evidence for one explicitly selected capture, without creating receipts. */
+  async verifyCaptureVectorPending(id: string, sessionId: string, pending: unknown): Promise<boolean> {
+    if (!this.retentionReady || this.storageRecovering || this.storageBlocked || this.isRecoveryPaused()) return false;
+    const row = this.retainedRows.get(id);
+    if (!row) return pending == null;
+    if (!this.vector || row.s !== sessionId || !isDeepStrictEqual(row, pending)) return false;
+    const revision = this.kv.vectorCheckpointRevision;
+    const current = () => !this.stopped && !this.isStorageHeld() && this.storageGeneration() === this.bootStorageGeneration &&
+      !this.storageBlocked && !this.storageRecovering && !this.isRecoveryPaused() &&
+      !this.pendingLog.size && !this.logChains.size && !this.vector?.pendingChanges;
+    try {
+      if (!current()) return false;
+      const meta = await this.kv.get<VectorMeta>(KV.bm25Index, VECTOR_META_KEY);
+      if (meta?.v !== 3) return false;
+      const rows = [...this.retainedRows.values()];
+      const selected = this.checkpointSelection({state: 'buckets', vector: this.vector, savedAt: meta.savedAt,
+        checkpointMeta: meta, expectedCount: meta.count}, rows);
+      await this.kv.reconcileVectorCheckpoint(selected, current, revision, false);
+      return current();
+    } catch { return false; }
+  }
+
+  private rememberRetained(rows: RecoveryUpsert[]): void {
+    this.retainedRows = new Map(rows.map(row => [row.id, row]));
+    for (const row of rows) this.seq = Math.max(this.seq, row.q);
+    this.retentionReady = true;
   }
 
   private async requireEmptySdkPendingLog(): Promise<void> {
@@ -509,7 +579,7 @@ export class IndexPersistence {
     }
   }
 
-  private async resumeStorageRecoveryOnce(expectedDimensions: number): Promise<boolean> {
+  private async resumeStorageRecoveryOnce(expectedDimensions: number, manualReconcile:boolean): Promise<boolean> {
     if (this.stopped || this.isStorageHeld()) return false;
     const generation = this.storageGeneration();
     const sdkRecovery = this.kv.durability?.completion === 'sdk' &&
@@ -517,18 +587,33 @@ export class IndexPersistence {
     if (!sdkRecovery && !this.vector) return true;
     if (!sdkRecovery && !this.storageBlocked) return !this.isRecoveryPaused();
     try {
-      if (sdkRecovery) await this.requireEmptySdkPendingLog();
+      let selected:RecoveryUpsert[] | undefined;
+      const checkpointRevision=this.kv.vectorCheckpointRevision;
+      const current=()=>!this.stopped && !this.isStorageHeld() && generation===this.storageGeneration() &&
+        this.pendingLog.size===0 && this.logChains.size===0 && this.storageRecovering;
+      if (sdkRecovery && manualReconcile) {
+        if(!current())throw Error('vector_recovery_busy');
+        selected=recoveryUpserts(await this.kv.list(KV.vectorPendingLog),expectedDimensions);
+      } else if (sdkRecovery) await this.requireEmptySdkPendingLog();
       if (this.isStorageHeld() || generation !== this.storageGeneration()) throw new Error('Storage hold changed during vector recovery');
       this.bootStorageGeneration = generation;
       this.storageBlocked = false;
       this.recoveryError = null;
-      if (!this.vector) return true;
-      const loaded = await this.load();
+      if (!this.vector) {
+        if(selected?.length)throw Error('vector_recovery_index_unavailable');
+        if(selected)await this.kv.reconcileVectorCheckpoint({pendingRows:[],buckets:[],meta:null},current,checkpointRevision,true);
+        return true;
+      }
+      const loaded = await this.load(Boolean(selected?.length), selected !== undefined);
       if (this.blockIfStorageHeld() || !loaded || loaded.state === 'unavailable') throw new Error('Persisted vector checkpoint is unavailable');
       if (loaded.vector && expectedDimensions > 0 && loaded.vector.validateDimensions(expectedDimensions).mismatches.length) throw new Error('Persisted vector dimensions mismatch');
       // SDK checkpoint reads may span minutes. Recheck before the first backfill write.
       if (sdkRecovery) {
-        await this.requireEmptySdkPendingLog();
+        if (selected) {
+          await this.kv.reconcileVectorCheckpoint(this.checkpointSelection(loaded, selected), current, checkpointRevision, true);
+          if (!current()) throw Error('vector_recovery_epoch_changed');
+          this.rememberRetained(selected);
+        } else await this.requireEmptySdkPendingLog();
         this.pendingLogInspected = true;
         this.pendingLogUnknown = false;
       }
@@ -700,6 +785,7 @@ export class IndexPersistence {
 
   private deletePendingKey(key: string, q: number | undefined): Promise<void> {
     return this.enqueueLog(key, async () => {
+      if (this.retainedRows.has(key) || (key === PENDING_CLEAR_KEY && this.retainedRows.size)) throw Error('vector_retention_original_protected');
       if (this.pendingLog.get(key) !== q) return;
       if (this.blockIfStorageHeld()) throw new Error('Storage hold prevents vector log deletion');
       await this.kv.delete(KV.vectorPendingLog, key);
@@ -728,9 +814,20 @@ export class IndexPersistence {
     this.clearTimer();
   }
 
-  async load(): Promise<VectorLoadResult> {
+  async load(strictCheckpoint = false, operatorWillVerify = false): Promise<VectorLoadResult> {
+    const unavailable: VectorLoadResult = {vector: null, state: 'unavailable', savedAt: null};
     if (this.blockIfStorageHeld()) return { vector: null, state: 'unavailable', savedAt: null };
+    const revision = this.kv.vectorCheckpointRevision, generation = this.storageGeneration();
+    let hasReceipts = false;
+    if (this.hasRetentionStore()) {
+      this.retentionReady = false;
+      try { hasReceipts = (await this.kv.readVectorRetention()).length > 0; }
+      catch (error) { this.storageBlocked = true; this.pauseRecovery(error); return unavailable; }
+      this.retentionReady = !hasReceipts && !operatorWillVerify;
+      strictCheckpoint ||= hasReceipts;
+    }
     if (!this.vector) {
+      if (hasReceipts) { this.storageBlocked = true; this.pauseRecovery(Error('vector_retention_index_unavailable')); return unavailable; }
       await this.finishLegacyCleanup();
       return { vector: null, state: "none", savedAt: null };
     }
@@ -746,7 +843,7 @@ export class IndexPersistence {
     if (this.blockIfStorageHeld()) return { vector: null, state: 'unavailable', savedAt: null };
 
     if (meta && meta.v === 3 && Number.isInteger(meta.bucketCount) && meta.bucketCount >= 0) {
-      const loaded = await this.loadBuckets(meta.bucketCount);
+      const loaded = await this.loadBuckets(meta.bucketCount,strictCheckpoint);
       if (this.blockIfStorageHeld()) return { vector: null, state: 'unavailable', savedAt: null };
       if (!loaded) return { vector: null, state: "unavailable", savedAt: null };
       this.hasVectorCheckpoint = loaded.size > 0;
@@ -763,8 +860,25 @@ export class IndexPersistence {
           ...this.vectorCountShortfall,
         });
       }
-      return { vector: loaded, state: replacementVerified ? "buckets" : "unavailable", savedAt: meta.savedAt ?? null, expectedCount, backfillSince: meta.backfillSince };
+      const result: VectorLoadResult = { vector: loaded, state: replacementVerified ? "buckets" : "unavailable", savedAt: meta.savedAt ?? null,
+        expectedCount, ...(strictCheckpoint ? {checkpointMeta:meta} : {}), backfillSince: meta.backfillSince };
+      if (hasReceipts && !operatorWillVerify) {
+        try {
+          if (!replacementVerified) throw Error('vector_retention_checkpoint_unavailable');
+          const raw = await this.kv.list<RecoveryUpsert>(KV.vectorPendingLog);
+          const first = raw?.[0]?.id;
+          const dimensions = typeof first === 'string' ? loaded.get(first)?.embedding.length ?? 0 : 0;
+          const rows = recoveryUpserts(raw, dimensions);
+          const current = () => !this.stopped && !this.isStorageHeld() && this.storageGeneration() === generation &&
+            !this.pendingLog.size && !this.logChains.size;
+          await this.kv.reconcileVectorCheckpoint(this.checkpointSelection(result, rows), current, revision, false);
+          if (!current()) throw Error('vector_retention_epoch_changed');
+          this.rememberRetained(rows);
+        } catch (error) { this.storageBlocked = true; this.pauseRecovery(error); return unavailable; }
+      }
+      return result;
     }
+    if (hasReceipts) { this.storageBlocked = true; this.pauseRecovery(Error('vector_retention_checkpoint_missing')); return unavailable; }
 
     return this.migrateLegacy();
   }
@@ -837,7 +951,7 @@ export class IndexPersistence {
 
   private async runSave(): Promise<void> {
     const vector = this.vector;
-    if (!vector || this.blockIfStorageHeld() || this.isRecoveryPaused()) return;
+    if (!vector || !this.retentionReady || this.blockIfStorageHeld() || this.isRecoveryPaused()) return;
     if (!vector.pendingChanges && !this.needsRecoveryCheckpoint()) return;
     const hasVectorChanges = vector.pendingChanges > 0;
     const epoch = this.dirtyEpoch;
@@ -928,7 +1042,7 @@ export class IndexPersistence {
     if (!this.hasVectorCheckpoint) this.firstVectorSaveAttempted = false;
   }
 
-  private async loadBuckets(bucketCount: number): Promise<VectorIndex | null> {
+  private async loadBuckets(bucketCount: number, strictCheckpoint = false): Promise<VectorIndex | null> {
     const loaded = new VectorIndex();
     const bucketOfId = new Map<string, number>();
     const bucketCounts = new Map<number, number>();
@@ -939,10 +1053,15 @@ export class IndexPersistence {
       const rows = await this.kv.list<unknown>(vectorBucketScope(bucket));
       let count = 0;
       for (const row of rows) {
-        if (!isPersistedVector(row)) continue;
+        if (!isPersistedVector(row)) {
+          if(strictCheckpoint)throw Error('vector_recovery_bucket_invalid');
+          continue;
+        }
+        if(strictCheckpoint && bucketOfId.has(row.id))throw Error('vector_recovery_duplicate_id');
         try {
           loaded.loadPersisted(row.id, row.s, base64ToFloat32(row.e));
         } catch {
+          if(strictCheckpoint)throw Error('vector_recovery_bucket_invalid');
           continue;
         }
         bucketOfId.set(row.id, bucket);

@@ -1,5 +1,5 @@
 {
-  "version": "0.9.32-daniel.58",
+  "version": "0.9.32-daniel.59",
   "facts": {
     "mcpTools": [
       "55"
@@ -20,19 +20,19 @@
       "12"
     ],
     "tests": [
-      "6300+"
+      "6400+"
     ],
     "functions": [
       "355"
     ],
     "sourceFiles": [
-      "281"
+      "282"
     ],
     "loc": [
-      "63000"
+      "64000"
     ],
     "kvScopes": [
-      "70"
+      "71"
     ]
   },
   "engineVersion": "0.25.0"

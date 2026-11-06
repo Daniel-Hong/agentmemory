@@ -25,7 +25,7 @@ export function sdkReconciliationInvocation(input:unknown):Selection{
  return body;
 }
 
-export function createSdkCaptureReconciliation(kv:StateKV,options:{admitted:()=>boolean;indexEvidence:(observation:CompressedObservation)=>{keyword:{present:boolean;sessionId?:string};vectorSessionId?:string};audit:(selection:{key:string;requestId:string})=>Promise<unknown>;now?:()=>number}){
+export function createSdkCaptureReconciliation(kv:StateKV,options:{admitted:()=>boolean;verifyCaptureVectorPending?:(id:string,sessionId:string,pending:unknown)=>Promise<boolean>;indexEvidence:(observation:CompressedObservation)=>{keyword:{present:boolean;sessionId?:string};vectorSessionId?:string};audit:(selection:{key:string;requestId:string})=>Promise<unknown>;now?:()=>number}){
  const now=()=>new Date((options.now??Date.now)()).toISOString();
  function admitted(){
   if(kv.durability?.completion!=='sdk')throw fail('SDK_RECONCILIATION_UNSUPPORTED');
@@ -50,7 +50,11 @@ export function createSdkCaptureReconciliation(kv:StateKV,options:{admitted:()=>
   if(done?.state==='deleted')throw fail('SDK_RECONCILIATION_DELETED');
   if(done&&(done.key!==rec.key||done.eventId!==rec.eventId||done.sessionId!==rec.sessionId||done.observationId!==rec.observationId||done.state!==undefined&&done.state!=='completed'))throw fail('SDK_RECONCILIATION_RECEIPT_CONFLICT');
   if(!sdkObservationMatches(obs,rec.payload,rec.key,rec.observationId,rec.eventId))throw fail('SDK_RECONCILIATION_SOURCE_CONFLICT');
-  if(retry!=null||pending!=null||clear!=null)throw fail('SDK_RECONCILIATION_INDEX_PENDING');
+  if(retry!=null||clear!=null)throw fail('SDK_RECONCILIATION_INDEX_PENDING');
+  const pendingVerified=options.verifyCaptureVectorPending
+    ? await options.verifyCaptureVectorPending(rec.observationId,rec.sessionId,pending) : pending==null;
+  if(!pendingVerified)throw fail('SDK_RECONCILIATION_INDEX_PENDING');
+  admitted();
   if(typeof obs!.title!=='string'||typeof obs!.narrative!=='string')throw fail('SDK_RECONCILIATION_SOURCE_CONFLICT');
   const observedIndex=options.indexEvidence(obs!);
   const indexEvidence:CaptureSdkIndexEvidence={...observedIndex,vectorSessionId:observedIndex.vectorSessionId!,keyword:{...observedIndex.keyword,applicability:observationIndexEligible(obs!)?'required':obs!.title===''?(obs!.narrative===''?'excluded_empty_title_and_narrative':'excluded_empty_title'):'excluded_empty_narrative'}};

@@ -189,6 +189,7 @@ type IndexPersistenceHook = {
   scheduleSave: () => void;
   save: () => Promise<void>;
   status?: () => IndexPersistenceStatus;
+  verifyCaptureVectorPending?: (id: string, sessionId: string, pending: unknown) => Promise<boolean>;
 };
 
 let indexPersistence: IndexPersistenceHook | null = null;
@@ -199,6 +200,10 @@ export function setIndexPersistence(p: IndexPersistenceHook | null): void {
 
 export function getIndexPersistenceStatus(): IndexPersistenceStatus | null {
   return indexPersistence?.status?.() ?? null;
+}
+
+export async function verifyCaptureVectorPending(id: string, sessionId: string, pending: unknown): Promise<boolean> {
+  return indexPersistence?.verifyCaptureVectorPending?.(id, sessionId, pending) ?? pending == null;
 }
 
 export function scheduleIndexSave(): void {

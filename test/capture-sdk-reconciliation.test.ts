@@ -23,7 +23,7 @@ async function fixture(saved?:Map<string,Map<string,unknown>>){
  }
  writes=0;
  const auditEntries:any[]=[];
- const make=()=>createSdkCaptureReconciliation(kv as never,{admitted:()=>admitted,indexEvidence:(obs:any)=>({keyword:{present:indexed,sessionId:indexed?owner:undefined},vectorSessionId:vectorOwner}),audit:async e=>{auditEntries.push(e)},now:()=>Date.parse('2026-10-29T01:00:00Z')});
+ const make=(verifyCaptureVectorPending?:(id:string,sessionId:string,pending:unknown)=>Promise<boolean>)=>createSdkCaptureReconciliation(kv as never,{admitted:()=>admitted,verifyCaptureVectorPending,indexEvidence:(obs:any)=>({keyword:{present:indexed,sessionId:indexed?owner:undefined},vectorSessionId:vectorOwner}),audit:async e=>{auditEntries.push(e)},now:()=>Date.parse('2026-10-29T01:00:00Z')});
  return{kv,gate,get,set,helper:make(),make,writeCount:()=>writes,pause:()=>admitted=false,unindex:()=>indexed=false,keywordOwner:(v:string|undefined)=>owner=v,vectorOwner:(v:string|undefined)=>vectorOwner=v,fail:(n:number,stored=false)=>{failAt=n;after=stored},resetWrites:()=>writes=0,call(){return this.helper.reconcile({key,requestId:req,sourceDigest})}};
 }
 it('reconciles an actually stored capture with SDK completion and preserves every original and failure/budget field',async()=>{
@@ -90,4 +90,15 @@ it('whole-review source restore mutation retains completed v2 protection',async(
  const rec=await f.kv.get<any>(KV.captureInbox,key);
  await f.kv.set(KV.captureInbox,key,{...rec,sdkRestoreRequestId:otherReq,sdkRestoreState:'pending',sdkRestoreAttempts:0});
  await expect(assertSdkSourceLegacyProtection(f.kv as never,payload as never,key,id,eventId)).resolves.toBeUndefined();
+});
+
+it('requires current physical proof on each phase for a retained capture and keeps the original WAL',async()=>{
+ const f=await fixture(),row={id,s:payload.sessionId,q:3,e:'AACAPw=='};
+ await f.set(KV.vectorPendingLog,id,row);
+ await expect(f.call()).rejects.toThrow('SDK_RECONCILIATION_INDEX_PENDING');
+ let checks=0;
+ const repaired=f.make(async(obs,session,actual)=>{checks++;return obs===id && session===payload.sessionId && JSON.stringify(actual)===JSON.stringify(row);});
+ expect(await repaired.reconcile({key,requestId:req,sourceDigest})).toMatchObject({status:'reconciled',verified:false,synced:false,originalReplay:false});
+ expect(checks).toBeGreaterThanOrEqual(5);expect(await f.kv.get(KV.vectorPendingLog,id)).toEqual(row);
+ const stale=f.make(async()=>false);await expect(stale.reconcile({key,requestId:req,sourceDigest})).rejects.toThrow('SDK_RECONCILIATION_INDEX_PENDING');
 });

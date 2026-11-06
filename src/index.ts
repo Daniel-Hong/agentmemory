@@ -567,7 +567,12 @@ async function main() {
   markKeywordRebuildPending();
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);
   registerDashboardUpdateApi(sdk, secret, createDashboardUpdates({requestRoot: runtimeMetadataPath("update-requests"), version: VERSION}));
-  if (persistentBackground) registerBackgroundControlApi(sdk, secret, control, async () => { await bootGate; if (bootFailed || !indexForExplicitResume || !scheduleBackfillAfterResume) return false; if (!await indexForExplicitResume.resumeStorageRecovery(embeddingProvider?.dimensions ?? 0)) return false; return scheduleBackfillAfterResume(); });
+  if (persistentBackground) registerBackgroundControlApi(sdk, secret, control, async allowReconciliation => {
+    await bootGate;
+    if (bootFailed || !indexForExplicitResume || !scheduleBackfillAfterResume) return false;
+    if (!await indexForExplicitResume.resumeStorageRecovery(embeddingProvider?.dimensions ?? 0, allowReconciliation)) return false;
+    return scheduleBackfillAfterResume();
+  });
   if (getEnvVar("AGENTMEMORY_FEEDBACK_DIR")) {
   const feedback = lifecycle.track(registerFeedbackRuntime(sdk, secret, {
     root: getEnvVar("AGENTMEMORY_FEEDBACK_DIR"),

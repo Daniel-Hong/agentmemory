@@ -4,7 +4,7 @@ import {recordAudit} from "./audit.js";
 import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim,assertSdkSourceLegacyProtection} from "../capture/sdk-source-restore.js";
 import{createSdkCaptureReconciliation,sdkReconciliationInvocation}from'../capture/sdk-reconciliation.js';
 import {createCaptureAutoRecovery,type CaptureAutoRecoveryOptions} from "../capture/auto-recovery.js";
-import {getSearchIndex,getVectorIndex,getKeywordRebuildEpoch,isKeywordRebuildInProgress} from "./search.js";
+import {getSearchIndex,getVectorIndex,getKeywordRebuildEpoch,isKeywordRebuildInProgress,verifyCaptureVectorPending} from "./search.js";
 import {createCaptureIndexEvidence,captureIndexEvidenceInvocationQuery} from "../capture/index-evidence.js";
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
 import { registerCaptureReceipts } from "../capture/receipts.js";
@@ -286,6 +286,7 @@ export function registerCaptureFunctions(
   }
   const trackMaintenance=(work:()=>Promise<unknown>)=>{void trackWork(work).catch(()=>{});};
   const sdkReconciliation=createSdkCaptureReconciliation(kv,{
+    verifyCaptureVectorPending,
     admitted:()=>!stopped&&!backgroundPaused()&&(options.autoRecovery?.admitted()??true),
     indexEvidence:obs=>({keyword:{present:getSearchIndex().has(obs.id),sessionId:getSearchIndex().sessionOf(obs.id)},vectorSessionId:getVectorIndex()?.get(obs.id)?.sessionId}),
     audit:selection=>recordAudit(kv,'capture_sdk_reconciliation','api::capture-reconcile-sdk',[],{requestId:selection.requestId,completion:'sdk',stage:'verification_pending'}),

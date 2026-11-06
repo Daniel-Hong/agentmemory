@@ -216,7 +216,9 @@ export function registerBackgroundControlApi(sdk,secret,control,onExplicitResume
    const body=req.body;
    if(!body||Array.isArray(body)||Object.keys(body).some(k=>!['action','reason'].includes(k))||body.reason!==undefined&&body.reason!=='deployment'||!['pause','resume'].includes(body.action))return{status_code:400,body:{error:'invalid_background_action'}};
    try{
-    const snapshot=await control.change(body.action,{source:body.reason??'manual',...(body.action==='resume'&&onExplicitResume?{beforeResume:onExplicitResume}:{})});
+    const source=body.reason??'manual';
+    const beforeResume=body.action==='resume'&&onExplicitResume?()=>onExplicitResume(source==='manual'):undefined;
+    const snapshot=await control.change(body.action,{source,beforeResume});
     return{status_code:202,body:{success:true,control:snapshot,...(body.action==='resume'&&snapshot.status==='running'&&onExplicitResume?{vectorRecovery:'replay_complete_backfill_pending'}:{})}};
    }
    catch(e){const conflict=['background_draining','background_storage_recovery_requires_full_resume'].includes(e?.message);return{status_code:conflict?409:503,body:{success:false,error:e?.code==='VECTOR_RECOVERY_UNAVAILABLE'?'vector_recovery_unavailable':conflict?e.message:'background_storage_unavailable',control:control.snapshot()}};}

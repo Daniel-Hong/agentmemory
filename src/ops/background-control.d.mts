@@ -21,4 +21,4 @@ export function backgroundPaused():boolean;
 export function backgroundTask<T extends (...args:never[])=>unknown>(fn:T):T;
 export function controlBackgroundFunctions(sdk:IIIClient):void;
 export function backgroundViewerRequestAllowed(req:HttpRequest):boolean;
-export function registerBackgroundControlApi(sdk:IIIClient,secret:string,control:BackgroundControl,onExplicitResume?:()=>Promise<boolean>):void;
+export function registerBackgroundControlApi(sdk:IIIClient,secret:string,control:BackgroundControl,onExplicitResume?:(allowReconciliation:boolean)=>Promise<boolean>):void;

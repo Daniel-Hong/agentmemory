@@ -1,4 +1,6 @@
-import {createRecordRecoveryGate} from './recovery-write-gate.js'
+import {bucketScope, reconcileCheckpoint, readRetention, receiptFor, RETAINED_SCOPE, type RetentionReceipt, type RecoverySelection} from './vector-checkpoint-reconciliation.js'
+import {KV} from './schema.js'
+import {createRecordRecoveryGate, createRecoveryWriteGate} from './recovery-write-gate.js'
 import {ownsFileWriterLease,fileWriterReadCurrent,fileWriterRecoveryAdmitted,fileWriterRecoveryReason,type FileWriterLease} from '../ops/file-writer-lease.mjs'
 import { createCaptureReceiptPage } from '../capture/receipt-page.js'
 import type { IIIClient } from 'iii-sdk'
@@ -121,6 +123,10 @@ export class StateKV {
   private readonly summaryNamespaceLock = `summary-namespace:${++summaryLockSequence}`
   private writerLease?:FileWriterLease
   private writerStorePath?:string
+  private checkpointStorePath?:string
+  private readonly vectorWrites = createRecoveryWriteGate()
+  private vectorRevision = 0
+  get vectorCheckpointRevision() { return this.vectorRevision }
   private uncertainMutation=false
   get recoveryBlockReason(){return this.uncertainMutation?'WRITER_MUTATION_UNCERTAIN':this.writerLease?fileWriterRecoveryReason(this.writerLease):'FILE_WRITER_UNSUPPORTED'}
   get mutationOutcomeUncertain(){return this.uncertainMutation}
@@ -140,6 +146,7 @@ export class StateKV {
   ) {
     this.backend = options.backend ?? 'file'
     const storePath = this.backend === 'file' ? getEnvVar('AGENTMEMORY_STATE_STORE_PATH') : undefined
+    this.checkpointStorePath = storePath
     if (this.backend === 'file' && storePath && ownsFileWriterLease(options.writerLease,storePath)) {this.recoveryWrite=createRecordRecoveryGate();this.writerLease=options.writerLease;this.writerStorePath=storePath;}
     this.durability = this.backend === 'file'
       ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath, completion: 'sdk' }) : null)
@@ -157,7 +164,40 @@ export class StateKV {
     // Keep queued mutations visible to the durability/shutdown fence. The gate
     // belongs inside the tracked operation, rather than before performMutation.
     const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>scope==='mem:summaries'?withKeyedLock(this.summaryNamespaceLock,serialized):operation())}
-    return this.recoveryWrite ? this.recoveryWrite.read(scope,key,perform) : perform()
+    if (!this.recoveryWrite) return perform()
+    const vectorNamespace = scope===KV.vectorPendingLog || scope===RETAINED_SCOPE || scope.startsWith(KV.bm25Index+':vec:') ||
+      (scope===KV.bm25Index && key==='vectors:meta')
+    if (!vectorNamespace) return this.recoveryWrite.read(scope,key,perform)
+    return this.recoveryWrite.read(scope,key,()=>this.vectorWrites.read(async()=>{
+      try { return await perform() } finally { this.vectorRevision++ }
+    }))
+  }
+
+  async readVectorRetention():Promise<RetentionReceipt[]> {
+    if (this.backend !== 'file') return []
+    if (!this.checkpointStorePath) throw Error('vector_retention_store_unverified')
+    return readRetention(this,this.checkpointStorePath,()=>!this.uncertainMutation &&
+      (!this.writerLease || ownsFileWriterLease(this.writerLease,this.checkpointStorePath!)))
+  }
+
+  async reconcileVectorCheckpoint(selection:RecoverySelection,current:()=>boolean,expectedRevision:number,authorize:boolean):Promise<RetentionReceipt[]>{
+    const gate=this.recoveryWrite, storePath=this.writerStorePath
+    if(!gate || !storePath || !this.recoveryMutationSafe || (authorize && this.durability?.completion!=='sdk'))throw Error('vector_recovery_writer_unverified')
+    const keys:Array<{scope:string;key:string}>=[{scope:KV.vectorPendingLog,key:'~clear'},{scope:KV.bm25Index,key:'vectors:meta'},
+      ...selection.pendingRows.map(({id})=>({scope:KV.vectorPendingLog,key:id}))]
+    for(const {bucket,ids} of selection.buckets)for(const id of ids){
+      const row=selection.pendingRows.find(item=>item.id===id)
+      if(!row)throw Error('vector_recovery_selection_invalid')
+      keys.push({scope:bucketScope(bucket),key:id},{scope:RETAINED_SCOPE,key:receiptFor(row,bucket).digest})
+    }
+    const verify=()=>this.vectorWrites.exclusive(async()=>{
+      if (this.vectorRevision!==expectedRevision) throw Error('vector_recovery_checkpoint_changed')
+      const admitted=()=>current() && (!authorize || gate.inExclusive()) && this.recoveryMutationSafe
+      const existing=await readRetention(this,storePath,admitted)
+      return reconcileCheckpoint(this,storePath,selection,existing,authorize,admitted)
+    })
+    // Read-only rechecks can run within capture's existing record gate. They never acquire another record lock.
+    return authorize ? gate.exclusive(keys,verify) : verify()
   }
 
   private markMutationUncertain(scope:string):void {
