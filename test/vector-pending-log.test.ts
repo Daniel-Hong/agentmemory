@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { IndexPersistence } from "../src/state/index-persistence.js";
 import { VectorIndex } from "../src/state/vector-index.js";
+import { createStateDurabilityFence } from "../src/ops/state-durability.mjs";
 import {
   backfillVectorBacklog,
   getPendingVectorBackfillCount,
@@ -67,6 +68,79 @@ describe("pending vector log", () => {
     setVectorIndex(null);
     setEmbeddingProvider(null);
     setIndexPersistence(null);
+  });
+
+  it('keeps pending records and refuses vector recovery during storage-held startup', async () => {
+    const kv=mockKV();const original={q:1,id:'obs_held',s:'ses_held',e:Buffer.from(v(1).buffer).toString('base64')};
+    await kv.set(PENDING_SCOPE,'obs_held',original);const before=structuredClone(original);
+    const vector=new VectorIndex();const persistence=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>true} as never);
+    try{
+      const loaded=await persistence.load();await persistence.prepareBackfill(loaded);await persistence.replayPendingLog(3);await persistence.save();
+      expect(pendingRows(kv).get('obs_held')).toEqual(before);expect(vector.size).toBe(0);expect(persistence.isRecoveryPaused()).toBe(true);
+      expect((persistence.status() as {pendingLogKnown?:boolean}).pendingLogKnown).toBe(false);
+      expect(persistence.status().pendingLog).toBeUndefined();
+      expect(persistence.status().pendingLogAcknowledged).toBeUndefined();
+      expect(kv.ops.filter(x=>x.op==='delete'&&x.scope===PENDING_SCOPE)).toEqual([]);
+    }finally{persistence.stop()}
+  });
+
+  it('retains every pending original and refuses replay when a pending row is malformed',async()=>{
+    const kv=mockKV(),invalid={q:'malformed',c:1},valid={q:1,id:'obs_valid',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};
+    await kv.set(PENDING_SCOPE,'~clear',invalid);await kv.set(PENDING_SCOPE,'obs_valid',valid);
+    const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true});
+    try{await p.prepareBackfill(await p.load());await p.replayPendingLog(3);await p.save();expect(pendingRows(kv).get('~clear')).toEqual(invalid);expect(pendingRows(kv).get('obs_valid')).toEqual(valid);expect(vector.has('obs_valid')).toBe(false);expect(p.isRecoveryPaused()).toBe(true);expect(p.status().pendingLogKnown).toBe(false)}finally{p.stop()}
+  });
+  it('retains all pending originals when an embedding is undecodable',async()=>{
+    const kv=mockKV(),invalid={q:1,id:'obs_bad',s:'s',e:'%%%'},valid={q:2,id:'obs_ok',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};
+    await kv.set(PENDING_SCOPE,'obs_bad',invalid);await kv.set(PENDING_SCOPE,'obs_ok',valid);
+    const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true});
+    try{await p.prepareBackfill(await p.load());await p.replayPendingLog(3);await p.save();expect(pendingRows(kv).get('obs_bad')).toEqual(invalid);expect(pendingRows(kv).get('obs_ok')).toEqual(valid);expect(vector.size).toBe(0);expect(p.isRecoveryPaused()).toBe(true);expect(p.status().pendingLogKnown).toBe(false)}finally{p.stop()}
+  });
+
+  it('retains healthy startup replay when no storage hold is present', async () => {
+    const kv=mockKV();const original={q:1,id:'obs_healthy',s:'ses_healthy',e:Buffer.from(v(1).buffer).toString('base64')};
+    await kv.set(PENDING_SCOPE,'obs_healthy',original);const vector=new VectorIndex();
+    const persistence=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>false} as never);
+    try{const loaded=await persistence.load();await persistence.prepareBackfill(loaded);const replay=await persistence.replayPendingLog(3);expect(replay.added).toBe(1);expect(vector.has('obs_healthy')).toBe(true);expect(persistence.isRecoveryPaused()).toBe(false)}finally{persistence.stop()}
+  });
+
+  it('does not apply replay read when a storage hold appears before the read returns', async () => {
+    const kv=mockKV();const original={q:1,id:'obs_race',s:'ses_race',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_race',original);
+    let held=false,release!:()=>void,entered!:()=>void;const wait=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),base=kv.list;
+    kv.list=async <T>(scope:string)=>{if(scope===PENDING_SCOPE){entered();await wait}return base<T>(scope)};
+    const vector=new VectorIndex(),persistence=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);
+    try{await persistence.prepareBackfill(await persistence.load());const replay=persistence.replayPendingLog(3);await started;held=true;release();await replay;await persistence.save();expect(vector.has('obs_race')).toBe(false);expect(pendingRows(kv).get('obs_race')).toEqual(original);expect(persistence.isRecoveryPaused()).toBe(true)}finally{persistence.stop()}
+  });
+
+  it('retains pending entries if a storage hold arrives during a checkpoint write', async () => {
+    const kv=mockKV(),original={q:1,id:'obs_during_save',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_during_save',original);
+    let held=false,release!:()=>void,entered!:()=>void;const wait=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),base=kv.set;
+    kv.set=async <T>(scope:string,key:string,data:T)=>{if(scope===INDEX_SCOPE&&key==='vectors:meta'){entered();await wait}return base(scope,key,data)};
+    const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);
+    try{await p.prepareBackfill(await p.load());await p.replayPendingLog(3);const saving=p.save();await started;held=true;release();await saving;expect(pendingRows(kv).get('obs_during_save')).toEqual(original);expect(p.isRecoveryPaused()).toBe(true)}finally{p.stop()}
+  });
+
+  it('characterizes unresolved delete already sent when storage hold appears', async () => {
+    const kv=mockKV(),original={q:1,id:'obs_inflight',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_inflight',original);
+    let held=false,release!:()=>void,entered!:()=>void;const wait=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),base=kv.delete;
+    kv.delete=async(scope:string,key:string)=>{if(scope===PENDING_SCOPE&&key==='obs_inflight'){entered();await wait}await base(scope,key)};
+    const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);
+    try{await p.prepareBackfill(await p.load());await p.replayPendingLog(3);const saving=p.save();await started;held=true;release();await saving;expect(pendingRows(kv).has('obs_inflight')).toBe(false)}finally{p.stop()}
+  });
+
+  it('characterizes a transient storage hold missed between asynchronous checks', async () => {
+    const kv=mockKV(),original={q:1,id:'obs_aba',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_aba',original);
+    let held=false,release!:()=>void,entered!:()=>void;const wait=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),base=kv.list;
+    kv.list=async<T>(scope:string)=>{if(scope===PENDING_SCOPE){entered();await wait}return base<T>(scope)};
+    const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);
+    try{await p.prepareBackfill(await p.load());const replay=p.replayPendingLog(3);await started;held=true;held=false;release();await replay;expect(vector.has('obs_aba')).toBe(true)}finally{p.stop()}
+  });
+  it('rejects replay when the admitted hold generation changes during a read', async () => {
+    const kv=mockKV(),original={q:1,id:'obs_epoch',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_epoch',original);
+    let held=false,generation=0,release!:()=>void,entered!:()=>void;const wait=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),base=kv.list;
+    kv.list=async<T>(scope:string)=>{if(scope===PENDING_SCOPE){entered();await wait}return base<T>(scope)};
+    const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held,storageGeneration:()=>generation} as never);
+    try{await p.prepareBackfill(await p.load());const replay=p.replayPendingLog(3);await started;held=true;generation++;held=false;release();await replay;expect(vector.has('obs_epoch')).toBe(false);expect(pendingRows(kv).get('obs_epoch')).toEqual(original);expect(p.isRecoveryPaused()).toBe(true)}finally{p.stop()}
   });
 
   it("writes a compact entry for every added vector and a tombstone for every removal", async () => {
@@ -233,7 +307,7 @@ describe("pending vector log", () => {
     expect([...third.vector.entries()].map(([id]) => id).sort()).toEqual(["obs_2", "obs_3", "obs_4"]);
   });
 
-  it("skips logged vectors whose dimension does not match the active provider", async () => {
+  it("preserves the pending log when any vector dimension does not match", async () => {
     const kv = mockKV();
     const first = await boot(kv);
     first.vector.add("obs_ok", "ses_1", v(1));
@@ -244,7 +318,10 @@ describe("pending vector log", () => {
     const persistence = new IndexPersistence(kv as never, vector);
     await persistence.load();
     const replay = await persistence.replayPendingLog(3);
-    expect(replay).toMatchObject({ added: 1, skipped: 1 });
+    expect(replay).toMatchObject({ added: 0 });
+    expect(persistence.isRecoveryPaused()).toBe(true);
+    expect(pendingRows(kv).size).toBe(2);
+    expect(vector.has("obs_ok")).toBe(false);
     expect(vector.has("obs_wide")).toBe(false);
   });
 
@@ -449,3 +526,92 @@ describe("durable vector backlog", () => {
     }
   });
 });
+
+describe("SDK-only release after a storage hold", () => {
+  function fixture() {
+    const kv = Object.assign(mockKV(), {
+      durability: createStateDurabilityFence({ storePath: "/unused-synthetic-sdk-store", completion: "sdk" }),
+    });
+    let held = true;
+    const vector = new VectorIndex();
+    const persistence = new IndexPersistence(kv as never, vector, {
+      requireRecoveryPlan: true, isStorageHeld: () => held, saveIntervalMs: 600_000,
+    });
+    return { kv, vector, persistence, release: () => { held = false; } };
+  }
+
+  it("retains three original pending records before any checkpoint writes or replay", async () => {
+    const { kv, vector, persistence, release } = fixture();
+    for (const [q, id] of ["first", "second", "third"].entries()) {
+      await kv.set(PENDING_SCOPE, id, { q: q + 1, id, s: "test", e: Buffer.from(v(q).buffer).toString("base64") });
+    }
+    const original = new Map(pendingRows(kv));
+    try {
+      await persistence.load();
+      release();
+      kv.ops.length = 0;
+      const resumed = await persistence.resumeStorageRecovery(3);
+      await persistence.save();
+      expect(pendingRows(kv)).toEqual(original);
+      expect(resumed).toBe(false);
+      expect(persistence.status().vector?.lastError).toContain("durable reconciliation");
+      expect(vector.size).toBe(0);
+      expect(kv.ops.filter(op => op.op !== "list")).toEqual([]);
+      expect(persistence.isRecoveryPaused()).toBe(true);
+    } finally { persistence.stop(); }
+  });
+
+  it.each(["failed read", "invalid response", "new row after first read"])("keeps the SDK release held for %s", async mode => {
+    const { kv, vector, persistence, release } = fixture();
+    const list = kv.list;
+    let reads = 0;
+    kv.list = async scope => {
+      if (scope === PENDING_SCOPE) {
+        reads++;
+        if (mode === "failed read") throw new Error("synthetic timeout");
+        if (mode === "invalid response") return null as never;
+        if (reads === 2) return [{ q: 1, id: "later", t: 1 }] as never;
+      }
+      return list(scope);
+    };
+    try {
+      await persistence.load();
+      release();
+      expect(await persistence.resumeStorageRecovery(3)).toBe(false);
+      expect(persistence.isRecoveryPaused()).toBe(true);
+      expect(vector.size).toBe(0);
+      expect(kv.ops.some(op => op.op === "delete")).toBe(false);
+      expect(kv.ops.some(op => op.op === "set")).toBe(false);
+    } finally { persistence.stop(); }
+  });
+
+  it("allows SDK release when the pending namespace is empty", async () => {
+    const { persistence, release } = fixture();
+    try {
+      await persistence.load();
+      release();
+      expect(await persistence.resumeStorageRecovery(3)).toBe(true);
+      expect(persistence.isRecoveryPaused()).toBe(false);
+    } finally { persistence.stop(); }
+  });
+});
+
+describe('explicit storage recovery release',()=>{
+ it('retries held startup recovery in the same process only after release',async()=>{
+  const kv=mockKV(),row={q:1,id:'obs_resume',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_resume',row);
+  let held=true,generation=0;const vector=new VectorIndex();const p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held,storageGeneration:()=>generation} as never);
+  try{await p.load();expect(await (p as any).resumeStorageRecovery(3)).toBe(false);expect(pendingRows(kv).get('obs_resume')).toEqual(row);held=false;generation++;expect(await (p as any).resumeStorageRecovery(3)).toBe(true);expect(vector.has('obs_resume')).toBe(true);expect(p.isRecoveryPaused()).toBe(false)}finally{p.stop()}
+ });
+ it('rejects vector mutation before changing memory while storage is held',async()=>{
+  const kv=mockKV(),vector=new VectorIndex();let held=true;const p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);
+  try{expect(()=>vector.add('new','s',v(1))).toThrow(/VECTOR_RECOVERY_PAUSED/);expect(vector.has('new')).toBe(false);expect(pendingRows(kv).size).toBe(0)}finally{p.stop()}
+ });
+ it('keeps recovery paused and originals intact when release reload fails',async()=>{
+  const kv=mockKV(),row={q:1,id:'obs_fail',s:'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'obs_fail',row);let held=true;const vector=new VectorIndex();const p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);
+  try{await p.load();held=false;kv.get=async()=>{throw Error('synthetic read failure')};expect(await (p as any).resumeStorageRecovery(3)).toBe(false);expect(p.isRecoveryPaused()).toBe(true);expect(pendingRows(kv).get('obs_fail')).toEqual(row);expect(vector.size).toBe(0)}finally{p.stop()}
+ });
+});
+
+it('rejects foreground vector changes while a released storage checkpoint is loading',async()=>{const kv=mockKV();let held=true,release!:()=>void,entered!:()=>void;const wait=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),get=kv.get;const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);try{await p.load();held=false;kv.get=async<T>(scope:string,key:string)=>{if(scope===INDEX_SCOPE&&key==='vectors:meta'){entered();await wait}return get<T>(scope,key)};const resume=(p as any).resumeStorageRecovery(3);await started;expect(()=>vector.add('during','s',v(1))).toThrow(/VECTOR_RECOVERY_PAUSED/);expect(vector.has('during')).toBe(false);release();expect(await resume).toBe(true)}finally{p.stop()}});
+it('does not claim successful vector recovery when pending-log read fails',async()=>{const kv=mockKV();let held=true;const list=kv.list;const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);try{await p.load();held=false;kv.list=async<T>(scope:string)=>{if(scope===PENDING_SCOPE)throw Error('synthetic pending read failure');return list<T>(scope)};expect(await (p as any).resumeStorageRecovery(3)).toBe(false);expect(p.isRecoveryPaused()).toBe(true)}finally{p.stop()}});
+it('allows an explicit retry after a transient pending-log read failure',async()=>{const kv=mockKV(),row={q:1,id:'retry','s':'s',e:Buffer.from(v(1).buffer).toString('base64')};await kv.set(PENDING_SCOPE,'retry',row);let held=true;const list=kv.list;const vector=new VectorIndex(),p=new IndexPersistence(kv as never,vector,{requireRecoveryPlan:true,isStorageHeld:()=>held} as never);try{await p.load();held=false;kv.list=async<T>(scope:string)=>{if(scope===PENDING_SCOPE)throw Error('temporary');return list<T>(scope)};expect(await (p as any).resumeStorageRecovery(3)).toBe(false);kv.list=list;expect(await (p as any).resumeStorageRecovery(3)).toBe(true);expect(vector.has('retry')).toBe(true);expect(p.status().pendingLogError).toBeNull()}finally{p.stop()}});

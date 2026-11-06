@@ -36,7 +36,8 @@ export function createMemoryPressureGuard({control,readSample=readHostMemory,sch
    if(pendingRecovery){state.recoveryStatus='recovering';return;}
    const c=control.snapshot();
    if(!c.holds?.includes('memory')){state.recoveryStatus='observing';return;}
-   if(c.holds.length!==1||c.status==='error'){state.recoveryStatus='held';return;}
+   const memoryWithStorage=c.holds.length===2&&c.holds.includes('storage_error');
+   if(!memoryWithStorage&&(c.holds.length!==1||c.status==='error')){state.recoveryStatus='held';return;}
    if(c.recovery.attempts>=c.recovery.maxAttempts){state.recoveryStatus='attempt_limit';return;}
    if(now<c.recovery.nextAttemptAt){state.recoveryStatus='backoff';return;}
    state.recoveryStatus='stabilizing';

@@ -1,3 +1,4 @@
+import {inspectUncertainCapture,validUncertainInspection} from "../capture/uncertain-inspection.js";
 import { committedSdkResolution } from '../capture/sdk-resolution-record.js';
 import {recordAudit} from "./audit.js";
 import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim,assertSdkSourceLegacyProtection} from "../capture/sdk-source-restore.js";
@@ -28,7 +29,7 @@ import {
 } from "../capture/event-record.js";
 import { captureReviewPage, recordCaptureFailure, resolveCaptureReview, reviewHistory } from "../capture/review.js";
 import { createCaptureRetryJobs } from "../capture/retry-jobs.js";
-import { backgroundTask, backgroundPaused } from "../ops/background-control.mjs";
+import { backgroundTask, backgroundPaused, backgroundControl } from "../ops/background-control.mjs";
 import { restoreIndexEntries,extractImage } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord,normalizeCaptureData } from "./privacy.js";
@@ -57,6 +58,7 @@ export interface InboxRecord {
   sdkRestoreState?:"pending"|"completed";
   sdkResolutionId?:string;
   sdkResolutionState?:'pending'|'committed';
+  deferredByStorageHold?: true;
   key: string;
   eventId: string;
   eventSource: "client" | "server";
@@ -83,7 +85,7 @@ export type CaptureResult =
   | { status: "accepted"; state: "completed" | "sdk_completed"; eventId: string; observationId: string; attempts: number }
   | { status: "accepted"; state: "retrying"; eventId: string; observationId: string; attempts: number; nextAttemptAt: string; error: string }
   | { status: "duplicate"; state: "completed" | "sdk_completed" | InboxState; eventId: string; observationId?: string; deduplicated: true }
-  | { status: "rejected"; eventId: string; error: string; retryable: boolean; observationId?: string };
+  | { status: "rejected"; eventId: string; error: string; retryable: boolean; observationId?: string; reconciliationRequired?: true };
 
 export interface CapturePolicy {
   maxAttempts: number;
@@ -222,7 +224,7 @@ export interface CaptureController {
   sweep(): Promise<{ processed: number; recovered: number; deadLettered: number }>;
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
-  status(): Promise<CaptureStatus>;
+  status(options?: { scanInbox?: boolean }): Promise<CaptureStatus>;
   setAutomaticRecoveryEnabled(value:boolean):ReturnType<ReturnType<typeof createCaptureAutoRecovery>["setEnabled"]>;
   progress(): CaptureProgress;
   durability(): SentMark | null;
@@ -348,7 +350,7 @@ export function registerCaptureFunctions(
   async function attempt(rec: InboxRecord): Promise<CaptureResult> {
     rec.cycleAttempts = (rec.cycleAttempts ?? rec.attempts) + 1;
     rec.attempts++;
-    type ObserveResult = { observationId?: string; deduplicated?: boolean; success?: boolean; error?: string };
+    type ObserveResult = { observationId?: string; deduplicated?: boolean; success?: boolean; error?: string; retryable?: boolean };
     let result = null as ObserveResult | null;
     let failure: string | null = null;
     try {
@@ -382,6 +384,11 @@ export function registerCaptureFunctions(
       counters.duplicates++;
       return { status: "duplicate", state: "completed", eventId: rec.eventId, deduplicated: true };
     }
+    if (!failure && result?.success === false && result.retryable === true && result.error === "vector_recovery_paused") {
+      rec.attempts = Math.max(0, rec.attempts - 1);
+      rec.cycleAttempts = Math.max(0, (rec.cycleAttempts ?? 1) - 1);
+    }
+    if (!failure && result?.success === false && result.retryable === true) failure = typeof result.error === "string" ? result.error : "observation_temporarily_unavailable";
     const permanent = !failure;
     const message = failure ?? (result && typeof result.error === "string" ? result.error : "mem::observe returned no observation");
     if (permanent || rec.cycleAttempts >= policy.maxAttempts) {
@@ -392,14 +399,15 @@ export function registerCaptureFunctions(
       updateActiveInbox(rec.key, false);
       counters.deadLettered++;
       logger.warn("capture moved to dead letters", { eventId: rec.eventId, attempts: rec.attempts, error: message });
-      return { status: "rejected", eventId: rec.eventId, error: message, retryable: false, observationId: rec.observationId };
+      return { status: "rejected", eventId: rec.eventId, error: message, retryable: false, observationId: rec.observationId, ...(sdkCompletion && message === "vector_recovery_interrupted" ? {reconciliationRequired:true as const} : {}) };
     }
     const nextAttemptAt = new Date(now.getTime() + backoffMs(rec.cycleAttempts, policy)).toISOString();
-    const retrying: InboxRecord = { ...rec, status: "retrying", updatedAt: now.toISOString(), nextAttemptAt, lastError: message };
+    const retrying: InboxRecord = { ...rec, status: "retrying", updatedAt: now.toISOString(), nextAttemptAt, lastError: message, ...(sdkCompletion && message === 'vector_recovery_paused' && result?.retryable === true ? {deferredByStorageHold:true as const} : {}) };
     await recordCaptureFailure(kv,retrying);
     await kv.set(KV.captureInbox, rec.key, retrying);
     counters.retried++;
     logger.warn("capture processing failed, will retry", { eventId: rec.eventId, attempts: rec.attempts, nextAttemptAt, error: message });
+    if (sdkCompletion && retrying.deferredByStorageHold) return { status: "rejected", eventId: rec.eventId, error: "capture_reconciliation_required", retryable: false, reconciliationRequired: true, observationId: rec.observationId };
     return { status: "accepted", state: "retrying", eventId: rec.eventId, observationId: rec.observationId, attempts: rec.attempts, nextAttemptAt, error: message };
   }
 
@@ -414,6 +422,10 @@ export function registerCaptureFunctions(
     const payload = input.payload;
     const clientEventId = isValidEventId(input.eventId) ? input.eventId : undefined;
     const eventId = clientEventId ?? generateId("evs");
+    const state = backgroundControl?.snapshot();
+    if (sdkCompletion && state && (state.holds.includes("storage_error") || state.status === "resuming" || state.status === "initializing")) {
+      return { status: "rejected", eventId, error: "vector_recovery_paused", retryable: true };
+    }
     const key = captureKey(payload.project, payload.sessionId, eventId);
     return withKeyedLock(`capture:${key}`, async () => {
       let storedObservationId: string | undefined;
@@ -434,7 +446,7 @@ export function registerCaptureFunctions(
           const stored = await storedObservation(done);
           if (stored === undefined && done.observationId) throw new Error("capture_existing_observation_unavailable");
           if (stored !== null) {
-            if (stored) await restoreIndexEntries(stored);
+            if (stored) await restoreIndexEntriesAdmitted(stored);
             counters.duplicates++;
             return { status: "duplicate", state: "completed", eventId, observationId: done.observationId, deduplicated: true };
           }
@@ -447,6 +459,11 @@ export function registerCaptureFunctions(
       }
       const queued = await kv.get<InboxRecord>(KV.captureInbox, key);
       if (queued) {
+        if (sdkCompletion && queued.lastError === "vector_recovery_interrupted") return { status: "rejected", eventId, error: "vector_recovery_interrupted", retryable: false, reconciliationRequired: true, observationId: queued.observationId };
+        if (sdkCompletion && queued.deferredByStorageHold === true && queued.status === "retrying" && queued.lastError === "vector_recovery_paused") {
+          if (!clientEventId || queued.eventSource !== "client" || !sameSdkSource(queued.payload, payload)) return { status: "rejected", eventId, error: "capture_deferred_source_mismatch", retryable: false };
+          return { status: "rejected", eventId, error: "capture_reconciliation_required", retryable: false, reconciliationRequired: true, observationId: queued.observationId };
+        }
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
       }
@@ -477,6 +494,14 @@ export function registerCaptureFunctions(
     });
   }
 
+  async function restoreIndexEntriesAdmitted(observation: CompressedObservation): Promise<void> {
+    if (!backgroundControl) return restoreIndexEntries(observation);
+    const result = await backgroundControl.runVectorWrite(() => restoreIndexEntries(observation));
+    if (result && typeof result === "object" && "success" in result && result.success === false) {
+      throw Object.assign(new Error(result.error), { code: result.error });
+    }
+  }
+
   async function restoreSdkSource(input:{payload:HookPayload;eventId:string}) {
     const {payload,eventId}=input,key=captureKey(payload.project,payload.sessionId,eventId);
     const base={eventId,completion:'sdk',durable:false,sourceRestore:'sdk-v1'};
@@ -504,7 +529,7 @@ export function registerCaptureFunctions(
           if(!rec&&inboxSize!==null)inboxSize++;
         }));
         if(!alreadyPresent){const outcome:any=await sdk.trigger({function_id:'mem::observe',payload:{...payload,eventId,captureKey:key,observationId:id,sdkSourceRestore:{key,requestId}}});alreadyPresent=outcome?.deduplicated===true;}
-        else await restoreIndexEntries((await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id))!);
+        else await restoreIndexEntriesAdmitted((await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id))!);
         await recordAudit(kv,'capture_sdk_source_restore','mem::capture-restore-sdk',[key],{completion:'sdk',stage:'verify_pending'});
         await kv.recoveryWrite!.exclusive(keys,async()=>{
           await assertSdkSourceClaim(kv,{...payload,eventId,captureKey:key,observationId:id},{key,requestId});if(stopped)throw sdkSourceFailure('SDK_SOURCE_STOPPED');
@@ -529,6 +554,7 @@ export function registerCaptureFunctions(
       const stored=await kv.get<InboxRecord>(KV.captureInbox,key);
       if (!stored) return "gone";
       const rec={...stored};
+      if(rec.lastError==='vector_recovery_interrupted')return 'waiting';
       if(rec.eventSource==='client'&&(await kv.get<CompletedEvent>(eventScope(key),key))?.state==='deleted'){
         await kv.delete(KV.captureInbox,key);
         if(inboxSize!==null)inboxSize=Math.max(0,inboxSize-1);
@@ -697,10 +723,10 @@ export function registerCaptureFunctions(
     return results;
   }
 
-  async function status(): Promise<CaptureStatus> {
+  async function status(options: { scanInbox?: boolean } = {}): Promise<CaptureStatus> {
     await automaticRecovery.initialize().catch(()=>{});
     let inbox: CaptureStatus["inbox"] = null;
-    try {
+    if (options.scanInbox !== false) try {
       const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
       refreshInbox(records);
       let sdkCompleted=0;
@@ -737,6 +763,12 @@ export function registerCaptureFunctions(
     return { automaticRecovery:automaticRecovery.snapshot(),policy, inbox, legacyOutbox:await inspectOutbox(), progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
+  sdk.registerFunction('mem::capture-inspect-uncertain', async (input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('INVALID_UNCERTAIN_INSPECTION');
+    const { _caller_worker_id, ...selection } = input as Record<string, unknown>;
+    if ((_caller_worker_id !== undefined && typeof _caller_worker_id !== 'string') || !validUncertainInspection(selection)) throw new Error('INVALID_UNCERTAIN_INSPECTION');
+    return inspectUncertainCapture(kv, selection);
+  });
   sdk.registerFunction("mem::capture-restore-sdk",(input:{payload:HookPayload;eventId:string})=>trackWork(()=>backgroundTask(restoreSdkSource)(input)));
   sdk.registerFunction('mem::capture-reconcile-sdk',input=>{
     const selection=sdkReconciliationInvocation(input);

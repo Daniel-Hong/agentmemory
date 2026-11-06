@@ -353,6 +353,8 @@ class Runtime:
         native = ' --native-compat' if self.sdk_native_compat else ''
         native_stop = native + ' --data-dir ' + str(self.paths['data']) if self.sdk_native_compat else ''
         native_env = ('Environment="AGENTMEMORY_NATIVE_III_BIN=' + str(self.paths['engine']) + '"\nEnvironment="AGENTMEMORY_III_CONFIG=' + str(self.paths['data'] / 'iii-config.yaml') + '"\n') if self.sdk_native_compat else ''
+        if self.sdk_native_compat:
+            native_env += 'RestartPreventExitStatus=78\n'
         provider_env = 'Environment=\"AGENTMEMORY_LLM_PROVIDER=openai\"\n' if self.service_provider_selection else ''
         return ('[Service]\nExecStart=\nExecStart=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' --data-dir ' + str(self.paths['data']) + native + '\nExecStop=\nExecStop=/usr/bin/node ' + str(self.version / 'dist/cli.mjs') + ' stop' + native_stop + '\nExecStartPre=\nExecStartPre=/usr/bin/python3 -I -B ' + str(self.public / 'kit-runtime.py') + ' --guard\nEnvironment="AGENTMEMORY_FEEDBACK_DIR=' + str(self.paths['feedback']) + '"\nEnvironment="AGENTMEMORY_RECEIPT_DIR=' + str(self.receipt.parent) + '"\n' + native_env + provider_env).encode()
 

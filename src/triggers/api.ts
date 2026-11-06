@@ -1,3 +1,4 @@
+import {validUncertainInspection} from "../capture/uncertain-inspection.js";
 import {liveResourceSample} from '../health/live-resource.js';
 import {createSessionEndDiagnostics} from "../ops/session-end-diagnostics.js";
 import {finishLongSession} from "../ops/long-session.mjs";
@@ -399,8 +400,12 @@ export interface StatusReporterDeps {
   provider?: ResilientProvider | { circuitState?: unknown };
 }
 
+function isVectorRecoveryPaused(result: unknown): boolean {
+  return typeof result === "object" && result !== null && "error" in result && (result.error === "vector_recovery_paused" || result.error === "vector_recovery_interrupted");
+}
+
 export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusReporterDeps) {
-  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; scanUnindexed?: boolean; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
+  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; scanUnindexed?: boolean; scanCaptureInbox?: boolean; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
     const idx = getSearchIndex();
     const keywordRebuildRunning = isKeywordRebuildInProgress();
     const scan = unindexedScanFor(kv);
@@ -420,7 +425,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         STATUS_CHECK_TIMEOUT_MS,
       ),
       probeStateStore(kv),
-      valueWithin(getCaptureController()?.status() ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
+      valueWithin(getCaptureController()?.status({scanInbox:options.scanCaptureInbox}) ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS),
     ]);
     const observationsIndexed = [...idx.observationCountsBySession().values()].reduce((a, n) => a + n, 0);
@@ -635,7 +640,8 @@ export function registerApiTriggers(
       const ops = await operationalHealth();
       const hostLevel=ops.memoryPressure?.level;
       const backgroundStatus=ops.backgroundControl?.status;
-      const status = hostLevel==="critical"?"critical":hostLevel==="high"&&health?.status!=="critical"?"degraded":(backgroundStatus==="error"||ops.captureProgress?.stalled)&&health?.status!=="critical"?"degraded":health?.status||"healthy";
+      const captureUnknown=ops.captureProgress?.pending===null;
+      const status = hostLevel==="critical"?"critical":hostLevel==="high"&&health?.status!=="critical"?"degraded":(backgroundStatus==="error"||ops.captureProgress?.stalled||captureUnknown)&&health?.status!=="critical"?"degraded":health?.status||"healthy";
       const statusCode = status === "critical" ? 503 : 200;
 
       return {
@@ -823,6 +829,14 @@ export function registerApiTriggers(
     catch{return{status_code:503,headers,body:{completed:false,code:'SDK_RECONCILIATION_UNAVAILABLE'}};}
   });
   sdk.registerTrigger({type:'http',function_id:'api::capture-reconcile-sdk',config:{api_path:'/agentmemory/capture/reconcile-sdk',http_method:'POST'}});
+  sdk.registerFunction('api::capture-inspect-uncertain',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'};if(!secret)return{status_code:503,headers,body:{error:'UNCERTAIN_INSPECTION_AUTH_REQUIRED'}};const denied=checkAuth(req,secret);if(denied)return{...denied,headers};
+    const q=req.body;if(!validUncertainInspection(q))return{status_code:400,headers,body:{error:'INVALID_UNCERTAIN_INSPECTION'}};
+    try{const value:any=await sdk.trigger({function_id:'mem::capture-inspect-uncertain',payload:q});return{status_code:['source_conflict','observation_conflict','changed_during_inspection'].includes(value?.outcome)?409:200,headers,body:value};}
+    catch{return{status_code:503,headers,body:{error:'UNCERTAIN_INSPECTION_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-inspect-uncertain',config:{api_path:'/agentmemory/capture/inspect-uncertain',http_method:'POST'}});
+
   sdk.registerFunction('api::capture-reconcile-sdk-status',async(req:HttpRequest):Promise<Response>=>{
     const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers};
     const q=req.query_params??{};
@@ -1221,7 +1235,7 @@ export function registerApiTriggers(
         function_id: "mem::replay::import-jsonl",
         payload,
       });
-      return { status_code: 202, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 202, body: result };
     },
   );
   sdk.registerTrigger({
@@ -1862,7 +1876,7 @@ export function registerApiTriggers(
             : {}),
         },
       });
-      return { status_code: 201, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 201, body: result };
     },
   );
   sdk.registerTrigger({
@@ -1888,7 +1902,7 @@ export function registerApiTriggers(
         };
       }
       const result = await sdk.trigger({ function_id: "mem::forget", payload: req.body });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -1984,7 +1998,7 @@ export function registerApiTriggers(
       const dryRun =
         req.query_params?.["dryRun"] === "true" || req.body?.dryRun === true;
       const result = await sdk.trigger({ function_id: "mem::evict", payload: { dryRun } });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2215,7 +2229,7 @@ export function registerApiTriggers(
         return { status_code: 400, body: { error: "exportData is required" } };
       }
       const result = await sdk.trigger({ function_id: "mem::import", payload: req.body });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2267,6 +2281,7 @@ export function registerApiTriggers(
         function_id: "mem::evolve",
         payload: req.body,
       });
+      if (isVectorRecoveryPaused(result)) return { status_code: 503, body: result };
       if (result && result.success === false) {
         const status =
           result.code === "not_found" ? 404 : result.code === "not_latest" ? 409 : 400;
@@ -2288,7 +2303,7 @@ export function registerApiTriggers(
       const dryRun =
         req.query_params?.["dryRun"] === "true" || req.body?.dryRun === true;
       const result = await sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun } });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2770,7 +2785,7 @@ export function registerApiTriggers(
         };
       }
       const result = await sdk.trigger({ function_id: "mem::governance-delete", payload: req.body });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2796,7 +2811,7 @@ export function registerApiTriggers(
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
       const result = await sdk.trigger({ function_id: "mem::governance-bulk", payload: req.body || {} });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2862,7 +2877,7 @@ export function registerApiTriggers(
       }
       try {
         const result = await sdk.trigger({ function_id: "mem::snapshot-restore", payload: req.body });
-        return { status_code: 200, body: result };
+        return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
       } catch {
         return { status_code: 404, body: { error: "Snapshots not enabled" } };
       }

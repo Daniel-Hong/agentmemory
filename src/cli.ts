@@ -1389,16 +1389,20 @@ function nativeCompatPidMatches(pid: number, state: NativeEngineState): boolean 
   } catch { return false; }
 }
 
+class UnresolvedNativeLifecycleError extends Error {
+  readonly exitCode = 78;
+}
+
 function assertNativeCompatStartupOwnership(): void {
   const previous = readEngineState();
   if (previous?.kind === "native" && previous.compatVersion && previous.workerIdentity) {
     const pinned = previous.workerIdentity;
     let sameWorker = false;
     try { sameWorker = nativeCompatWorkerIdentityMatches(pinned, pinned.pid, nativeWorkerIdentity(pinned.pid)); } catch {}
-    if (sameWorker) throw new Error("Unresolved prior lifecycle has a live pinned native worker; no process was started and state was preserved.");
+    if (sameWorker) throw new UnresolvedNativeLifecycleError("Unresolved prior lifecycle has a live pinned native worker; no process was started and state was preserved.");
   }
   if (existsSync(engineStatePath()) || existsSync(enginePidfilePath()) || existsSync(workerPidfilePath())) {
-    throw new Error("Unresolved prior lifecycle evidence must be reconciled before native startup; no process was started and state was preserved.");
+    throw new UnresolvedNativeLifecycleError("Unresolved prior lifecycle evidence must be reconciled before native startup; no process was started and state was preserved.");
   }
 }
 
@@ -3894,7 +3898,8 @@ async function unknownCommand(): Promise<void> {
 const handler = commands[first] ?? (first && !first.startsWith("-") ? unknownCommand : main);
 handler().catch(async (err) => {
   p.log.error(err instanceof Error ? err.message : String(err));
-  const exitCode = await runStartupCleanup(1).catch(() => 1);
+  const failureCode = err instanceof UnresolvedNativeLifecycleError ? err.exitCode : 1;
+  const exitCode = await runStartupCleanup(failureCode).catch(() => 1);
   if (args.includes("--native-compat") && importedStartupWorker) {
     process.exitCode = exitCode;
     return;

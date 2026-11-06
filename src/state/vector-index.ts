@@ -37,12 +37,16 @@ export class VectorIndex {
   private vectors: Map<string, VectorEntry> = new Map();
   private changes: Map<string, boolean> = new Map();
   private listener: VectorChangeListener | null = null;
+  private mutationGuard: (() => void) | null = null;
+
+  setMutationGuard(guard: (() => void) | null): void { this.mutationGuard = guard; }
 
   setChangeListener(listener: VectorChangeListener | null): void {
     this.listener = listener;
   }
 
   add(obsId: string, sessionId: string, embedding: Float32Array): void {
+    this.mutationGuard?.();
     const entry = { embedding, sessionId };
     this.vectors.set(obsId, entry);
     this.changes.set(obsId, true);
@@ -50,6 +54,7 @@ export class VectorIndex {
   }
 
   remove(obsId: string): void {
+    this.mutationGuard?.();
     if (this.vectors.delete(obsId)) {
       this.changes.set(obsId, false);
       this.listener?.(obsId, null);
@@ -157,6 +162,7 @@ export class VectorIndex {
   }
 
   clear(): void {
+    this.mutationGuard?.();
     const hadVectors = this.vectors.size > 0;
     for (const obsId of this.vectors.keys()) this.changes.set(obsId, false);
     this.vectors.clear();

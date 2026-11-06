@@ -224,7 +224,12 @@ describe("native startup prior ownership", () => {
       for(const [saved,pidfile] of [[JSON.stringify(prior),undefined],[JSON.stringify(prior),"99999999"],["{malformed",undefined],[JSON.stringify({kind:"unknown"}),undefined],[JSON.stringify({...prior,workerIdentity:undefined}),undefined]]as const){
         fs.writeFileSync(join(runtime,"engine-state.json"),saved);if(pidfile)fs.writeFileSync(join(runtime,"worker.pid"),pidfile);else fs.rmSync(join(runtime,"worker.pid"),{force:true});
         const result=spawnSync(process.execPath,["--import","tsx",resolve("src/cli.ts"),"--native-compat","--port",String(port)],{env,cwd:process.cwd(),encoding:"utf8",timeout:15000});
-        expect(result.error).toBeUndefined();expect(result.status).toBe(1);expect(result.stdout+result.stderr).toContain("prior lifecycle");expect(fs.existsSync(binLog)).toBe(false);expect(fs.existsSync(marker)).toBe(false);expect(fs.readFileSync(join(runtime,"engine-state.json"),"utf8")).toBe(saved);
+        expect(result.error).toBeUndefined();
+        expect(result.stdout + result.stderr).toContain("prior lifecycle");
+        expect(result.status).toBe(78);
+        expect(fs.existsSync(binLog)).toBe(false);
+        expect(fs.existsSync(marker)).toBe(false);
+        expect(fs.readFileSync(join(runtime, "engine-state.json"), "utf8")).toBe(saved);
       }
       for(const saved of [undefined,"{malformed",JSON.stringify({kind:"unknown"})]){
         if(saved)fs.writeFileSync(join(runtime,"engine-state.json"),saved);else fs.rmSync(join(runtime,"engine-state.json"),{force:true});fs.writeFileSync(join(runtime,"worker.pid"),String(child.pid));

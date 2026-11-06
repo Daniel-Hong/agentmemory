@@ -2739,6 +2739,7 @@
       if (!['running','pausing','resuming','paused','error'].includes(control.status)) html += '<p class="hnote" role="status">백그라운드 실행 상태 미확인 · 현황을 다시 조회하세요.</p>';
       if (work.quarantined) html += '<p class="hnote" role="status">요약·후처리 격리 '+work.quarantined+'건 · 사용자 점검이 필요하며 자동 재처리하지 않습니다.</p>';
       var inbox = ((store.report || {}).capture || {}).inbox;
+      if (!inbox) html += '<p class="hnote" role="status">수집 inbox를 자동 조회하지 않아 격리·재시도·마지막 오류·SDK 복원 및 수집 정체 상태를 확인하지 못했습니다. 수집 격리·복구 이력의 수동 조회도 오래 걸리거나 실패할 수 있습니다.</p>';
       if (inbox && inbox.sdkRestorePending) html += '<p class="hnote" role="alert">SDK 원본 복원 확인 미완료 '+fmtNum(inbox.sdkRestorePending)+'건 · 원본은 보존되며 자동 재처리하지 않습니다.</p>';
       if (inbox && inbox.sdkCompleted) html += '<p class="hnote" role="status">SDK 저장 완료 · 원본 보존 '+fmtNum(inbox.sdkCompleted)+'건. 디스크 확정 영수증이 없어 자동 제거·재처리하지 않습니다.</p>';
       if (inbox && (inbox.dead || inbox.retrying)) html += '<p class="hnote" role="status">수집 저장 전 실패: 격리 '+fmtNum(inbox.dead || 0)+'건 · 재시도 '+fmtNum(inbox.retrying || 0)+'건 · 수집 격리·복구 이력에서 확인하세요.</p>';
@@ -7813,8 +7814,8 @@
       html += hrow('Keyword rebuild', ri.bm25Incomplete ? '<span style="color:var(--accent);">incomplete</span>' : 'complete', null, 'Rebuilt from stored data at every start, so it is never saved to disk.');
       if (p) {
         html += hrow('Vector save', esc(legText(p.vector)), null, 'Saved at most every ' + esc(durationText(p.saveIntervalMs || 600000)) + ' (AGENTMEMORY_INDEX_SAVE_INTERVAL_MS). ' + esc(fmtNum(p.buckets) + ' bucket' + (p.buckets === 1 ? '' : 's') + ', ' + fmtNum(p.pendingChanges) + ' unsaved change' + (p.pendingChanges === 1 ? '' : 's') + (p.saving ? ', saving now' : '') + '.'));
-        if (typeof p.pendingLog === 'number') {
-          html += hrow('Pending vector log', esc(fmtNum(p.pendingLog) + ' vector change' + (p.pendingLog === 1 ? '' : 's')), null,
+        if (typeof p.pendingLog === 'number' || p.pendingLogKnown === false) {
+          html += hrow('Pending vector log', p.pendingLogKnown === false ? 'not checked' : esc(fmtNum(p.pendingLog) + ' vector change' + (p.pendingLog === 1 ? '' : 's')), null,
             p.pendingLogError ? '<span style="color:var(--accent);overflow-wrap:anywhere;">' + esc('Log writes failing: ' + p.pendingLogError) + '</span>' :
             'New and removed vectors are written here right away and replayed after a crash, so nothing is embedded twice. Each save empties it.');
         }
@@ -7900,7 +7901,8 @@
       var drainedAt = (cap.spool || []).map(function(s) { return s.stats && s.stats.lastDrainAt; }).filter(Boolean).sort().pop();
       var dropped = (cap.spool || []).reduce(function(n, s) { return n + ((s.stats && s.stats.dropped) || 0); }, 0);
       html += hrow('Inbox', inbox ? esc(fmtNum(inbox.pending) + ' pending · ' + fmtNum(inbox.retrying) + ' retrying · ' + fmtNum(inbox.dead) + ' dead' + (inbox.sdkCompleted ? ' · '+fmtNum(inbox.sdkCompleted)+' SDK 완료 원본 보존' : '')) : 'not checked', 'captureInbox',
-        inbox && inbox.dead ? '<span style="overflow-wrap:anywhere;">' + esc(inbox.lastError || 'Could not be stored.') + '</span> · 작업 관리에서 수집 격리·복구 이력을 확인하세요.' :
+        !inbox ? 'Inbox status is unknown; automatic capture checks are unavailable.' :
+        inbox.dead ? '<span style="overflow-wrap:anywhere;">' + esc(inbox.lastError || 'Could not be stored.') + '</span> · 작업 관리에서 수집 격리·복구 이력을 확인하세요.' :
         inbox && inbox.retrying ? '<span style="overflow-wrap:anywhere;">' + esc('Retried every ' + durationText(cap.policy.retryIntervalMs) + ' with backoff, up to ' + cap.policy.maxAttempts + ' attempts' + (inbox.lastError ? '. Last error: ' + inbox.lastError : '.')) + '</span>' :
         'Empty means every accepted observation is stored.');
       html += hrow('Since start', esc(fmtNum(since.accepted || 0) + ' accepted · ' + fmtNum(since.completed || 0) + ' stored · ' + fmtNum(since.duplicates || 0) + ' duplicates skipped · ' + fmtNum(since.recovered || 0) + ' recovered by retry · ' + fmtNum(since.deadLettered || 0) + ' dead'), null,

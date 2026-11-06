@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import os
@@ -143,6 +144,14 @@ class TransactionTests(unittest.TestCase):
         if path == 'background/control':
             return {'control': {'pausedRequested': True, 'status': 'paused' if self.system.started else 'pausing', 'activeOperations': 0 if self.system.started else 3, 'error': None}}
         return {'sessions': [], 'flags': [], 'scheduleEnabled': False}
+
+    def test_only_native_units_suppress_restarts_for_unresolved_lifecycle(self):
+        self.assertNotIn(b'RestartPreventExitStatus=', self.tx.dropin_bytes())
+        self.tx.sdk_native_compat = True
+        dropin = self.tx.dropin_bytes()
+        self.assertEqual([line for line in dropin.splitlines() if line.startswith(b'RestartPreventExitStatus=')],
+                         [b'RestartPreventExitStatus=78'])
+        self.assertEqual(self.tx.post_files()[str(self.paths['dropin'])], hashlib.sha256(dropin).hexdigest())
 
     def test_reviewed_snapshot_enrolls_without_apply_and_entire_transaction_preserves_data(self):
         self.assertEqual(self.calls[0][4], '--enroll')

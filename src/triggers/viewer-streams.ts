@@ -96,7 +96,7 @@ export function registerViewerStreamTriggers(
     const [functionMetrics, counts, report] = await Promise.all([
       metricsRead,
       getViewerCounts(kv),
-      statusReport({ health: snapshot, scanMaxAgeMs, scanUnindexed, functionMetrics:metricsRead }).catch(() => null),
+      statusReport({ health: snapshot, scanMaxAgeMs, scanUnindexed, scanCaptureInbox:false, functionMetrics:metricsRead }).catch(() => null),
     ]);
     return {
       status: snapshot?.status ?? "healthy",

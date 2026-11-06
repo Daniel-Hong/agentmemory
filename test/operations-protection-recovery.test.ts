@@ -42,7 +42,70 @@ it('rechecks fresh pressure during activation and preserves memory hold if high 
 });
 it('persists storage failures as a hold and requires manual recovery',async()=>{
  const f=fixture();await f.control.init(f.kv);f.kv.durability.wait=async()=>{throw Error('synthetic');};await f.guard.refresh();await f.control.settled();expect(f.control.snapshot().holds).toContain('storage_error');
- f.kv.durability.wait=async()=>({synced:true,mutationFailures:0});await f.normal();expect(f.control.isPaused()).toBe(true);await f.control.change('resume');expect(f.control.snapshot().holds).toEqual(['memory']);
+ f.kv.durability.wait=async()=>({synced:true,mutationFailures:0});await f.normal();
+ expect(f.control.snapshot()).toMatchObject({status:'error',pausedRequested:true,holds:['storage_error']});
+ let recoveries=0;await f.control.change('resume',{beforeResume:async()=>{recoveries++;return true;}});
+ expect(recoveries).toBe(1);expect(f.control.snapshot().holds).toEqual([]);
+});
+
+it.each([false,true])('releases only recovered memory after held boot with resumePending=%s',async resumePending=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);expect(f.control.snapshot().holds).toEqual(holds);
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();
+ expect(f.control.snapshot()).toMatchObject({status:'error',pausedRequested:true,holds:['storage_error']});
+ expect(await f.control.run(async()=>42)).toMatchObject({deferred:true});
+ expect(await f.control.runVectorWrite(async()=>42)).toMatchObject({success:false});
+ // An unclean restart must recheck memory even after this worker observed recovery.
+ const restarted=fixture(f.record());await restarted.control.init(restarted.kv);
+ expect(restarted.control.snapshot()).toMatchObject({status:'error',holds});
+});
+
+it.each(['pressure','stale','pause','failed_fence'])('retains both holds on %s during compound memory recovery',async risk=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending:true,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);
+ let waits=0;
+ f.kv.durability.wait=async()=>{
+  if(++waits===1){
+   if(risk==='pressure')f.memory(GiB);
+   if(risk==='stale')f.time(f.clock()+10001);
+   if(risk==='pause')void f.control.change('pause',{source:'manual'});
+   if(risk==='failed_fence')throw Error('synthetic storage failure');
+  }
+  return {synced:true,mutationFailures:0};
+ };
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();await f.control.settled();
+ expect(waits).toBeGreaterThan(0);
+ const expected=risk==='pause'?['manual',...holds]:holds;
+ expect(f.control.snapshot()).toMatchObject({status:'error',holds:expected,pausedRequested:true});
+ expect(f.record().holds).toEqual(expected);
+});
+
+it('reports an unconfirmed rollback and keeps both holds when compound recovery loses storage',async()=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending:true,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);
+ f.kv.durability.wait=async()=>{f.fail(true);throw Error('fence unavailable');};
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();
+ expect(f.control.snapshot()).toMatchObject({holds,pausedRequested:true,diagnostics:{rollbackVerified:false}});
+ expect(f.record()).toMatchObject({holds,paused:true,resumePending:true});
+});
+
+it('requires a new manual resume after compound memory recovery completes',async()=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending:true,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);
+ let release!:()=>void;
+ const fence=new Promise<void>(r=>{release=r;});
+ f.kv.durability.wait=async()=>{await fence;return {synced:true,mutationFailures:0};};
+ const partial=f.control.change('resume',{source:'memory',canResume:async()=>true});
+ await new Promise(r=>setImmediate(r));
+ let vectorAttempts=0;
+ const queued=f.control.change('resume',{beforeResume:async()=>{vectorAttempts++;return true;}});
+ release();await partial;await queued;
+ expect(f.control.snapshot()).toMatchObject({holds:['storage_error'],pausedRequested:true});
+ expect(vectorAttempts).toBe(0);
 });
 it('bounds automatic attempts durably and honors persisted backoff',async()=>{
  const f=fixture({version:2,paused:true,resumePending:false,holds:['memory'],recovery:{attempts:3,nextAttemptAt:0}});await f.control.init(f.kv);await f.normal();expect(f.control.isPaused()).toBe(true);

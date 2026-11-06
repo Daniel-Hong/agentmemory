@@ -371,6 +371,8 @@ async function main() {
     operationalState.backgroundControl = control;
     controlBackgroundFunctions(sdk);
   }
+  let indexForExplicitResume: IndexPersistence | undefined;
+  let scheduleBackfillAfterResume: (() => Promise<boolean>) | undefined;
   const pressure = persistentBackground ? lifecycle.track(createMemoryPressureGuard({ control })) : null;
   pressure?.install(sdk, (req) => checkAuth(req, secret));
   operationalState.memoryPressure = pressure;
@@ -565,7 +567,7 @@ async function main() {
   markKeywordRebuildPending();
   registerApiTriggers(sdk, kv, secret, metricsStore, provider);
   registerDashboardUpdateApi(sdk, secret, createDashboardUpdates({requestRoot: runtimeMetadataPath("update-requests"), version: VERSION}));
-  if (persistentBackground) registerBackgroundControlApi(sdk, secret, control);
+  if (persistentBackground) registerBackgroundControlApi(sdk, secret, control, async () => { await bootGate; if (bootFailed || !indexForExplicitResume || !scheduleBackfillAfterResume) return false; if (!await indexForExplicitResume.resumeStorageRecovery(embeddingProvider?.dimensions ?? 0)) return false; return scheduleBackfillAfterResume(); });
   if (getEnvVar("AGENTMEMORY_FEEDBACK_DIR")) {
   const feedback = lifecycle.track(registerFeedbackRuntime(sdk, secret, {
     root: getEnvVar("AGENTMEMORY_FEEDBACK_DIR"),
@@ -585,7 +587,8 @@ async function main() {
   registerMcpEndpoints(sdk, kv, secret);
 
   const healthMonitor = resources.health = registerHealthMonitor(sdk, kv);
-  const indexPersistence = resources.index = new IndexPersistence(kv, vectorIndex, { requireRecoveryPlan: true });
+  const indexPersistence = resources.index = new IndexPersistence(kv, vectorIndex, { requireRecoveryPlan: true, isStorageHeld: () => persistentBackground && (control.snapshot().holds.includes('storage_error') || kv.mutationOutcomeUncertain), storageGeneration: () => persistentBackground ? control.generation() : 0 });
+  indexForExplicitResume = indexPersistence;
   setIndexPersistence(indexPersistence);
 
   const loaded = await indexPersistence.load().catch((err) => {
@@ -681,8 +684,9 @@ async function main() {
 
   const auditMigration = trackBoot(startAuditMigration(kv).catch(() => {}));
 
-  const keywordStart = Date.now();
-  try {
+  const rebuildAndScheduleVectorBackfill = async (vectorBackfillSince: string | null | undefined): Promise<boolean> => {
+    const keywordStart = Date.now();
+    try {
     const keyword = await rebuildKeywordIndex(kv, vectorBackfillSince);
     bootLog(
       `Rebuilt BM25 index from stored content (${keyword.documents} docs in ${Date.now() - keywordStart} ms)`,
@@ -698,6 +702,12 @@ async function main() {
       setVectorBackfillState("paused");
     } else if (vectorBackfillSince !== undefined) {
       setVectorBackfillState(keyword.fullBackfillPending > 0 && !optedIn ? "waiting-for-opt-in" : backlogScanComplete ? "idle" : "paused");
+    }
+    if (!backlogScanComplete) {
+      setVectorBackfillState("paused");
+      activeIds.clear();
+      for (const job of keyword.vectorJobs) job.revision?.release();
+      return false;
     }
     if (keyword.fullBackfillPending > 0) {
       bootLog(optedIn
@@ -741,7 +751,13 @@ async function main() {
   } catch (err) {
     setVectorBackfillState("paused");
     console.warn(`[agentmemory] Failed to rebuild the BM25 index:`, err);
+    return false;
   }
+  return !indexPersistence.isRecoveryPaused();
+
+  };
+  scheduleBackfillAfterResume = () => rebuildAndScheduleVectorBackfill(indexPersistence.recoveryCutoff());
+  await rebuildAndScheduleVectorBackfill(vectorBackfillSince);
 
   // Ready / Endpoints lines are emitted via `bootLog` so they're
   // buffered in quiet mode and printed verbatim under --verbose. The
@@ -751,7 +767,7 @@ async function main() {
     `Ready. ${embeddingProvider ? "Triple-stream (BM25+Vector+Graph)" : "BM25+Graph"} search active.`,
   );
   bootLog(
-    `REST API: 160 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
+    `REST API: 161 endpoints at http://localhost:${config.restPort}/agentmemory/*`,
   );
   bootLog(
     `MCP surface (opt-in via \`npx @agentmemory/mcp\`): ${getAllTools().length} tools · 6 resources · 3 prompts`,

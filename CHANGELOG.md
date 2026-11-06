@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.58] — 2026-11-06 (recovery review candidate)
+
+- Based on the installed .55 Git commit `4605974f337a50ed7e0ef74e3bb635b6e5d5a805` and the scoped .57 held-start changes from `3148e1d0a3df0241b69b2166085b10ed5979b99f`. This is a separate review candidate for the November 6 outage.
+- Limit SDK vector checkpoint reads to one bucket at a time and stop on the first read error. Preserve concurrent reads for disk completion. Keep the .57 guard on vector work during an unresolved storage hold and skip full inbox scans by automatic Viewer updates.
+- Give unresolved native worker ownership its own exit status (78). The managed native unit stops retrying that refusal and continues to retry transient failures.
+- When memory and storage are both held, release only the memory hold after sustained recovery and a fresh post-wait memory sample. Keep the storage hold and require explicit storage recovery.
+- Before an explicit SDK storage recovery, require an empty, readable vector pending log. Retain existing intent and refuse activation when there are entries, unconfirmed reads, or in-flight local log writes.
+- The candidate passed 335 focused tests across 15 files, including Chromium, CLI startup, memory recovery and vector intent. All 38 build configurations, asset copying and the server SDK audit passed in sequential batches. The parallel build exceeded the configured V8 heap limits of 700 and 1280 MiB. TypeScript reported the same 30 pre-existing diagnostics as .55.
+- Production remains on .55. The incident report records operational evidence and outstanding non-clean recovery admission.
+
+## [0.9.32-daniel.57] — 2026-11-06
+- Prepare scoped storage-hold protection and viewer status load mitigation; SDK completion remains distinct from disk persistence. Not deployed; compound-hold automatic release is not implemented. See docs/customizations/SCOPED-HOLD-RECOVERY-57.md.
+
 ## [0.9.32-daniel.55] — 2026-11-04
 ### Prepared integration (not deployed)
 
@@ -554,6 +567,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.57]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.55...v0.9.32-daniel.57
 [0.9.32-daniel.55]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.54...v0.9.32-daniel.55
 [0.9.31-daniel.54]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.51...v0.9.31-daniel.54
 
