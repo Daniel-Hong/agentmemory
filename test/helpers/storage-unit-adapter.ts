@@ -12,7 +12,7 @@ export function createStorageUnitAdapter(physical:StateKV,logicalScopes:string[]
  const fence=new Proxy(rawFence,{get(target,property){
   if(property==='waitForKeys')return(_kv:unknown,rows:any[],...options:any[])=>target.waitForKeys(physical,selections(rows),...options);
   if(property==='waitForKeyGroups')return(_kv:unknown,groups:any[][],...options:any[])=>target.waitForKeyGroups(physical,groups.map(selections),...options);
-  if(property==='keysFor')return(rows:any[])=>target.keysFor(selections(rows));
+  if(property==='keysFor'||property==='watchKeys')return(rows:any[])=>(target[property] as any)(selections(rows));
   const value=Reflect.get(target,property);return typeof value==='function'?value.bind(target):value;
  }});
  const reader=physical.observationReader;

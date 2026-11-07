@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.62] — 2026-11-07
+- Fix deferred observation embedding certification rejecting an unchanged source when another observation in the same session is written. Reuse the existing durability fence's per-key revision observers, including already pending mutations, and release each selected watch after certification, failure or worker stop. Preserve source replacement/deletion/ABA, intent-generation, missing-fence and uncertain SDK outcome refusals.
+- Base the .62 server preparation on .61 commit `f8246e56eb666ef0f9cefa9135ccbe4df5b9deb6`. Keep the .61 client queue repair, server mutation fencing and batch/publication scheduling unchanged. Acquire the new-capture watch after viewer/logging side effects so failed display handling preserves the source/inbox without leaking an unstarted watch. The false rejection and lifecycle failure were reproduced before their fixes; focused mutation/fence/capture regression, all39 sequential build configurations, SDK audit, skills/docs checks and independent review passed. The30 TypeScript diagnostics exactly match .61. See `docs/customizations/EMBEDDING-SOURCE-GUARD-62.md`; operational application and manual long-term-memory review remain separate.
+
 ## [0.9.32-daniel.61] — 2026-11-07
 - Fix native SDK-v2 backlog progress at full admission quotas. Existing reference transitions have a bounded additional 8 KiB workspace and completion-manifest replacement 68 KiB; new originals/references cannot consume this workspace. Preserve all originals, crash files and unknown-send holds.
 - Measure only the namespace being charged. Direct delivery claims its selected reference without reading the whole pending inbox; pending listings read manifests, and selected source bytes still receive complete hash verification before transmission. Keep owner fencing, known-not-sent backoff and matching SDK acknowledgement.
@@ -584,6 +588,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.62]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.61...v0.9.32-daniel.62
 [0.9.32-daniel.61]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.60...v0.9.32-daniel.61
 [0.9.32-daniel.60]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.59...v0.9.32-daniel.60
 [0.9.32-daniel.57]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.55...v0.9.32-daniel.57

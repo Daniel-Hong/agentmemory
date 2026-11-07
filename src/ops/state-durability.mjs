@@ -29,7 +29,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   if(!['sdk','disk'].includes(completion))throw Error('state_completion_invalid');
   let sdkCompleted=0,sdkFailed=0;
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
-  const active=new Set(),touched=new Map(),pruneAttempts=new Map(),revisionObservers=new Map();
+  const active=new Set(),mutationKeys=new WeakMap(),touched=new Map(),pruneAttempts=new Map(),revisionObservers=new Map();
   const certificates=new Set(),certificateContext=new AsyncLocalStorage();
   const measurements=createDurabilityMeasurements();
   const readCoordinator=createReadCoordinator({clock});
@@ -43,6 +43,15 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     }
     return()=>{for(const item of items){const scope=revisionObservers.get(item.scope),keys=scope?.get(item.key);keys?.delete(item);if(!keys?.size)scope?.delete(item.key);if(!scope?.size)revisionObservers.delete(item.scope);}};
   }
+  function watchKeys(selected){
+    if(!Array.isArray(selected)||!selected.length||selected.length>200||selected.some(item=>typeof item?.scope!=='string'||typeof item?.key!=='string'))throw Error('state_mutation_selection_invalid');
+    const items=selected.map(({scope,key})=>({scope,key,revision:touched.get(scope)?.get(key)?.revision}));
+    const release=observeRevisions(items);
+    const pending=[...active].some(promise=>{const pair=mutationKeys.get(promise);return items.some(item=>pair?.scope===item.scope&&pair?.key===item.key);});
+    let released=false;
+    // Observers survive dirty-key pruning; no permanent per-record history is retained.
+    return {unchanged:()=>!released&&!pending&&items.every(item=>item.observedRevision===item.revision),release(){if(!released){released=true;release();}}};
+  }
   function keys(){return [...touched].flatMap(([scope,items])=>[...items].map(([key,stamp])=>({scope,key,...stamp})));}
   function keysFor(selected){return selected.map(({scope,key})=>({scope,key,...touched.get(scope)?.get(key)}));}
   function forgetKeys(selected){for(const {scope,key,revision} of selected){const map=touched.get(scope);if(revision===undefined||map?.get(key)?.revision!==revision)continue;map.delete(key);if(!map.size){touched.delete(scope);pruneAttempts.delete(scope);}}}
@@ -52,7 +61,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   }
   function mutate(scope,key,fn){
     if(frozen)return Promise.reject(Object.assign(Error('state_mutations_frozen'),{code:'STATE_FROZEN'}));
-    remember(scope,key);const promise=Promise.resolve().then(fn);active.add(promise);
+    remember(scope,key);const promise=Promise.resolve().then(fn);mutationKeys.set(promise,{scope,key});active.add(promise);
     promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
   }
   async function drain(){
@@ -243,5 +252,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {completion,withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({completion,sdkCompletion:completion==='sdk'?{completed:sdkCompleted,failed:sdkFailed}:null,frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:completion==='disk'?measurements.snapshot():null,readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
+  return {completion,withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,watchKeys,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({completion,sdkCompletion:completion==='sdk'?{completed:sdkCompleted,failed:sdkFailed}:null,frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:completion==='disk'?measurements.snapshot():null,readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
 }

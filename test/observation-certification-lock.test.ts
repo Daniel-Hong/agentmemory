@@ -8,14 +8,16 @@ import {registerObserveFunction} from '../src/functions/observe.js';
 import {withKeyedLock} from '../src/state/keyed-mutex.js';
 import {finishLongSession} from '../src/ops/long-session.mjs';
 import {registerEmbeddingRecovery,EMBEDDING_RETRY_NAMESPACE as RETRY} from '../src/ops/embedding-recovery.mjs';
+import {createStateDurabilityFence} from '../src/ops/state-durability.mjs';
 vi.mock('../src/logger.js',()=>({logger:{info:vi.fn(),warn:vi.fn(),error:vi.fn()}}));
 const workers:ReturnType<typeof registerEmbeddingRecovery>[]=[];
 afterEach(async()=>{for(const w of workers.splice(0)){w.stop();await w.drain();}search.setEmbeddingRecovery(null);search.setVectorIndex(null);search.setEmbeddingProvider(null);});
 function fixture(){
  const kv=mockKV(),index=new VectorIndex(),provider={name:'synthetic',dimensions:2,embed:vi.fn(async()=>new Float32Array([1,0]))};
  let release!:()=>void,entered=false;const gate=new Promise<void>(resolve=>release=resolve);
- let mutation=0;for(const method of ['set','delete','update'] as const){const original=kv[method];(kv as any)[method]=async(scope:string,...args:any[])=>{if(scope.startsWith('mem:obs:'))mutation++;return(original as any)(scope,...args);};}
- Object.assign(kv,{observationReader:{mutationRevision:()=>mutation,pendingMutations:()=>0,captureSummary:async(scope:string,excludeId:string)=>{const rows:any[]=await kv.list(scope);const entries=rows.filter(r=>r.id!==excludeId).map(observationBudgetEntry);return{count:rows.length,summaryCount:entries.length,summaryBytes:entries.reduce((n,r)=>n+r.summaryBytes,0),sourceBytes:entries.reduce((n,r)=>n+r.sourceBytes,0)};}},backend:'file',durability:{waitForKeys:async()=>{entered=true;await gate;return{synced:true};}}});
+ const mutationFence=createStateDurabilityFence({storePath:'/tmp/synthetic-certification',completion:'sdk'});
+ for(const method of ['set','delete','update'] as const){const original=kv[method];(kv as any)[method]=async(scope:string,key:string,...args:any[])=>mutationFence.mutate(scope,key,()=>(original as any)(scope,key,...args));}
+ Object.assign(kv,{observationReader:{captureSummary:async(scope:string,excludeId:string)=>{const rows:any[]=await kv.list(scope);const entries=rows.filter(r=>r.id!==excludeId).map(observationBudgetEntry);return{count:rows.length,summaryCount:entries.length,summaryBytes:entries.reduce((n,r)=>n+r.summaryBytes,0),sourceBytes:entries.reduce((n,r)=>n+r.sourceBytes,0)};}},backend:'file',durability:{...mutationFence,waitForKeys:async()=>{entered=true;await gate;return{synced:true};}}});
  const recovery=registerEmbeddingRecovery({kv:kv as never,KV,index,provider,withKeyedLock,schedule:false,persistIndex:async()=>{}});workers.push(recovery);
  search.setVectorIndex(index);search.setEmbeddingProvider(provider);search.setEmbeddingRecovery(recovery);
  const sdk=mockSdk({looseTrigger:true});registerObserveFunction(sdk as never,kv as never);
@@ -159,7 +161,31 @@ for(const beginBeforePrepare of [false,true])it(`invalidates a certificate when 
  }finally{worker.stop();await worker.drain();vi.unstubAllEnvs();await rm(dir,{recursive:true,force:true});}
 });
 it('refuses unsafe deferred file certification without a mutation guard',async()=>{
- const f=fixture();delete(f.kv as any).observationReader;
+ const f=fixture();delete(f.kv as any).durability.watchKeys;
  const item={id:f.payload.observationId,sessionId:f.payload.sessionId,kind:'synthetic' as const};await f.kv.set(KV.observations(item.sessionId),item.id,{id:item.id,sessionId:item.sessionId,title:'canonical',facts:[],concepts:[],files:[]});
  await expect(f.recovery.prepareEnqueue(item)).rejects.toMatchObject({code:'EMBEDDING_SOURCE_GUARD_UNAVAILABLE'});f.release();
+});
+
+it('certifies its unchanged observation while another observation in the same session is written',async()=>{
+ const f=fixture(),item={id:f.payload.observationId,sessionId:f.payload.sessionId,kind:'synthetic' as const};
+ await f.kv.set(KV.observations(item.sessionId),item.id,{id:item.id,sessionId:item.sessionId,title:'selected'});
+ const certify=await f.recovery.prepareEnqueue(item),pending=certify();void pending.catch(()=>{});await vi.waitFor(()=>expect(f.entered()).toBe(true));
+ await f.kv.set(KV.observations(item.sessionId),'obs_other',{id:'obs_other',sessionId:item.sessionId,title:'unrelated'});f.release();
+ await expect(pending).resolves.toBe(true);expect(await f.kv.get(RETRY,item.id)).toMatchObject({id:item.id});
+ expect(f.provider.embed).not.toHaveBeenCalled();
+});
+
+it('preserves the source and inbox without leaking a watch on live-event failure, then retries',async()=>{
+ const f=fixture(),fence=(f.kv as any).durability,watchKeys=fence.watchKeys;let live=0;
+ const watched=vi.spyOn(fence,'watchKeys').mockImplementation((keys:any)=>{const watch=watchKeys(keys);live++;let released=false;return{unchanged:watch.unchanged,release(){if(!released){released=true;live--;}watch.release();}};});
+ const {liveEvents}=await import('../src/viewer/live-events.js'),original=liveEvents.emit;
+ const emit=vi.spyOn(liveEvents,'emit').mockImplementation(function(event){if(event.type==='compressed_observation')throw Error('synthetic live writer failed');return original.call(liveEvents,event);});
+ const {registerCaptureFunctions}=await import('../src/functions/capture.js'),sdk=mockSdk({looseTrigger:true});registerObserveFunction(sdk as never,f.kv as never);const capture=registerCaptureFunctions(sdk as never,f.kv as never);
+ f.release();
+ try{
+  const failed:any=await sdk.trigger('mem::capture',{payload:f.payload,eventId:f.payload.eventId});expect(failed.state).toBe('retrying');
+  expect(await f.kv.list(KV.captureInbox)).toHaveLength(1);expect(await f.kv.list(KV.observations(f.payload.sessionId))).toHaveLength(1);expect(live).toBe(0);
+  emit.mockRestore();expect(await sdk.trigger('mem::observe',{...f.payload,observationId:failed.observationId})).toMatchObject({existing:true,observationId:failed.observationId});
+  expect(await f.kv.get(RETRY,failed.observationId)).not.toBeNull();expect(await f.kv.list(KV.observations(f.payload.sessionId))).toHaveLength(1);expect(live).toBe(0);
+ }finally{emit.mockRestore();watched.mockRestore();capture.stop();await capture.drain();}
 });

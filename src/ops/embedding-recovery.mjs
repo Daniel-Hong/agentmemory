@@ -7,7 +7,7 @@ const digest=text=>createHash('sha256').update(text).digest('hex');
 export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKeyedLock=async(k,fn)=>fn(),logger,clock=Date.now,schedule=true,onIndexChanged,persistIndex}) {
   const state={pendingCount:0,completedCount:0,counterEpoch:randomUUID(),initialized:false,lastError:null,lastSuccessAt:null};
   let pumping=false,reconciled=false,stopped=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
-  const active=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
+  const active=new Set(),sourceGuards=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
   // Historical proof observed by this worker, never a fresh disk-verification cache.
   const observedPublications=new Map();
   let publicationObservations=0,publicationEvidenceEvicted=0,publicationEvidenceUnavailable=0,publicationEvidenceAvailable=true;
@@ -65,16 +65,18 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     }));
   }
   function prepareEnqueue(item){
-    if(kv.backend==='file'&&(typeof kv.observationReader?.mutationRevision!=='function'||typeof kv.observationReader?.pendingMutations!=='function'))return Promise.reject(Object.assign(Error('embedding_source_guard_unavailable'),{code:'EMBEDDING_SOURCE_GUARD_UNAVAILABLE'}));
+    if(kv.backend==='file'&&typeof kv.durability?.watchKeys!=='function')return Promise.reject(Object.assign(Error('embedding_source_guard_unavailable'),{code:'EMBEDDING_SOURCE_GUARD_UNAVAILABLE'}));
     if(stopped)return Promise.reject(Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'}));
     return track(withKeyedLock(intentKey(item.id),async()=>{
       await initialize();
-      const scope=sourceScope(item),revision=()=>kv.observationReader?.mutationRevision?.(scope);
-      const sourceRevision=revision();
+      if(stopped)throw Object.assign(Error('embedding_recovery_stopped'),{code:'EMBEDDING_RECOVERY_STOPPED'});
+      const scope=sourceScope(item),guard=kv.backend==='file'?kv.durability.watchKeys([{scope,key:item.id}]):null;
+      const release=()=>{guard?.release();sourceGuards.delete(release);};sourceGuards.add(release);
+      try{
       const sourceChanged=()=>Object.assign(Error('embedding_source_changed'),{code:'EMBEDDING_SOURCE_CHANGED'});
       async function checkSource(){
         const row=await kv.get(scope,item.id);
-        if(kv.observationReader?.pendingMutations?.(scope)||!row||row.id!==item.id||item.kind!=='memory'&&row.sessionId!==item.sessionId||revision()!==sourceRevision)throw sourceChanged();
+        if(guard&&!guard.unchanged()||!row||row.id!==item.id||item.kind!=='memory'&&row.sessionId!==item.sessionId)throw sourceChanged();
       }
       await checkSource();
       const old=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
@@ -94,11 +96,14 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       }
       let certification;
       return()=>certification??=track((async()=>{
+        try{
         await withKeyedLock(intentKey(item.id),check);
         await certifyIntent(item);
         await withKeyedLock(intentKey(item.id),check);
         return !old;
+        }finally{release();}
       })());
+      }catch(error){release();throw error;}
     }));
   }
   function enqueueBatch(items){
@@ -299,7 +304,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     finally{pumping=false;}
   }
   function pump(){if(stopped)return Promise.resolve();return track(initialize().then(()=>backgroundTask(runPump)()));}
-  function stop(){stopped=true;if(interval){clearInterval(interval);interval=null;}}
+  function stop(){stopped=true;for(const release of sourceGuards)release();if(interval){clearInterval(interval);interval=null;}}
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
   function start(){if(stopped||interval)return;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});interval=setInterval(()=>void pump().catch(error=>{state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});}),15000);interval.unref();}
   if(schedule)start();

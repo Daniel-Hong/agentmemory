@@ -189,7 +189,7 @@ export function registerObserveFunction(
       const livePrompt = submittedPrompt && !backfillPrompt ? submittedPrompt : undefined;
       const promptRef = durable || typeof payload.eventId !== "string" ? obsId : payload.eventId;
 
-      const deferCertification = kv.backend !== "file" || (typeof kv.observationReader?.mutationRevision === "function" && typeof kv.observationReader?.pendingMutations === "function");
+      const deferCertification = kv.backend !== "file" || typeof kv.durability?.watchKeys === "function";
       let certify: () => Promise<void> = async () => {};
       const result = await withKeyedLock(`obs:${payload.sessionId}`, async () => {
         // A timed-out capture can already be stored; replay must not scan the session again.
@@ -395,7 +395,6 @@ export function registerObserveFunction(
         synthetic = (await kv.get<CompressedObservation>(KV.observations(payload.sessionId), obsId))!;
         getSearchIndex().add(synthetic);
         scheduleIndexSave();
-        certify = await prepareObservationEmbedding(synthetic.id, synthetic.sessionId, deferCertification);
         emitLiveEvent({ id: `compressed-${obsId}`, type: "compressed_observation", data: { type: "compressed", observation: withoutObservationSource(synthetic), sessionId: payload.sessionId } });
 
 
@@ -405,6 +404,7 @@ export function registerObserveFunction(
           hook: payload.hookType,
           compress: autoCompress ? "llm" : "synthetic",
         });
+        certify = await prepareObservationEmbedding(synthetic.id, synthetic.sessionId, deferCertification);
         return { observationId: obsId };
       });
       await certify();
