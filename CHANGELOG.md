@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.61] — 2026-11-07
+- Fix native SDK-v2 backlog progress at full admission quotas. Existing reference transitions have a bounded additional 8 KiB workspace and completion-manifest replacement 68 KiB; new originals/references cannot consume this workspace. Preserve all originals, crash files and unknown-send holds.
+- Measure only the namespace being charged. Direct delivery claims its selected reference without reading the whole pending inbox; pending listings read manifests, and selected source bytes still receive complete hash verification before transmission. Keep owner fencing, known-not-sent backoff and matching SDK acknowledgement.
+- Prepare a client-only .61 follow-up to the .60 server. Scoped validation passed 126 distinct tests, including 1,201 actual synthetic deliveries, a saturated 1,240-reference/3,568-original fixture, retained-original hashes, compiled native hooks and concurrent/unknown-send safety. All 39 sequential build configurations, SDK dependency audit, compatibility artifacts, skills and docs checks passed. The 30 TypeScript diagnostics exactly match a fresh .60 baseline. Actual activation remains separate; see `docs/customizations/SDK-QUEUE-PROGRESS-61.md`. Long-term memory recording remains pending manual review.
+
 ## [0.9.32-daniel.60] — 2026-11-07
 - Read retained capture inboxes through the existing local streaming reader with SDK-acknowledged changes overlaid. Project status and bounded previews before retaining rows, so capture admission, review and retry no longer request an oversized shared SDK frame. Read keyed review metadata once for status instead of making one SDK call per retained original. Keep original payloads and existing per-source completion proofs.
 - Add an explicitly invoked selected-source recovery entry for held SDK-v2 sources. Revalidate the retained original, claim it atomically, verify the restore reply, and preserve the original after SDK acknowledgement. Ordinary hooks do not invoke restoration; SDK acknowledgement is not a disk durability claim.
@@ -579,6 +584,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.61]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.60...v0.9.32-daniel.61
 [0.9.32-daniel.60]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.59...v0.9.32-daniel.60
 [0.9.32-daniel.57]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.55...v0.9.32-daniel.57
 [0.9.32-daniel.55]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.54...v0.9.32-daniel.55

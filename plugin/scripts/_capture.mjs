@@ -11,6 +11,8 @@ const BLOCK = 4096;
 const INPUT_LIMIT = 8 * MiB;
 const ORIGINAL_LIMIT = 256 * MiB;
 const QUEUE_LIMIT = 5 * MiB;
+const QUEUE_TRANSITION_RESERVE = 2 * BLOCK;
+const ACK_TRANSITION_RESERVE = 64 * 1024 + BLOCK;
 const CHUNK_LIMIT = 256 * 1024;
 const ID = /^[a-f0-9]{64}$/;
 function fail(code) {
@@ -142,6 +144,8 @@ function limit(value, maximum) {
 * rounded to 4 KiB and at least stat.blocks*512; they are not filesystem hard quotas.
 * The queue includes a 4 KiB lease plus queue/root directory charges (12 KiB minimum).
 * Writes additionally reserve a parent-directory block, and 256 bytes per new chunk-directory entry.
+* Admission cannot consume transition workspace: existing refs may use an additional 8 KiB,
+* and completed manifests an additional 68 KiB. Preserved crash temporaries count toward both.
 * /usr/bin/flock is required; no lock fallback, lease deletion, or source cleanup exists. */
 var SdkSpoolV2 = class {
 	dir;
@@ -184,10 +188,11 @@ var SdkSpoolV2 = class {
 			queueBytes: measure(this.queue) + BLOCK
 		};
 	}
-	budget(kind, additional) {
-		const usage = this.rawUsage();
-		if (kind === "original" && usage.originalBytes + additional > this.maxOriginalBytes) fail("ORIGINALS_FULL");
-		if (kind === "queue" && usage.queueBytes + additional > this.maxQueueBytes) fail("QUEUE_FULL");
+	budget(kind, additional, transition = false) {
+		const usage = kind === "original" ? measure(this.originals) : measure(this.queue) + BLOCK;
+		const maximum = kind === "original" ? this.maxOriginalBytes : this.maxQueueBytes;
+		const reserve = transition ? kind === "original" ? ACK_TRANSITION_RESERVE : QUEUE_TRANSITION_RESERVE : 0;
+		if (usage + additional > maximum + reserve) fail(kind === "original" ? "ORIGINALS_FULL" : "QUEUE_FULL");
 	}
 	writeFile(path, bytes) {
 		const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
@@ -199,9 +204,10 @@ var SdkSpoolV2 = class {
 			closeSync(fd);
 		}
 	}
-	atomicJson(path, value, kind, beforePublish) {
+	atomicJson(path, value, kind, beforePublish, transition = false) {
 		const bytes = Buffer.from(canonical$1(value));
-		if (kind) this.budget(kind, charge(bytes.length) + BLOCK);
+		if (kind && bytes.length > (kind === "queue" ? BLOCK : 64 * 1024)) fail("SOURCE_UNVERIFIED");
+		if (kind) this.budget(kind, charge(bytes.length) + BLOCK, transition);
 		const temp = path + "." + randomUUID() + ".tmp";
 		this.writeFile(temp, bytes);
 		if (beforePublish) this.phase(beforePublish);
@@ -255,13 +261,22 @@ var SdkSpoolV2 = class {
 	conflictKey(target, eventId, body) {
 		return digest$1(this.key(target, eventId) + "\0conflict\0" + sourceFingerprint(body));
 	}
-	source(target, sourceId) {
+	manifest(target, sourceId) {
 		if (!ID.test(sourceId)) fail("SOURCE_UNVERIFIED");
 		try {
 			const folder = join(this.originals, sourceId);
 			checkDirectory(folder);
 			const manifest = JSON.parse(regularRead(join(folder, "manifest.json"), 64 * 1024).toString());
 			if (!manifest || manifest.v !== 2 || manifest.sourceId !== sourceId || manifest.targetHash !== digest$1(target) || typeof manifest.eventId !== "string" || !Number.isSafeInteger(manifest.bytes) || manifest.bytes <= 0 || manifest.bytes > this.maxInputBytes || !ID.test(manifest.hash) || typeof manifest.conflict !== "boolean" || typeof manifest.completed !== "boolean" || !Array.isArray(manifest.chunks) || !manifest.chunks.length || manifest.chunks.length > this.maxInputBytes) fail("SOURCE_UNVERIFIED");
+			return manifest;
+		} catch (error) {
+			if (code(error) === "STORE_UNSAFE") throw error;
+			fail("SOURCE_UNVERIFIED");
+		}
+	}
+	source(target, sourceId) {
+		try {
+			const manifest = this.manifest(target, sourceId), folder = join(this.originals, sourceId);
 			let bytes = 0;
 			const chunks = manifest.chunks.map((chunk, index) => {
 				if (chunk.name !== String(index).padStart(6, "0") + ".chunk" || !Number.isSafeInteger(chunk.bytes) || chunk.bytes <= 0 || chunk.bytes > CHUNK_LIMIT || !ID.test(chunk.hash)) fail("SOURCE_UNVERIFIED");
@@ -394,8 +409,8 @@ var SdkSpoolV2 = class {
 			fail("SOURCE_UNVERIFIED");
 		}
 	}
-	writeRef(ref) {
-		this.atomicJson(this.refPath(ref.sourceId), ref, "queue");
+	writeRef(ref, transition = true) {
+		this.atomicJson(this.refPath(ref.sourceId), ref, "queue", void 0, transition);
 		this.phase("reference_published");
 	}
 	async enqueue(target, sourceId) {
@@ -416,7 +431,7 @@ var SdkSpoolV2 = class {
 				state: "pending",
 				attempts: 0,
 				nextAttemptAt: 0
-			});
+			}, false);
 		});
 	}
 	async pending(target) {
@@ -432,7 +447,7 @@ var SdkSpoolV2 = class {
 					this.writeRef(ref);
 				}
 				try {
-					if (this.source(target, ref.sourceId).manifest.completed) continue;
+					if (this.manifest(target, ref.sourceId).completed) continue;
 				} catch {
 					ref.state = "held";
 				}
@@ -454,6 +469,13 @@ var SdkSpoolV2 = class {
 			if (expectedHeldSource) {
 				if (ref.state !== "held" || ref.owner || !isDeepStrictEqual(source.body, expectedHeldSource)) fail("SOURCE_HELD");
 			} else {
+				if (ref.state === "sending") {
+					if (alive(ref.owner)) fail("SOURCE_SENDING");
+					ref.state = "held";
+					ref.reason = "UNKNOWN_SEND";
+					delete ref.owner;
+					this.writeRef(ref);
+				}
 				if (ref.state !== "pending") fail("SOURCE_HELD");
 				if (ref.nextAttemptAt > Date.now()) fail("SOURCE_BACKOFF");
 			}
@@ -473,7 +495,7 @@ var SdkSpoolV2 = class {
 				const ref = this.readRef(target, sourceId);
 				if (ref.state !== "sending" || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail("SOURCE_HELD");
 				source.manifest.completed = true;
-				this.atomicJson(join(this.originals, sourceId, "manifest.json"), source.manifest, "original", "ack_before_publish");
+				this.atomicJson(join(this.originals, sourceId, "manifest.json"), source.manifest, "original", "ack_before_publish", true);
 				this.phase("ack_fsynced");
 			}
 			try {
@@ -554,7 +576,13 @@ async function sendReference(store, target, sourceId, post, deadline) {
 	try {
 		await store.markSending(target, sourceId);
 	} catch (error) {
-		return held(safeCode(error));
+		const code = error?.code;
+		if (code === "SOURCE_BACKOFF") return {
+			outcome: "spooled",
+			sourceAcknowledged: true,
+			referenceAcknowledged: true
+		};
+		return held(code === "SOURCE_SENDING" ? "SDK_SEND_IN_PROGRESS_OR_UNCERTAIN" : safeCode(error));
 	}
 	let body;
 	try {
@@ -648,30 +676,16 @@ async function deliverSdkCaptureV2(target, body, post, options = {}) {
 			referenceAcknowledged: false
 		};
 	}
-	let pending;
-	try {
-		pending = (await store.pending(target)).find((record) => record.sourceId === sourceId);
-	} catch (error) {
-		return held(safeCode(error));
-	}
-	if (!pending) {
-		try {
-			if ((await store.retain(target, storedBody.eventId, storedBody)).completed) return {
-				outcome: "duplicate",
-				sourceAcknowledged: true,
-				referenceAcknowledged: true,
-				sdkReplyConfirmed: true
-			};
-		} catch {}
-		return held("QUEUE_STATE_UNCONFIRMED");
-	}
-	if (pending.state !== "pending") return held(pending.state === "sending" ? "SDK_SEND_IN_PROGRESS_OR_UNCERTAIN" : "SOURCE_HELD");
-	if (pending.nextAttemptAt > Date.now()) return {
-		outcome: "spooled",
-		sourceAcknowledged: true,
-		referenceAcknowledged: true
-	};
-	return sendReference(store, target, sourceId, post);
+	const sent = await sendReference(store, target, sourceId, post);
+	if (sent.code === "SOURCE_HELD") try {
+		if ((await store.retain(target, storedBody.eventId, storedBody)).completed) return {
+			outcome: "duplicate",
+			sourceAcknowledged: true,
+			referenceAcknowledged: true,
+			sdkReplyConfirmed: true
+		};
+	} catch {}
+	return sent;
 }
 async function drainSdkCapturesV2(target, post, options = {}) {
 	const result = {
