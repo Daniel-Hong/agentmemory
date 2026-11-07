@@ -6,7 +6,7 @@ export const EMBEDDING_COMMITTED_NAMESPACE='mem:embedding-committed:v1';
 const digest=text=>createHash('sha256').update(text).digest('hex');
 export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKeyedLock=async(k,fn)=>fn(),logger,clock=Date.now,schedule=true,onIndexChanged,persistIndex}) {
   const state={pendingCount:0,completedCount:0,counterEpoch:randomUUID(),initialized:false,lastError:null,lastSuccessAt:null};
-  let pumping=false,reconciled=false,stopped=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
+  let pumping=false,reconciled=false,stopped=false,started=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
   const active=new Set(),sourceGuards=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
   // Historical proof observed by this worker, never a fresh disk-verification cache.
   const observedPublications=new Map();
@@ -255,12 +255,26 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     if(reconciled){committedRows=null;committedOffset=0;}
   }
   async function runPump(){
-    if(stopped||backgroundPaused()||pumping)return;pumping=true;
+    if(stopped||backgroundPaused()||pumping)return false;pumping=true;
+    const roundPublications=new Set(),selected=[];
+    const beforeCompleted=state.completedCount;let failed=false,more=false;
     try{
       if(!reconciled)await reconcile(50);
       const rows=await kv.list(EMBEDDING_RETRY_NAMESPACE);
+      const byId=new Map(rows.map(item=>[item.id,item]));
+      for(const item of rows)if(!pendingIds.has(item.id))pending(item);
+      // Keep a process-local round robin independent of engine enumeration.
+      // New intents join the end; a failed attempt must not monopolize the head.
+      for(const id of pendingIds){
+        const item=byId.get(id);
+        if(item&&!(item.retryAt>clock())&&!publications.has(id))selected.push(item);
+        if(selected.length===5)break;
+      }
+      for(const item of selected){pendingIds.delete(item.id);pendingIds.add(item.id);}
+      const selectedIds=new Set(selected.map(item=>item.id));
+      more=rows.some(item=>!selectedIds.has(item.id)&&!(item.retryAt>clock())&&!publications.has(item.id));
       const groups=new Map();
-      for(const item of rows.filter(item=>!(item.retryAt>clock())&&!publications.has(item.id)).slice(0,5)){
+      for(const item of selected){
         const scope=sourceScope(item);if(!groups.has(scope))groups.set(scope,[]);groups.get(scope).push(item);
       }
       for(const items of groups.values()){
@@ -275,7 +289,7 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
             try{
               const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);if(!queued||queued.retryAt>clock())continue;
               const result=await prepare(queued,await current(queued),false);if(result)prepared.push(result);
-            }catch(error){state.lastError=networkErrorCode(error);}
+            }catch(error){failed=true;state.lastError=networkErrorCode(error);}
           }
           if(!prepared.length)return;
           const selections=prepared.map(({item})=>[{scope:sourceScope(item),key:item.id},{scope:EMBEDDING_RETRY_NAMESPACE,key:item.id}]);
@@ -290,23 +304,45 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
             if(stopped||backgroundPaused())break;
             const result=results?.[offset];
             if(result?.status!=='fulfilled'){
+              failed=true;
               await withKeyedLock(intentKey(entry.item.id),async()=>{
                 if((await kv.get(EMBEDDING_RETRY_NAMESPACE,entry.item.id))?.generation===entry.generation)await retainUnlocked(entry.item,result?.reason,true);
               });continue;
             }
-            try{await executePrepared(entry);}catch(error){state.lastError=networkErrorCode(error);}
+            try{
+              if(!await executePrepared(entry))failed=true;
+              const publication=publications.get(entry.item.id);if(publication)roundPublications.add(publication);
+            }catch(error){failed=true;state.lastError=networkErrorCode(error);}
             if(readiness?.snapshot?.().status==='waiting')break;
           }
         });
         if(readiness?.snapshot?.().status==='waiting')break;
       }
-    }catch(error){state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery scan deferred',{errorCode:state.lastError});}
-    finally{pumping=false;}
+    }catch(error){failed=true;state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery scan deferred',{errorCode:state.lastError});}
+    finally{
+      // A fast provider must not grow an unbounded queue of unpublished vectors.
+      // Release the model locks first; publication retains its existing fences.
+      const outcomes=await Promise.allSettled([...roundPublications]);
+      if(outcomes.some(result=>result.status==='rejected'))failed=true;
+      pumping=false;
+    }
+    return !failed&&!stopped&&!backgroundPaused()&&readiness?.snapshot?.().status!=='waiting'&&
+      more&&state.completedCount>beforeCompleted&&selected.every(item=>!pendingIds.has(item.id));
   }
-  function pump(){if(stopped)return Promise.resolve();return track(initialize().then(()=>backgroundTask(runPump)()));}
-  function stop(){stopped=true;for(const release of sourceGuards)release();if(interval){clearInterval(interval);interval=null;}}
+  function pumpWork(){if(stopped)return Promise.resolve(false);return track(initialize().then(()=>backgroundTask(runPump)()));}
+  function pump(){return pumpWork().then(()=>{});}
+  function stop(){stopped=true;for(const release of sourceGuards)release();if(interval){clearTimeout(interval);interval=null;}}
   async function drain(){while(active.size)await Promise.allSettled([...active]);}
-  function start(){if(stopped||interval)return;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});interval=setInterval(()=>void pump().catch(error=>{state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});}),15000);interval.unref();}
+  function scheduleNext(delay){
+    if(stopped)return;
+    interval=setTimeout(()=>{
+      interval=null;
+      void pumpWork().then(fast=>scheduleNext(fast===true?1000:15000),error=>{
+        state.lastError=networkErrorCode(error);logger?.warn('Embedding recovery initialization deferred',{errorCode:state.lastError});scheduleNext(15000);
+      });
+    },delay);interval.unref();
+  }
+  function start(){if(stopped||started)return;started=true;void track(initialize()).catch(error=>{state.lastError=networkErrorCode(error);});scheduleNext(15000);}
   if(schedule)start();
   return {add,enqueue,prepareEnqueue,enqueueBatch,pump,start,initialize:()=>track(initialize()),reconcile:()=>track(reconcile()),stop,drain,
     observedPublication:id=>{try{return publicationEvidenceAvailable?structuredClone(observedPublications.get(id)??null):null;}catch{evidenceFailure();return null;}},

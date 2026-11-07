@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.63] — 2026-11-07
+- Keep fresh SDK-v2 source retention and reference admission under one lease. Share the native hook's original deadline across lock acquisition and transport, reserving 750ms for final state recording. Preserve retained-source acknowledgement if reference admission fails, retain the default 150ms lock contract without an explicit deadline, and leave exhausted pending work queued before any send. Unknown transport outcomes remain held; existing held/sending records never become a successful pending result merely because time ran out.
+- Claim and read the selected body under the same lease, preserving source hashing and owner fencing. No spool schema, quota, original-retention, automatic unknown-send retry or host trust changes. The source/reference publication gap under an OS crash and unbounded kernel filesystem latency are not eliminated.
+- Continue successful embedding batches after a one-second yield, only after that batch's publication has settled and other due work remains. Keep batch size five, shared model serialization, existing retry/backoff and 15-second idle/error cadence; rotate attempts so failing head items cannot starve later intents. The publication bound applies to this pump, not to the existing independent add API.
+- Reproduced the client lock/deadline failures and scheduler idle/starvation before changes. Client focused95 and independent22 tests, scheduler focused51 and independent13 tests passed in isolated homes. All39 sequential build configurations and SDK/skills/docs checks passed; TypeScript matches the30 existing .62 diagnostics. The ordinary suite passed6,515 with13 conditional skips; its unchanged12GiB SDK boundary fixture refused to start with8.77GB available. This environment limitation and operational rollout are recorded separately in `docs/customizations/CAPTURE-THROUGHPUT-63.md`; production remains on .62b and manual long-term-memory review is pending.
+
 ## [0.9.32-daniel.62] — 2026-11-07
 - Fix deferred observation embedding certification rejecting an unchanged source when another observation in the same session is written. Reuse the existing durability fence's per-key revision observers, including already pending mutations, and release each selected watch after certification, failure or worker stop. Preserve source replacement/deletion/ABA, intent-generation, missing-fence and uncertain SDK outcome refusals.
 - Base the .62 server preparation on .61 commit `f8246e56eb666ef0f9cefa9135ccbe4df5b9deb6`. Keep the .61 client queue repair, server mutation fencing and batch/publication scheduling unchanged. Acquire the new-capture watch after viewer/logging side effects so failed display handling preserves the source/inbox without leaking an unstarted watch. The false rejection and lifecycle failure were reproduced before their fixes; focused mutation/fence/capture regression, all39 sequential build configurations, SDK audit, skills/docs checks and independent review passed. The30 TypeScript diagnostics exactly match .61. See `docs/customizations/EMBEDDING-SOURCE-GUARD-62.md`; operational application and manual long-term-memory review remain separate.
@@ -588,6 +594,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.63]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.62...v0.9.32-daniel.63
 [0.9.32-daniel.62]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.61...v0.9.32-daniel.62
 [0.9.32-daniel.61]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.60...v0.9.32-daniel.61
 [0.9.32-daniel.60]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.59...v0.9.32-daniel.60

@@ -6,21 +6,21 @@ export const SDK_CAPTURE_V2_FLAG='--agentmemory-sdk-capture-v2';
 export type V2PostResult={status:number;body:unknown;notSent?:boolean};
 export type V2PostBudget={deadline:number;remainingMs:number};
 export type V2Post=(body:Record<string,unknown>,budget?:V2PostBudget)=>Promise<V2PostResult>;
-export type V2Options={dir?:string;storeOptions?:Omit<SdkSpoolV2Options,'dir'>};
+export type V2Options={dir?:string;deadline?:number;storeOptions?:Omit<SdkSpoolV2Options,'dir'|'deadline'>};
+export const SDK_FINALIZATION_RESERVE_MS=750;
 export type V2DeliveryResult={outcome:'delivered'|'duplicate'|'spooled'|'held'|'dropped';code?:string;sourceAcknowledged:boolean;referenceAcknowledged:boolean;sdkReplyConfirmed?:boolean};
 const STORE_CODES=new Set(['SOURCE_TOO_LARGE','ORIGINALS_FULL','QUEUE_FULL','SOURCE_CONFLICT','SOURCE_UNVERIFIED','SOURCE_HELD','SOURCE_BACKOFF','STORE_BUSY','STORE_IO','STORE_OPTIONS_INVALID','STORE_UNSAFE','STORE_LOCK_UNSUPPORTED']);
 function safeCode(error:unknown){const code=(error as {code?:unknown})?.code;return typeof code==='string'&&STORE_CODES.has(code)?code:'STORE_OR_DELIVERY_UNCONFIRMED';}
-function createStore(options:V2Options){return new SdkSpoolV2({...options.storeOptions,dir:options.dir});}
+function createStore(options:V2Options){return new SdkSpoolV2({...options.storeOptions,dir:options.dir,deadline:options.deadline});}
 function held(code:string,sourceAcknowledged=true,referenceAcknowledged=true):V2DeliveryResult{return {outcome:'held',code,sourceAcknowledged,referenceAcknowledged};}
 async function park(store:SdkSpoolV2,target:string,sourceId:string,code:string){try{await store.hold(target,sourceId,code);}catch{return held('QUEUE_STATE_UNCONFIRMED');}return held(code);}
 async function sendReference(store:SdkSpoolV2,target:string,sourceId:string,post:V2Post,deadline?:number):Promise<V2DeliveryResult>{
- try{await store.markSending(target,sourceId);}catch(error){
+ let body:Record<string,unknown>;
+ try{body=await store.claimForSend(target,sourceId,deadline);}catch(error){
   const code=(error as {code?:unknown})?.code;
-  if(code==='SOURCE_BACKOFF')return {outcome:'spooled',sourceAcknowledged:true,referenceAcknowledged:true};
+  if(code==='SOURCE_BACKOFF'||code==='SOURCE_SEND_BUDGET_EXHAUSTED')return {outcome:'spooled',sourceAcknowledged:true,referenceAcknowledged:true};
   return held(code==='SOURCE_SENDING'?'SDK_SEND_IN_PROGRESS_OR_UNCERTAIN':safeCode(error));
  }
- let body:Record<string,unknown>;
- try{body=await store.load(target,sourceId);}catch{return park(store,target,sourceId,'SOURCE_UNVERIFIED');}
  let response:V2PostResult;
  const budget=deadline===undefined?undefined:{deadline,remainingMs:Math.max(0,Math.floor(deadline-performance.now()))};
  try{response=budget&&budget.remainingMs<=0?{status:0,body:null,notSent:true}:await post(body,budget);}catch{return park(store,target,sourceId,'SDK_SEND_UNCERTAIN');}
@@ -42,12 +42,12 @@ export async function deliverSdkCaptureV2(target:string,body:Record<string,unkno
  try{
   store=createStore(options);
   if(typeof body.eventId!=='string'||!body.eventId) return {outcome:'dropped',code:'SOURCE_UNVERIFIED',sourceAcknowledged:false,referenceAcknowledged:false};
-  const retained=await store.retain(target,body.eventId,body);sourceId=retained.sourceId;storedBody=retained.body;
+  const handoff=await store.retainAndEnqueue(target,body.eventId,body),retained=handoff.retained;sourceId=retained.sourceId;storedBody=retained.body;
   if(retained.conflict)return held('SOURCE_CONFLICT',true,false);
   if(retained.completed)return {outcome:'duplicate',sourceAcknowledged:true,referenceAcknowledged:true,sdkReplyConfirmed:true};
+  if(!handoff.referenceAcknowledged)return {outcome:'dropped',code:safeCode(handoff.error),sourceAcknowledged:true,referenceAcknowledged:false};
  }catch(error){return {outcome:'dropped',code:safeCode(error),sourceAcknowledged:false,referenceAcknowledged:false};}
- try{await store.enqueue(target,sourceId);}catch(error){return {outcome:'dropped',code:safeCode(error),sourceAcknowledged:true,referenceAcknowledged:false};}
- const sent=await sendReference(store,target,sourceId,post);
+ const sent=await sendReference(store,target,sourceId,post,options.deadline===undefined?undefined:options.deadline-SDK_FINALIZATION_RESERVE_MS);
  if(sent.code==='SOURCE_HELD'){
   try{if((await store.retain(target,storedBody.eventId as string,storedBody)).completed)return {outcome:'duplicate',sourceAcknowledged:true,referenceAcknowledged:true,sdkReplyConfirmed:true};}catch{}
  }
@@ -56,7 +56,7 @@ export async function deliverSdkCaptureV2(target:string,body:Record<string,unkno
 export async function drainSdkCapturesV2(target:string,post:V2Post,options:V2Options&{limit?:number;budgetMs?:number;deadline?:number}={}){
  const result={attempted:0,delivered:0,duplicates:0,held:0,remaining:0,error:undefined as string|undefined};
  const limit=Math.min(8,Math.max(0,options.limit??8)),budget=Math.min(1500,Math.max(0,options.budgetMs??1500)),start=performance.now();
- const deadline=Math.min(options.deadline??Infinity,start+budget);
+ const deadline=Math.min(options.deadline===undefined?Infinity:options.deadline-SDK_FINALIZATION_RESERVE_MS,start+budget);
  try{
   const store=createStore(options),records=await store.pending(target);
   for(const ref of records){

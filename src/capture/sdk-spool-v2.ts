@@ -19,7 +19,8 @@ const ID = /^[a-f0-9]{64}$/;
 type Owner = { pid: number; start: string; boot: string };
 type Ref = { v: 2; targetHash: string; sourceId: string; state: 'pending' | 'sending' | 'held'; attempts: number; nextAttemptAt: number; owner?: Owner; reason?: 'RETRY' | 'HELD' | 'UNKNOWN_SEND' };
 type Manifest = { v: 2; sourceId: string; targetHash: string; eventId: string; bytes: number; hash: string; chunks: Array<{ name: string; bytes: number; hash: string }>; conflict: boolean; completed: boolean };
-export type SdkSpoolV2Options = { dir?: string; maxOriginalBytes?: number; maxQueueBytes?: number; maxInputBytes?: number; chunkBytes?: number; onPhase?: (phase: string) => void };
+// Optional deadline uses performance.now(); omitted callers retain the 150ms lock wait.
+export type SdkSpoolV2Options = { dir?: string; deadline?: number; maxOriginalBytes?: number; maxQueueBytes?: number; maxInputBytes?: number; chunkBytes?: number; onPhase?: (phase: string) => void };
 export type RetainedSdkSource = { sourceId: string; duplicate: boolean; conflict: boolean; completed?: boolean; body: Record<string, unknown> };
 
 function fail(code: string): never { throw Object.assign(new Error(code), { code }); }
@@ -135,6 +136,7 @@ export class SdkSpoolV2 {
   private readonly maxInputBytes: number;
   private readonly chunkBytes: number;
   private readonly onPhase?: (phase: string) => void;
+  private readonly deadline?: number;
   constructor(options: SdkSpoolV2Options = {}) {
     const path = options.dir ?? process.env.AGENTMEMORY_SDK_CAPTURE_V2_DIR ?? join(homedir(), '.local', 'share', 'agentmemory', 'capture-spool-sdk-v2');
     if (!isAbsolute(path)) fail('STORE_OPTIONS_INVALID');
@@ -145,6 +147,8 @@ export class SdkSpoolV2 {
     this.maxInputBytes = limit(options.maxInputBytes, INPUT_LIMIT);
     this.chunkBytes = limit(options.chunkBytes, CHUNK_LIMIT);
     this.onPhase = options.onPhase;
+    if (options.deadline !== undefined && (!Number.isFinite(options.deadline) || options.deadline < 0)) fail('STORE_OPTIONS_INVALID');
+    this.deadline = options.deadline;
   }
   private phase(name: string): void { this.onPhase?.(name); }
   private init(): void {
@@ -178,6 +182,7 @@ export class SdkSpoolV2 {
     renameSync(temp, path); syncDirectory(join(path, '..'));
   }
   private async locked<T>(operation: () => T): Promise<T> {
+    const operationDeadline = this.deadline;
     let fd: number | undefined;
     try {
       if (process.platform !== 'linux') fail('STORE_LOCK_UNSUPPORTED');
@@ -186,8 +191,9 @@ export class SdkSpoolV2 {
       const stat = fstatSync(fd);
       privateStat(stat, false);
       if (stat.size !== 0) fail('STORE_UNSAFE');
-      const deadline = performance.now() + 150;
+      const deadline = operationDeadline ?? performance.now() + 150;
       while (true) {
+        if (operationDeadline !== undefined && performance.now() >= deadline) fail('STORE_BUSY');
         // flock inherits this open file description; its exit does not release our fd's lock.
         const lock = spawnSync('/usr/bin/flock', ['--exclusive', '--nonblock', '--conflict-exit-code', '73', '3'], { stdio: ['ignore', 'ignore', 'ignore', fd], timeout: 150 });
         if (lock.error || lock.signal || lock.status !== 0 && lock.status !== 73) fail('STORE_LOCK_UNSUPPORTED');
@@ -196,6 +202,7 @@ export class SdkSpoolV2 {
         await new Promise(resolveWait => setTimeout(resolveWait, 5));
       }
       fsyncSync(fd); syncDirectory(this.queue);
+      if (operationDeadline !== undefined && performance.now() >= deadline) fail('STORE_BUSY');
       return operation();
     } catch (error) {
       if (typeof code(error) === 'string' && /^(SOURCE_|ORIGINALS_|QUEUE_|STORE_)/.test(code(error)!)) throw error;
@@ -237,7 +244,7 @@ export class SdkSpoolV2 {
       return { manifest, body };
     } catch (error) { if (code(error) === 'STORE_UNSAFE') throw error; fail('SOURCE_UNVERIFIED'); }
   }
-  async retain(target: string, eventId: string, body: Record<string, unknown>): Promise<RetainedSdkSource> {
+  private prepareSource(target: string, eventId: string, body: Record<string, unknown>): { normalized: Record<string, unknown>; bytes: Buffer } {
     let normalized: Record<string, unknown>; let bytes: Buffer;
     try {
       normalized = JSON.parse(JSON.stringify(body));
@@ -245,34 +252,51 @@ export class SdkSpoolV2 {
       bytes = Buffer.from(canonical(normalized));
     } catch { fail('SOURCE_UNVERIFIED'); }
     if (bytes.length > this.maxInputBytes) fail('SOURCE_TOO_LARGE');
-    return this.locked(() => {
-      let sourceId = this.key(target, eventId); let conflict = false;
+    return { normalized, bytes };
+  }
+  private retainSource(target: string, eventId: string, normalized: Record<string, unknown>, bytes: Buffer): RetainedSdkSource {
+    let sourceId = this.key(target, eventId); let conflict = false;
+    try {
+      lstatSync(join(this.originals, sourceId));
+      const prior = this.source(target, sourceId);
+      if (sameSource(prior.body, normalized)) return { sourceId, duplicate: true, conflict: false, completed: prior.manifest.completed, body: prior.body };
+      conflict = true; sourceId = this.conflictKey(target, eventId, normalized);
       try {
         lstatSync(join(this.originals, sourceId));
-        const prior = this.source(target, sourceId);
-        if (sameSource(prior.body, normalized)) return { sourceId, duplicate: true, conflict: false, completed: prior.manifest.completed, body: prior.body };
-        conflict = true; sourceId = this.conflictKey(target, eventId, normalized);
-        try {
-          lstatSync(join(this.originals, sourceId));
-          const priorConflict = this.source(target, sourceId);
-          if (!priorConflict.manifest.conflict || !sameSource(priorConflict.body, normalized)) fail('SOURCE_UNVERIFIED');
-          return { sourceId, duplicate: true, conflict: true, completed: false, body: priorConflict.body };
-        } catch (error) { if (code(error) !== 'ENOENT') throw error; }
+        const priorConflict = this.source(target, sourceId);
+        if (!priorConflict.manifest.conflict || !sameSource(priorConflict.body, normalized)) fail('SOURCE_UNVERIFIED');
+        return { sourceId, duplicate: true, conflict: true, completed: false, body: priorConflict.body };
       } catch (error) { if (code(error) !== 'ENOENT') throw error; }
-      const chunks: Buffer[] = [];
-      for (let offset = 0; offset < bytes.length; offset += this.chunkBytes) chunks.push(bytes.subarray(offset, offset + this.chunkBytes));
-      const manifest: Manifest = { v: 2, sourceId, targetHash: digest(target), eventId, bytes: bytes.length, hash: digest(bytes), chunks: chunks.map((value, index) => ({ name: String(index).padStart(6, '0') + '.chunk', bytes: value.length, hash: digest(value) })), conflict, completed: false };
-      const manifestBytes = canonical(manifest);
-      if (Buffer.byteLength(manifestBytes) > 64 * 1024) fail('SOURCE_TOO_LARGE');
-      this.budget('original', BLOCK + charge((chunks.length + 1) * 256) + charge(Buffer.byteLength(manifestBytes)) + chunks.reduce((sum, value) => sum + charge(value.length), 0));
-      const stage = join(this.originals, '.stage-' + randomUUID());
-      mkdirSync(stage, { mode: 0o700 }); syncDirectory(this.originals);
-      for (let index = 0; index < chunks.length; index++) { this.writeFile(join(stage, manifest.chunks[index].name), chunks[index]); this.phase('chunk_fsynced'); }
-      this.writeFile(join(stage, 'manifest.json'), manifestBytes); this.phase('manifest_fsynced');
-      syncDirectory(stage); this.phase('source_before_publish');
-      renameSync(stage, join(this.originals, sourceId)); syncDirectory(this.originals); this.phase('source_published');
-      const verified = this.source(target, sourceId);
-      return { sourceId, duplicate: false, conflict, completed: false, body: verified.body };
+    } catch (error) { if (code(error) !== 'ENOENT') throw error; }
+    const chunks: Buffer[] = [];
+    for (let offset = 0; offset < bytes.length; offset += this.chunkBytes) chunks.push(bytes.subarray(offset, offset + this.chunkBytes));
+    const manifest: Manifest = { v: 2, sourceId, targetHash: digest(target), eventId, bytes: bytes.length, hash: digest(bytes), chunks: chunks.map((value, index) => ({ name: String(index).padStart(6, '0') + '.chunk', bytes: value.length, hash: digest(value) })), conflict, completed: false };
+    const manifestBytes = canonical(manifest);
+    if (Buffer.byteLength(manifestBytes) > 64 * 1024) fail('SOURCE_TOO_LARGE');
+    this.budget('original', BLOCK + charge((chunks.length + 1) * 256) + charge(Buffer.byteLength(manifestBytes)) + chunks.reduce((sum, value) => sum + charge(value.length), 0));
+    const stage = join(this.originals, '.stage-' + randomUUID());
+    mkdirSync(stage, { mode: 0o700 }); syncDirectory(this.originals);
+    for (let index = 0; index < chunks.length; index++) { this.writeFile(join(stage, manifest.chunks[index].name), chunks[index]); this.phase('chunk_fsynced'); }
+    this.writeFile(join(stage, 'manifest.json'), manifestBytes); this.phase('manifest_fsynced');
+    syncDirectory(stage); this.phase('source_before_publish');
+    renameSync(stage, join(this.originals, sourceId)); syncDirectory(this.originals); this.phase('source_published');
+    const verified = this.source(target, sourceId);
+    return { sourceId, duplicate: false, conflict, completed: false, body: verified.body };
+  }
+  async retain(target: string, eventId: string, body: Record<string, unknown>): Promise<RetainedSdkSource> {
+    const { normalized, bytes } = this.prepareSource(target, eventId, body);
+    return this.locked(() => this.retainSource(target, eventId, normalized, bytes));
+  }
+  async retainAndEnqueue(target: string, eventId: string, body: Record<string, unknown>): Promise<{ retained: RetainedSdkSource; referenceAcknowledged: boolean; error?: unknown }> {
+    const { normalized, bytes } = this.prepareSource(target, eventId, body);
+    return this.locked(() => {
+      const retained = this.retainSource(target, eventId, normalized, bytes);
+      if (retained.conflict) return { retained, referenceAcknowledged: false };
+      if (retained.completed) return { retained, referenceAcknowledged: true };
+      // Source publication is not rolled back if queue admission or I/O fails.
+      try { this.enqueueSource(target, retained.sourceId); }
+      catch (error) { return { retained, referenceAcknowledged: false, error }; }
+      return { retained, referenceAcknowledged: true };
     });
   }
   async load(target: string, sourceId: string): Promise<Record<string, unknown>> {
@@ -288,14 +312,15 @@ export class SdkSpoolV2 {
     } catch (error) { if (code(error) === 'ENOENT' || code(error) === 'STORE_UNSAFE') throw error; fail('SOURCE_UNVERIFIED'); }
   }
   private writeRef(ref: Ref, transition = true): void { this.atomicJson(this.refPath(ref.sourceId), ref, 'queue', undefined, transition); this.phase('reference_published'); }
+  private enqueueSource(target: string, sourceId: string): void {
+    const { manifest } = this.source(target, sourceId);
+    if (manifest.conflict) fail('SOURCE_CONFLICT');
+    if (manifest.completed) return;
+    try { this.readRef(target, sourceId); return; } catch (error) { if (code(error) !== 'ENOENT') throw error; }
+    this.writeRef({ v: 2, targetHash: digest(target), sourceId, state: 'pending', attempts: 0, nextAttemptAt: 0 }, false);
+  }
   async enqueue(target: string, sourceId: string): Promise<void> {
-    return this.locked(() => {
-      const { manifest } = this.source(target, sourceId);
-      if (manifest.conflict) fail('SOURCE_CONFLICT');
-      if (manifest.completed) return;
-      try { this.readRef(target, sourceId); return; } catch (error) { if (code(error) !== 'ENOENT') throw error; }
-      this.writeRef({ v: 2, targetHash: digest(target), sourceId, state: 'pending', attempts: 0, nextAttemptAt: 0 }, false);
-    });
+    return this.locked(() => this.enqueueSource(target, sourceId));
   }
   async pending(target: string): Promise<Array<{ sourceId: string; state: 'pending' | 'sending' | 'held'; attempts: number; nextAttemptAt: number }>> {
     return this.locked(() => {
@@ -312,6 +337,13 @@ export class SdkSpoolV2 {
     });
   }
   async markSending(target: string, sourceId: string, expectedHeldSource?: Record<string, unknown>): Promise<void> {
+    await this.claimSource(target, sourceId, expectedHeldSource);
+  }
+  async claimForSend(target: string, sourceId: string, sendDeadline?: number): Promise<Record<string, unknown>> {
+    return this.claimSource(target, sourceId, undefined, sendDeadline);
+  }
+  private async claimSource(target: string, sourceId: string, expectedHeldSource?: Record<string, unknown>, sendDeadline?: number): Promise<Record<string, unknown>> {
+    if (sendDeadline !== undefined && !Number.isFinite(sendDeadline)) fail('STORE_OPTIONS_INVALID');
     return this.locked(() => {
       const source = this.source(target, sourceId);
       if (source.manifest.conflict || source.manifest.completed) fail('SOURCE_HELD');
@@ -327,8 +359,11 @@ export class SdkSpoolV2 {
         if (ref.nextAttemptAt > Date.now()) fail('SOURCE_BACKOFF');
       }
       const owner = ownerIdentity(); if (!owner) fail('STORE_BUSY');
+      // Only a ref verified pending under this lease can be reported as spooled.
+      if (sendDeadline !== undefined && performance.now() >= sendDeadline) fail('SOURCE_SEND_BUDGET_EXHAUSTED');
       ref.state = 'sending'; ref.owner = owner;
       this.writeRef(ref); this.phase('send_intent_fsynced');
+      return source.body;
     });
   }
   async acknowledge(target: string, sourceId: string): Promise<void> {

@@ -40,8 +40,8 @@ it('does not POST when send-intent fsync consumes the monotonic drain budget; ke
 it('passes the original absolute deadline and fresh remaining budget after source readback',async()=>{
   await queued();let clock=1000,received:unknown;
   vi.spyOn(performance,'now').mockImplementation(()=>clock);
-  const load=SdkSpoolV2.prototype.load;
-  vi.spyOn(SdkSpoolV2.prototype,'load').mockImplementation(async function(this:SdkSpoolV2,t,id){const value=await load.call(this,t,id);clock+=30;return value;});
+  const claim=SdkSpoolV2.prototype.claimForSend;
+  vi.spyOn(SdkSpoolV2.prototype,'claimForSend').mockImplementation(async function(this:SdkSpoolV2,t,id,deadline){const value=await claim.call(this,t,id,deadline);clock+=30;return value;});
   const result=await drainSdkCapturesV2(target,async(b,...args:unknown[])=>{received=args[0];return ack(b);},{dir:join(root,'v2'),limit:1,budgetMs:250,storeOptions:{onPhase:phase=>{if(phase==='send_intent_fsynced')clock+=70;}}});
   expect(received).toEqual({deadline:1250,remainingMs:150});
   expect(result).toMatchObject({attempted:1,delivered:1,held:0,remaining:0});

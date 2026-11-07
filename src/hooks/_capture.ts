@@ -1,4 +1,4 @@
-import {deliverSdkCaptureV2,drainSdkCapturesV2,SDK_CAPTURE_V2_FLAG,type V2DeliveryResult,type V2PostResult} from "../capture/sdk-delivery-v2.js";
+import {deliverSdkCaptureV2,drainSdkCapturesV2,SDK_CAPTURE_V2_FLAG,SDK_FINALIZATION_RESERVE_MS,type V2DeliveryResult,type V2PostResult} from "../capture/sdk-delivery-v2.js";
 import {scrubRecord} from "../functions/privacy.js";
 import {performance} from "node:perf_hooks";
 import {sendCapture,restoreSdkOriginal} from "../capture/delivery.js";
@@ -246,9 +246,9 @@ async function captureObservationV2(body:ObserveBody,timeoutMs:number):Promise<V
   const started=performance.now();
   const eventId=body.eventId??deriveEventId(body.hookType,body.sessionId,null,body.data);
   const payload=scrubRecord(JSON.parse(JSON.stringify({...body,eventId,captureCompletion:"sdk-v1"})),{scrubKeys:true}) as Record<string,unknown>;
-  const options={dir:process.env["AGENTMEMORY_SDK_CAPTURE_V2_DIR"]};
-  const result=await deliverSdkCaptureV2(REST_URL,payload,b=>postRawV2(b,timeoutMs),options);
-  const now=performance.now(),deadline=Math.min(started+timeoutMs,now+250),remaining=Math.floor(deadline-now);
+  const deadline=started+timeoutMs,options={dir:process.env["AGENTMEMORY_SDK_CAPTURE_V2_DIR"],deadline};
+  const result=await deliverSdkCaptureV2(REST_URL,payload,(b,budget)=>postRawV2(b,budget?.remainingMs??timeoutMs,budget?.deadline),options);
+  const now=performance.now(),remaining=Math.floor(Math.min(deadline-SDK_FINALIZATION_RESERVE_MS-now,250));
   if(body.hookType!=="stop"&&(result.outcome==="delivered"||result.outcome==="duplicate")&&remaining>=100){
     const backlog=await drainSdkCapturesV2(REST_URL,(b,budget)=>postRawV2(b,budget?.remainingMs??remaining,budget?.deadline??deadline),{...options,limit:1,budgetMs:remaining,deadline});
     if(backlog.held||backlog.error){try{writeSync(2,JSON.stringify({code:"CAPTURE_BACKLOG_HELD",held:backlog.held,error:backlog.error})+"\n");}catch{}}

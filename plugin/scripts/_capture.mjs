@@ -157,6 +157,7 @@ var SdkSpoolV2 = class {
 	maxInputBytes;
 	chunkBytes;
 	onPhase;
+	deadline;
 	constructor(options = {}) {
 		const path = options.dir ?? process.env.AGENTMEMORY_SDK_CAPTURE_V2_DIR ?? join(homedir(), ".local", "share", "agentmemory", "capture-spool-sdk-v2");
 		if (!isAbsolute(path)) fail("STORE_OPTIONS_INVALID");
@@ -170,6 +171,8 @@ var SdkSpoolV2 = class {
 		this.maxInputBytes = limit(options.maxInputBytes, INPUT_LIMIT);
 		this.chunkBytes = limit(options.chunkBytes, CHUNK_LIMIT);
 		this.onPhase = options.onPhase;
+		if (options.deadline !== void 0 && (!Number.isFinite(options.deadline) || options.deadline < 0)) fail("STORE_OPTIONS_INVALID");
+		this.deadline = options.deadline;
 	}
 	phase(name) {
 		this.onPhase?.(name);
@@ -215,6 +218,7 @@ var SdkSpoolV2 = class {
 		syncDirectory$1(join(path, ".."));
 	}
 	async locked(operation) {
+		const operationDeadline = this.deadline;
 		let fd;
 		try {
 			if (process.platform !== "linux") fail("STORE_LOCK_UNSUPPORTED");
@@ -223,8 +227,9 @@ var SdkSpoolV2 = class {
 			const stat = fstatSync(fd);
 			privateStat(stat, false);
 			if (stat.size !== 0) fail("STORE_UNSAFE");
-			const deadline = performance.now() + 150;
+			const deadline = operationDeadline ?? performance.now() + 150;
 			while (true) {
+				if (operationDeadline !== void 0 && performance.now() >= deadline) fail("STORE_BUSY");
 				const lock = spawnSync("/usr/bin/flock", [
 					"--exclusive",
 					"--nonblock",
@@ -247,6 +252,7 @@ var SdkSpoolV2 = class {
 			}
 			fsyncSync(fd);
 			syncDirectory$1(this.queue);
+			if (operationDeadline !== void 0 && performance.now() >= deadline) fail("STORE_BUSY");
 			return operation();
 		} catch (error) {
 			if (typeof code(error) === "string" && /^(SOURCE_|ORIGINALS_|QUEUE_|STORE_)/.test(code(error))) throw error;
@@ -300,7 +306,7 @@ var SdkSpoolV2 = class {
 			fail("SOURCE_UNVERIFIED");
 		}
 	}
-	async retain(target, eventId, body) {
+	prepareSource(target, eventId, body) {
 		let normalized;
 		let bytes;
 		try {
@@ -311,79 +317,114 @@ var SdkSpoolV2 = class {
 			fail("SOURCE_UNVERIFIED");
 		}
 		if (bytes.length > this.maxInputBytes) fail("SOURCE_TOO_LARGE");
-		return this.locked(() => {
-			let sourceId = this.key(target, eventId);
-			let conflict = false;
+		return {
+			normalized,
+			bytes
+		};
+	}
+	retainSource(target, eventId, normalized, bytes) {
+		let sourceId = this.key(target, eventId);
+		let conflict = false;
+		try {
+			lstatSync(join(this.originals, sourceId));
+			const prior = this.source(target, sourceId);
+			if (sameSource(prior.body, normalized)) return {
+				sourceId,
+				duplicate: true,
+				conflict: false,
+				completed: prior.manifest.completed,
+				body: prior.body
+			};
+			conflict = true;
+			sourceId = this.conflictKey(target, eventId, normalized);
 			try {
 				lstatSync(join(this.originals, sourceId));
-				const prior = this.source(target, sourceId);
-				if (sameSource(prior.body, normalized)) return {
+				const priorConflict = this.source(target, sourceId);
+				if (!priorConflict.manifest.conflict || !sameSource(priorConflict.body, normalized)) fail("SOURCE_UNVERIFIED");
+				return {
 					sourceId,
 					duplicate: true,
-					conflict: false,
-					completed: prior.manifest.completed,
-					body: prior.body
+					conflict: true,
+					completed: false,
+					body: priorConflict.body
 				};
-				conflict = true;
-				sourceId = this.conflictKey(target, eventId, normalized);
-				try {
-					lstatSync(join(this.originals, sourceId));
-					const priorConflict = this.source(target, sourceId);
-					if (!priorConflict.manifest.conflict || !sameSource(priorConflict.body, normalized)) fail("SOURCE_UNVERIFIED");
-					return {
-						sourceId,
-						duplicate: true,
-						conflict: true,
-						completed: false,
-						body: priorConflict.body
-					};
-				} catch (error) {
-					if (code(error) !== "ENOENT") throw error;
-				}
 			} catch (error) {
 				if (code(error) !== "ENOENT") throw error;
 			}
-			const chunks = [];
-			for (let offset = 0; offset < bytes.length; offset += this.chunkBytes) chunks.push(bytes.subarray(offset, offset + this.chunkBytes));
-			const manifest = {
-				v: 2,
-				sourceId,
-				targetHash: digest$1(target),
-				eventId,
-				bytes: bytes.length,
-				hash: digest$1(bytes),
-				chunks: chunks.map((value, index) => ({
-					name: String(index).padStart(6, "0") + ".chunk",
-					bytes: value.length,
-					hash: digest$1(value)
-				})),
-				conflict,
-				completed: false
+		} catch (error) {
+			if (code(error) !== "ENOENT") throw error;
+		}
+		const chunks = [];
+		for (let offset = 0; offset < bytes.length; offset += this.chunkBytes) chunks.push(bytes.subarray(offset, offset + this.chunkBytes));
+		const manifest = {
+			v: 2,
+			sourceId,
+			targetHash: digest$1(target),
+			eventId,
+			bytes: bytes.length,
+			hash: digest$1(bytes),
+			chunks: chunks.map((value, index) => ({
+				name: String(index).padStart(6, "0") + ".chunk",
+				bytes: value.length,
+				hash: digest$1(value)
+			})),
+			conflict,
+			completed: false
+		};
+		const manifestBytes = canonical$1(manifest);
+		if (Buffer.byteLength(manifestBytes) > 64 * 1024) fail("SOURCE_TOO_LARGE");
+		this.budget("original", BLOCK + charge((chunks.length + 1) * 256) + charge(Buffer.byteLength(manifestBytes)) + chunks.reduce((sum, value) => sum + charge(value.length), 0));
+		const stage = join(this.originals, ".stage-" + randomUUID());
+		mkdirSync(stage, { mode: 448 });
+		syncDirectory$1(this.originals);
+		for (let index = 0; index < chunks.length; index++) {
+			this.writeFile(join(stage, manifest.chunks[index].name), chunks[index]);
+			this.phase("chunk_fsynced");
+		}
+		this.writeFile(join(stage, "manifest.json"), manifestBytes);
+		this.phase("manifest_fsynced");
+		syncDirectory$1(stage);
+		this.phase("source_before_publish");
+		renameSync(stage, join(this.originals, sourceId));
+		syncDirectory$1(this.originals);
+		this.phase("source_published");
+		const verified = this.source(target, sourceId);
+		return {
+			sourceId,
+			duplicate: false,
+			conflict,
+			completed: false,
+			body: verified.body
+		};
+	}
+	async retain(target, eventId, body) {
+		const { normalized, bytes } = this.prepareSource(target, eventId, body);
+		return this.locked(() => this.retainSource(target, eventId, normalized, bytes));
+	}
+	async retainAndEnqueue(target, eventId, body) {
+		const { normalized, bytes } = this.prepareSource(target, eventId, body);
+		return this.locked(() => {
+			const retained = this.retainSource(target, eventId, normalized, bytes);
+			if (retained.conflict) return {
+				retained,
+				referenceAcknowledged: false
 			};
-			const manifestBytes = canonical$1(manifest);
-			if (Buffer.byteLength(manifestBytes) > 64 * 1024) fail("SOURCE_TOO_LARGE");
-			this.budget("original", BLOCK + charge((chunks.length + 1) * 256) + charge(Buffer.byteLength(manifestBytes)) + chunks.reduce((sum, value) => sum + charge(value.length), 0));
-			const stage = join(this.originals, ".stage-" + randomUUID());
-			mkdirSync(stage, { mode: 448 });
-			syncDirectory$1(this.originals);
-			for (let index = 0; index < chunks.length; index++) {
-				this.writeFile(join(stage, manifest.chunks[index].name), chunks[index]);
-				this.phase("chunk_fsynced");
+			if (retained.completed) return {
+				retained,
+				referenceAcknowledged: true
+			};
+			try {
+				this.enqueueSource(target, retained.sourceId);
+			} catch (error) {
+				return {
+					retained,
+					referenceAcknowledged: false,
+					error
+				};
 			}
-			this.writeFile(join(stage, "manifest.json"), manifestBytes);
-			this.phase("manifest_fsynced");
-			syncDirectory$1(stage);
-			this.phase("source_before_publish");
-			renameSync(stage, join(this.originals, sourceId));
-			syncDirectory$1(this.originals);
-			this.phase("source_published");
-			const verified = this.source(target, sourceId);
 			return {
-				sourceId,
-				duplicate: false,
-				conflict,
-				completed: false,
-				body: verified.body
+				retained,
+				referenceAcknowledged: true
 			};
 		});
 	}
@@ -413,26 +454,27 @@ var SdkSpoolV2 = class {
 		this.atomicJson(this.refPath(ref.sourceId), ref, "queue", void 0, transition);
 		this.phase("reference_published");
 	}
+	enqueueSource(target, sourceId) {
+		const { manifest } = this.source(target, sourceId);
+		if (manifest.conflict) fail("SOURCE_CONFLICT");
+		if (manifest.completed) return;
+		try {
+			this.readRef(target, sourceId);
+			return;
+		} catch (error) {
+			if (code(error) !== "ENOENT") throw error;
+		}
+		this.writeRef({
+			v: 2,
+			targetHash: digest$1(target),
+			sourceId,
+			state: "pending",
+			attempts: 0,
+			nextAttemptAt: 0
+		}, false);
+	}
 	async enqueue(target, sourceId) {
-		return this.locked(() => {
-			const { manifest } = this.source(target, sourceId);
-			if (manifest.conflict) fail("SOURCE_CONFLICT");
-			if (manifest.completed) return;
-			try {
-				this.readRef(target, sourceId);
-				return;
-			} catch (error) {
-				if (code(error) !== "ENOENT") throw error;
-			}
-			this.writeRef({
-				v: 2,
-				targetHash: digest$1(target),
-				sourceId,
-				state: "pending",
-				attempts: 0,
-				nextAttemptAt: 0
-			}, false);
-		});
+		return this.locked(() => this.enqueueSource(target, sourceId));
 	}
 	async pending(target) {
 		return this.locked(() => {
@@ -462,6 +504,13 @@ var SdkSpoolV2 = class {
 		});
 	}
 	async markSending(target, sourceId, expectedHeldSource) {
+		await this.claimSource(target, sourceId, expectedHeldSource);
+	}
+	async claimForSend(target, sourceId, sendDeadline) {
+		return this.claimSource(target, sourceId, void 0, sendDeadline);
+	}
+	async claimSource(target, sourceId, expectedHeldSource, sendDeadline) {
+		if (sendDeadline !== void 0 && !Number.isFinite(sendDeadline)) fail("STORE_OPTIONS_INVALID");
 		return this.locked(() => {
 			const source = this.source(target, sourceId);
 			if (source.manifest.conflict || source.manifest.completed) fail("SOURCE_HELD");
@@ -481,10 +530,12 @@ var SdkSpoolV2 = class {
 			}
 			const owner = ownerIdentity();
 			if (!owner) fail("STORE_BUSY");
+			if (sendDeadline !== void 0 && performance.now() >= sendDeadline) fail("SOURCE_SEND_BUDGET_EXHAUSTED");
 			ref.state = "sending";
 			ref.owner = owner;
 			this.writeRef(ref);
 			this.phase("send_intent_fsynced");
+			return source.body;
 		});
 	}
 	async acknowledge(target, sourceId) {
@@ -553,7 +604,8 @@ function safeCode(error) {
 function createStore(options) {
 	return new SdkSpoolV2({
 		...options.storeOptions,
-		dir: options.dir
+		dir: options.dir,
+		deadline: options.deadline
 	});
 }
 function held(code, sourceAcknowledged = true, referenceAcknowledged = true) {
@@ -573,22 +625,17 @@ async function park(store, target, sourceId, code) {
 	return held(code);
 }
 async function sendReference(store, target, sourceId, post, deadline) {
+	let body;
 	try {
-		await store.markSending(target, sourceId);
+		body = await store.claimForSend(target, sourceId, deadline);
 	} catch (error) {
 		const code = error?.code;
-		if (code === "SOURCE_BACKOFF") return {
+		if (code === "SOURCE_BACKOFF" || code === "SOURCE_SEND_BUDGET_EXHAUSTED") return {
 			outcome: "spooled",
 			sourceAcknowledged: true,
 			referenceAcknowledged: true
 		};
 		return held(code === "SOURCE_SENDING" ? "SDK_SEND_IN_PROGRESS_OR_UNCERTAIN" : safeCode(error));
-	}
-	let body;
-	try {
-		body = await store.load(target, sourceId);
-	} catch {
-		return park(store, target, sourceId, "SOURCE_UNVERIFIED");
 	}
 	let response;
 	const budget = deadline === void 0 ? void 0 : {
@@ -648,7 +695,7 @@ async function deliverSdkCaptureV2(target, body, post, options = {}) {
 			sourceAcknowledged: false,
 			referenceAcknowledged: false
 		};
-		const retained = await store.retain(target, body.eventId, body);
+		const handoff = await store.retainAndEnqueue(target, body.eventId, body), retained = handoff.retained;
 		sourceId = retained.sourceId;
 		storedBody = retained.body;
 		if (retained.conflict) return held("SOURCE_CONFLICT", true, false);
@@ -658,6 +705,12 @@ async function deliverSdkCaptureV2(target, body, post, options = {}) {
 			referenceAcknowledged: true,
 			sdkReplyConfirmed: true
 		};
+		if (!handoff.referenceAcknowledged) return {
+			outcome: "dropped",
+			code: safeCode(handoff.error),
+			sourceAcknowledged: true,
+			referenceAcknowledged: false
+		};
 	} catch (error) {
 		return {
 			outcome: "dropped",
@@ -666,17 +719,7 @@ async function deliverSdkCaptureV2(target, body, post, options = {}) {
 			referenceAcknowledged: false
 		};
 	}
-	try {
-		await store.enqueue(target, sourceId);
-	} catch (error) {
-		return {
-			outcome: "dropped",
-			code: safeCode(error),
-			sourceAcknowledged: true,
-			referenceAcknowledged: false
-		};
-	}
-	const sent = await sendReference(store, target, sourceId, post);
+	const sent = await sendReference(store, target, sourceId, post, options.deadline === void 0 ? void 0 : options.deadline - 750);
 	if (sent.code === "SOURCE_HELD") try {
 		if ((await store.retain(target, storedBody.eventId, storedBody)).completed) return {
 			outcome: "duplicate",
@@ -697,7 +740,7 @@ async function drainSdkCapturesV2(target, post, options = {}) {
 		error: void 0
 	};
 	const limit = Math.min(8, Math.max(0, options.limit ?? 8)), budget = Math.min(1500, Math.max(0, options.budgetMs ?? 1500)), start = performance.now();
-	const deadline = Math.min(options.deadline ?? Infinity, start + budget);
+	const deadline = Math.min(options.deadline === void 0 ? Infinity : options.deadline - 750, start + budget);
 	try {
 		const store = createStore(options), records = await store.pending(target);
 		for (const ref of records) {
@@ -2144,9 +2187,12 @@ async function captureObservationV2(body, timeoutMs) {
 		eventId,
 		captureCompletion: "sdk-v1"
 	})), { scrubKeys: true });
-	const options = { dir: process.env["AGENTMEMORY_SDK_CAPTURE_V2_DIR"] };
-	const result = await deliverSdkCaptureV2(REST_URL, payload, (b) => postRawV2(b, timeoutMs), options);
-	const now = performance.now(), deadline = Math.min(started + timeoutMs, now + 250), remaining = Math.floor(deadline - now);
+	const deadline = started + timeoutMs, options = {
+		dir: process.env["AGENTMEMORY_SDK_CAPTURE_V2_DIR"],
+		deadline
+	};
+	const result = await deliverSdkCaptureV2(REST_URL, payload, (b, budget) => postRawV2(b, budget?.remainingMs ?? timeoutMs, budget?.deadline), options);
+	const now = performance.now(), remaining = Math.floor(Math.min(deadline - 750 - now, 250));
 	if (body.hookType !== "stop" && (result.outcome === "delivered" || result.outcome === "duplicate") && remaining >= 100) {
 		const backlog = await drainSdkCapturesV2(REST_URL, (b, budget) => postRawV2(b, budget?.remainingMs ?? remaining, budget?.deadline ?? deadline), {
 			...options,
