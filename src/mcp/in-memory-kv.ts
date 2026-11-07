@@ -37,9 +37,10 @@ export class InMemoryKV {
     this.store.get(scope)?.delete(key);
   }
 
-  async list<T = unknown>(scope: string): Promise<T[]> {
+  async list<T = unknown>(scope: string, options?: { project?: (value: unknown, key?: string) => T }): Promise<T[]> {
     const entries = this.store.get(scope);
-    return entries ? (Array.from(entries.values()) as T[]) : [];
+    const values = entries ? Array.from(entries.values()) : [];
+    return options?.project ? Array.from(entries ?? [], ([key, value]) => options.project!(value, key)) : values as T[];
   }
 
   persist(): boolean {

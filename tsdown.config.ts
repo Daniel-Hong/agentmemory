@@ -80,6 +80,13 @@ export default defineConfig([
     sourcemap: false,
   },
   {
+    entry: ["src/capture/sdk-delivery-v2.ts"],
+    outDir: "dist",
+    ...shared,
+    clean: false,
+    sourcemap: false,
+  },
+  {
     entry: ["src/mcp/standalone.ts"],
     outDir: "dist",
     ...shared,

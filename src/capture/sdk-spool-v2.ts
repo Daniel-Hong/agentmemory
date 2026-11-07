@@ -299,13 +299,17 @@ export class SdkSpoolV2 {
       return result.map(({ sourceId, state, attempts, nextAttemptAt }) => ({ sourceId, state, attempts, nextAttemptAt }));
     });
   }
-  async markSending(target: string, sourceId: string): Promise<void> {
+  async markSending(target: string, sourceId: string, expectedHeldSource?: Record<string, unknown>): Promise<void> {
     return this.locked(() => {
       const source = this.source(target, sourceId);
       if (source.manifest.conflict || source.manifest.completed) fail('SOURCE_HELD');
       const ref = this.readRef(target, sourceId);
-      if (ref.state !== 'pending') fail('SOURCE_HELD');
-      if (ref.nextAttemptAt > Date.now()) fail('SOURCE_BACKOFF');
+      if (expectedHeldSource) {
+        if (ref.state !== 'held' || ref.owner || !isDeepStrictEqual(source.body, expectedHeldSource)) fail('SOURCE_HELD');
+      } else {
+        if (ref.state !== 'pending') fail('SOURCE_HELD');
+        if (ref.nextAttemptAt > Date.now()) fail('SOURCE_BACKOFF');
+      }
       const owner = ownerIdentity(); if (!owner) fail('STORE_BUSY');
       ref.state = 'sending'; ref.owner = owner;
       this.writeRef(ref); this.phase('send_intent_fsynced');
@@ -317,7 +321,7 @@ export class SdkSpoolV2 {
       if (source.manifest.conflict) fail('SOURCE_CONFLICT');
       if (!source.manifest.completed) {
         const ref = this.readRef(target, sourceId);
-        if (ref.state !== 'sending') fail('SOURCE_HELD');
+        if (ref.state !== 'sending' || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail('SOURCE_HELD');
         source.manifest.completed = true;
         this.atomicJson(join(this.originals, sourceId, 'manifest.json'), source.manifest, 'original', 'ack_before_publish');
         this.phase('ack_fsynced');
@@ -328,13 +332,13 @@ export class SdkSpoolV2 {
   async retry(target: string, sourceId: string, _reason: string): Promise<void> {
     return this.locked(() => {
       const ref = this.readRef(target, sourceId);
-      if (ref.state !== 'sending' || !ref.owner || !alive(ref.owner)) fail('SOURCE_HELD');
+      if (ref.state !== 'sending' || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail('SOURCE_HELD');
       ref.attempts = Math.min(1_000_000, ref.attempts + 1); ref.nextAttemptAt = Date.now() + Math.min(300_000, 1000 * 2 ** Math.min(9, ref.attempts - 1));
       ref.state = 'pending'; ref.reason = 'RETRY'; delete ref.owner; this.writeRef(ref);
     });
   }
   async hold(target: string, sourceId: string, _reason: string): Promise<void> {
-    return this.locked(() => { const ref = this.readRef(target, sourceId); ref.state = 'held'; ref.reason = 'HELD'; delete ref.owner; this.writeRef(ref); });
+    return this.locked(() => { const ref = this.readRef(target, sourceId); if (ref.state !== 'sending' || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail('SOURCE_HELD'); ref.state = 'held'; ref.reason = 'HELD'; delete ref.owner; this.writeRef(ref); });
   }
   async usage(): Promise<{ originalBytes: number; queueBytes: number }> { return this.locked(() => this.rawUsage()); }
 }

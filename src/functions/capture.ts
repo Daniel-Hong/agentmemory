@@ -1,3 +1,4 @@
+import { listCaptureInboxMetadata, listLocalCaptureResolutionKeys, committedInboxMetadata, type CaptureInboxMetadata } from '../capture/inbox-metadata.js';
 import {inspectUncertainCapture,validUncertainInspection} from "../capture/uncertain-inspection.js";
 import { committedSdkResolution } from '../capture/sdk-resolution-record.js';
 import {recordAudit} from "./audit.js";
@@ -298,7 +299,7 @@ export function registerCaptureFunctions(
     else if (activeInboxKeys && pendingSince === null) pendingSince = Date.now();
   }
 
-  function refreshInbox(records: InboxRecord[]): void {
+  function refreshInbox(records: Array<InboxRecord | CaptureInboxMetadata>): void {
     inboxSize = records.length;
     activeInboxKeys = new Set(records.filter((rec) => rec && rec.status !== "dead" && rec.storageCompletion !== "sdk").map((rec) => rec.key));
     updatePendingSince();
@@ -311,7 +312,7 @@ export function registerCaptureFunctions(
   }
 
   async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) refreshInbox(await kv.list<InboxRecord>(KV.captureInbox));
+    if (inboxSize === null) refreshInbox(await listCaptureInboxMetadata(kv));
     return inboxSize!;
   }
 
@@ -412,10 +413,12 @@ export function registerCaptureFunctions(
     return { status: "accepted", state: "retrying", eventId: rec.eventId, observationId: rec.observationId, attempts: rec.attempts, nextAttemptAt, error: message };
   }
 
-  async function sdkRecordCompleted(rec:InboxRecord):Promise<boolean>{
+  async function sdkRecordCompleted(rec:InboxRecord | CaptureInboxMetadata,resolutionKeys?:Set<string>):Promise<boolean>{
     if(rec.storageCompletion!=='sdk'||rec.sdkRestoreState==='pending'||rec.sdkResolutionState==='pending')return false;
+    const requiresResolution=resolutionKeys?.has(rec.key)||rec.sdkResolutionId!==undefined||rec.sdkResolutionState!==undefined;
+    if(resolutionKeys&&!requiresResolution)return true;
     const history=await kv.get<CaptureReviewHistory>(KV.captureReview,rec.key);
-    if(rec.sdkResolutionId!==undefined||rec.sdkResolutionState!==undefined||history?.sdkResolution!==undefined)return committedSdkResolution(history,rec);
+    if(requiresResolution||history?.sdkResolution!==undefined)return 'payload' in rec?committedSdkResolution(history,rec):committedInboxMetadata(kv,history,rec);
     return true;
   }
 
@@ -607,7 +610,7 @@ export function registerCaptureFunctions(
 
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
     if (stopped || sdkCompletion) return { processed: 0, recovered: 0, deadLettered: 0 };
-    const records = await kv.list<InboxRecord>(KV.captureInbox);
+    const records = await listCaptureInboxMetadata(kv);
     refreshInbox(records);
     let processed = 0;
     let recovered = 0;
@@ -728,11 +731,12 @@ export function registerCaptureFunctions(
     await automaticRecovery.initialize().catch(()=>{});
     let inbox: CaptureStatus["inbox"] = null;
     if (options.scanInbox !== false) try {
-      const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+      const records = (await listCaptureInboxMetadata(kv)).filter(Boolean);
       refreshInbox(records);
       let sdkCompleted=0;
+      const resolutionKeys=sdkCompletion?await listLocalCaptureResolutionKeys(kv):undefined;
       if(sdkCompletion)for(let at=0;at<records.length;at+=4){
-        sdkCompleted+=(await Promise.all(records.slice(at,at+4).map(r=>sdkRecordCompleted(r)))).filter(Boolean).length;
+        sdkCompleted+=(await Promise.all(records.slice(at,at+4).map(r=>sdkRecordCompleted(r,resolutionKeys)))).filter(Boolean).length;
       }
       const live = records.filter((r) => r.status !== "dead" && r.storageCompletion !== "sdk");
       const next = live
@@ -791,7 +795,7 @@ export function registerCaptureFunctions(
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean; requestId?: string } = {}) => {
     if(input.requestId && (!input.eventId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.requestId))) throw new Error("INVALID_RETRY_REQUEST");
-    const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+    const records = (await listCaptureInboxMetadata(kv)).filter(Boolean);
     refreshInbox(records);
     if(input.eventId && input.requestId && !records.some(r=>input.key?r.key===input.key:r.eventId===input.eventId)){
       const h=(await kv.list<CaptureReviewHistory>(KV.captureReview)).find(h=>(input.key?h.key===input.key:h.eventId===input.eventId)&&h.eventId===input.eventId&&h.requests[input.requestId!]);
@@ -816,15 +820,12 @@ export function registerCaptureFunctions(
   sdk.registerFunction("mem::capture-list", async (input: { status?: InboxState | "completed"; limit?: number; review?: boolean; eventId?: string; key?: string; cursor?: string; historyOffset?: number } = {}) => {
     if(input.review) return captureReviewPage(kv,input);
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
-    const records = (await kv.list<InboxRecord>(KV.captureInbox))
+    const records = (await listCaptureInboxMetadata(kv))
       .filter((r) => r && (!input.status || r.status === input.status))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return {
       total: records.length,
-      items: records.slice(0, limit).map(({ payload, ...rest }) => ({
-        ...rest,
-        preview: previewPayload(payload),
-      })),
+      items: records.slice(0, limit).map(({ reviewPreview, ...rest }) => rest),
     };
   });
 
@@ -884,15 +885,4 @@ function spoolPayload(body: Record<string, unknown>): HookPayload | null {
   const timestamp = str(body["timestamp"]);
   if (!hookType || !sessionId || !project || !cwd || !timestamp) return null;
   return { hookType: hookType as HookPayload["hookType"], sessionId, project, cwd, timestamp, data: body["data"] };
-}
-
-function previewPayload(payload: HookPayload | undefined): string {
-  if (!payload) return "";
-  const d = payload.data && typeof payload.data === "object" ? (payload.data as Record<string, unknown>) : {};
-  const label = typeof d["tool_name"] === "string" ? d["tool_name"] : payload.hookType;
-  let text = "";
-  try {
-    text = JSON.stringify(d["tool_input"] ?? d["prompt"] ?? payload.data ?? "");
-  } catch {}
-  return `${label}: ${text}`.slice(0, 160);
 }

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.60] — 2026-11-07
+- Read retained capture inboxes through the existing local streaming reader with SDK-acknowledged changes overlaid. Project status and bounded previews before retaining rows, so capture admission, review and retry no longer request an oversized shared SDK frame. Read keyed review metadata once for status instead of making one SDK call per retained original. Keep original payloads and existing per-source completion proofs.
+- Add an explicitly invoked selected-source recovery entry for held SDK-v2 sources. Revalidate the retained original, claim it atomically, verify the restore reply, and preserve the original after SDK acknowledgement. Ordinary hooks do not invoke restoration; SDK acknowledgement is not a disk durability claim.
+- Preserve the installed compatibility hooks in the server-only release. Source validation, package/native acceptance and operational application are recorded separately in `docs/customizations/CAPTURE-INBOX-60.md` and the November 7 incident dossier.
+
 ## [0.9.32-daniel.59] — 2026-11-07 (held recovery candidate)
 
 - Support explicit authenticated recovery of a bounded set of vector upserts whose pending and checkpoint records agree in the native store. Preserve the original upserts and record their verified coverage separately. Revalidate coverage on restart and distinguish retained records from pending publication in the index status.
@@ -574,6 +579,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.60]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.59...v0.9.32-daniel.60
 [0.9.32-daniel.57]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.55...v0.9.32-daniel.57
 [0.9.32-daniel.55]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.54...v0.9.32-daniel.55
 [0.9.31-daniel.54]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.51...v0.9.31-daniel.54

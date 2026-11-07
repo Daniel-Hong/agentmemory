@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -446,13 +446,17 @@ var SdkSpoolV2 = class {
 			}));
 		});
 	}
-	async markSending(target, sourceId) {
+	async markSending(target, sourceId, expectedHeldSource) {
 		return this.locked(() => {
 			const source = this.source(target, sourceId);
 			if (source.manifest.conflict || source.manifest.completed) fail("SOURCE_HELD");
 			const ref = this.readRef(target, sourceId);
-			if (ref.state !== "pending") fail("SOURCE_HELD");
-			if (ref.nextAttemptAt > Date.now()) fail("SOURCE_BACKOFF");
+			if (expectedHeldSource) {
+				if (ref.state !== "held" || ref.owner || !isDeepStrictEqual(source.body, expectedHeldSource)) fail("SOURCE_HELD");
+			} else {
+				if (ref.state !== "pending") fail("SOURCE_HELD");
+				if (ref.nextAttemptAt > Date.now()) fail("SOURCE_BACKOFF");
+			}
 			const owner = ownerIdentity();
 			if (!owner) fail("STORE_BUSY");
 			ref.state = "sending";
@@ -466,7 +470,8 @@ var SdkSpoolV2 = class {
 			const source = this.source(target, sourceId);
 			if (source.manifest.conflict) fail("SOURCE_CONFLICT");
 			if (!source.manifest.completed) {
-				if (this.readRef(target, sourceId).state !== "sending") fail("SOURCE_HELD");
+				const ref = this.readRef(target, sourceId);
+				if (ref.state !== "sending" || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail("SOURCE_HELD");
 				source.manifest.completed = true;
 				this.atomicJson(join(this.originals, sourceId, "manifest.json"), source.manifest, "original", "ack_before_publish");
 				this.phase("ack_fsynced");
@@ -482,7 +487,7 @@ var SdkSpoolV2 = class {
 	async retry(target, sourceId, _reason) {
 		return this.locked(() => {
 			const ref = this.readRef(target, sourceId);
-			if (ref.state !== "sending" || !ref.owner || !alive(ref.owner)) fail("SOURCE_HELD");
+			if (ref.state !== "sending" || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail("SOURCE_HELD");
 			ref.attempts = Math.min(1e6, ref.attempts + 1);
 			ref.nextAttemptAt = Date.now() + Math.min(3e5, 1e3 * 2 ** Math.min(9, ref.attempts - 1));
 			ref.state = "pending";
@@ -494,6 +499,7 @@ var SdkSpoolV2 = class {
 	async hold(target, sourceId, _reason) {
 		return this.locked(() => {
 			const ref = this.readRef(target, sourceId);
+			if (ref.state !== "sending" || !isDeepStrictEqual(ref.owner, ownerIdentity())) fail("SOURCE_HELD");
 			ref.state = "held";
 			ref.reason = "HELD";
 			delete ref.owner;

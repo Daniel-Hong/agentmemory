@@ -370,11 +370,14 @@ export class StateKV {
     })
   }
 
-  async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation' }): Promise<T[]> {
+  async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation'; project?: (value: unknown, key?: string) => T }): Promise<T[]> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
-    if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope)
-    if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope, { consistency: options?.observationConsistency })
+    if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope, options)
+    if (scope.startsWith('mem:obs:') && this.observationReader) {
+      const rows = await this.observationReader.list<T>(scope, { consistency: options?.observationConsistency })
+      return options?.project ? rows.map(value => options.project!(value)) : rows
+    }
     const read = () => this.sdk.trigger<{ scope: string }, T[]>({
       function_id: 'state::list',
       payload: { scope },
@@ -392,8 +395,8 @@ export class StateKV {
         return rows
       })
       : await read()
-    if (this.backend !== 'redis' || !Array.isArray(values)) return values
-    return orderLikeInsertion(values)
+    const ordered = this.backend === 'redis' && Array.isArray(values) ? orderLikeInsertion(values) : values
+    return options?.project && Array.isArray(ordered) ? ordered.map(value => options.project!(value)) : ordered
   }
 
   async listGroups(): Promise<string[]> {
