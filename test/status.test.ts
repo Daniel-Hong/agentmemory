@@ -548,7 +548,7 @@ describe("status wiring", () => {
 
   it("reports the active state backend from config, not a hardcoded value", () => {
     expect(api).toMatch(/stateBackend: kv.backend === "redis" \? "redis" : "file"/);
-    expect(index).toMatch(/new StateKV\(sdk, \{ backend: stateBackend,writerLease \}\)/);
+    expect(index).toMatch(/new StateKV\(sdk,\s*\{\s*backend:\s*stateBackend,/);
   });
 
   it("the viewer has a Health tab that reads the status report", () => {

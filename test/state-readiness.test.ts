@@ -241,3 +241,16 @@ describe("assertStateReady", () => {
     ).not.toThrow();
   });
 });
+
+describe('compact state acknowledgement readiness',()=>{
+ it.each([undefined,{function_id:'state::set'},null])('refuses an old/malformed engine before enabling compact writes: %j',async detail=>{
+  const trigger=vi.fn(async({function_id}:any)=>function_id==='engine::functions::info'?detail:null);
+  const result=await waitForStateReady(asClient(trigger),{requireSetAck:true});
+  expect(result.ready).toBe(false);expect(result.error).toBe('STATE_SET_ACK_REQUIRED');
+ });
+ it('checks registered support without writing a probe value',async()=>{
+  const trigger=vi.fn(async({function_id}:any)=>function_id==='engine::functions::info'?{function_id:'state::set_ack'}:null);
+  expect((await waitForStateReady(asClient(trigger),{requireSetAck:true})).ready).toBe(true);
+  expect(trigger.mock.calls.map(([r])=>r.function_id)).toEqual(['state::list','state::get','engine::functions::info']);
+ });
+});

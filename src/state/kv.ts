@@ -24,6 +24,7 @@ export interface StateKVOptions {
   writerLease?: FileWriterLease
   backend?: StateBackend
   durability?: ReturnType<typeof createStateDurabilityFence>
+  compactSummaryWrites?: boolean
 }
 
 type UpdateOp = { type: string; path: string; value?: unknown }
@@ -141,11 +142,13 @@ export class StateKV {
   readonly captureReceiptPage: ReturnType<typeof createCaptureReceiptPage> | null
   readonly auditReader: ReturnType<typeof createAuditReader> | null
   private readonly summaryCount: ReturnType<typeof createSummaryCount> | null
+  private readonly compactSummaryWrites: boolean
 
   constructor(
     private sdk: IIIClient,
     options: StateKVOptions = {},
   ) {
+    this.compactSummaryWrites = options.compactSummaryWrites === true
     this.backend = options.backend ?? 'file'
     const storePath = this.backend === 'file' ? getEnvVar('AGENTMEMORY_STATE_STORE_PATH') : undefined
     this.checkpointStorePath = storePath
@@ -265,7 +268,7 @@ export class StateKV {
           if(scope==='mem:summaries'&&this.summaryCount)return withKeyedLock(`summary-state:${key}`,async()=>{
             const projection=knownValue&&!knownValue.deleted?this.summaryCount!.prepare(knownValue.value,{wire:false}):undefined
             const result=await operation(scope)
-            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection,result&&typeof result==='object'&&Object.hasOwn(result,'old_value')&&Object.hasOwn(result,'new_value')?Reflect.get(result,'new_value'):undefined)
+            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection,this.compactSummaryWrites?knownValue.value:result&&typeof result==='object'&&Object.hasOwn(result,'old_value')&&Object.hasOwn(result,'new_value')?Reflect.get(result,'new_value'):undefined)
             else if(result&&typeof result==='object'&&Object.hasOwn(result,'new_value'))this.summaryCount!.record(key,true,this.summaryCount!.prepare(Reflect.get(result,'new_value')))
             else this.summaryCount!.invalidate()
             return result
@@ -291,6 +294,18 @@ export class StateKV {
   }
 
   async set<T = unknown>(scope: string, key: string, value: T): Promise<T> {
+    if (scope === KV.summaries && this.compactSummaryWrites) {
+      const sent = JSON.parse(JSON.stringify(value)) as T
+      await this.mutate(scope, key, async (resolvedScope) => {
+        const acknowledged = await this.sdk.trigger<unknown, boolean>({
+          function_id: 'state::set_ack',
+          payload: { scope: resolvedScope, key, value: sent },
+        })
+        if (acknowledged !== true) throw Object.assign(Error('state_set_ack_unverified'), { code: 'STATE_SET_ACK_UNVERIFIED' })
+        return { new_value: sent }
+      }, { value: sent })
+      return sent
+    }
     return this.mutate(scope, key, (resolvedScope) =>
       this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
         function_id: 'state::set',

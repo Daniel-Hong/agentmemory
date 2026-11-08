@@ -1,7 +1,15 @@
+## Unreleased — compact summary acknowledgement
+
+- Preserve summary bodies and cursors while avoiding old+new response amplification: file-backed server summary writes use the engine state::set_ack success-only response, with a pinned JSON request snapshot. Ordinary state::set/Redis and compatibility-mode StateKV remain unchanged.
+- Require read-only acknowledgement capability discovery before writer acquisition and capture admission. Missing/malformed acknowledgement or actual storage failure remains an uncertain mutation; no fallback, timeout extension, message-cap increase or data migration.
+- Cause: identical installed COW engine cc4ff876 + SDK0.25 synthetic overwrite of33556506-byte JSON emits67113039-byte old/new result, exceeds SDK64MiB, reconnects and TIMEOUT despite applied value. Current failure session's stored summary33555971 bytes crosses the same boundary. Operational content is not used as a fixture.
+- Validation and deployment state: see workspace work/storage-timeout63/REPORT.md. Source implementation is not operating activation. Historical failures and old unknown writes remain preserved. Durable memory recording is pending manual review.
+
 # Changelog
 
 ## [Unreleased]
 
+## [0.9.32-daniel.64] — 2026-11-08
 ## [0.9.32-daniel.63] — 2026-11-07
 - Keep fresh SDK-v2 source retention and reference admission under one lease. Share the native hook's original deadline across lock acquisition and transport, reserving 750ms for final state recording. Preserve retained-source acknowledgement if reference admission fails, retain the default 150ms lock contract without an explicit deadline, and leave exhausted pending work queued before any send. Unknown transport outcomes remain held; existing held/sending records never become a successful pending result merely because time ran out.
 - Claim and read the selected body under the same lease, preserving source hashing and owner fencing. No spool schema, quota, original-retention, automatic unknown-send retry or host trust changes. The source/reference publication gap under an OS crash and unbounded kernel filesystem latency are not eliminated.
@@ -594,6 +602,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.64]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.63...v0.9.32-daniel.64
 [0.9.32-daniel.63]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.62...v0.9.32-daniel.63
 [0.9.32-daniel.62]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.61...v0.9.32-daniel.62
 [0.9.32-daniel.61]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.60...v0.9.32-daniel.61

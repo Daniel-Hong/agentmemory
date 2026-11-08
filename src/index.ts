@@ -290,6 +290,7 @@ async function main() {
     stateBackend = getStateBackend();
   } catch {}
   const stateReadiness = await waitForStateReady(sdk, {
+    requireSetAck: stateBackend === "file",
     onWaiting: (error) =>
       bootWarn(`Waiting for the state worker to register state::get and state::list (${error})`),
   });
@@ -304,7 +305,7 @@ async function main() {
   const engineEvidence=createEngineEpochEvidence({engineUrl:config.engineUrl,enginePidPath:runtimeMetadataPath("iii.pid"),peer:()=>{const socket=(sdk as unknown as {ws?:{_socket?:{remoteAddress?:string;remotePort?:number;localAddress?:string;localPort?:number}}}).ws?._socket;return socket?{remoteAddress:socket.remoteAddress,remotePort:socket.remotePort,localAddress:socket.localAddress,localPort:socket.localPort}:null;}});
   if(stateBackend==="file"&&writerStorePath&&process.platform==="linux"){const until=Date.now()+3000;while(!engineEvidence.capture()&&Date.now()<until)await new Promise(resolve=>setTimeout(resolve,25));}
   const writerLease=stateBackend==="file"&&writerStorePath&&process.platform==="linux"?acquireFileWriterLease(writerStorePath,{evidence:engineEvidence}):undefined;
-  const kv = new StateKV(sdk, { backend: stateBackend,writerLease });
+  const kv = new StateKV(sdk, { backend: stateBackend,writerLease, compactSummaryWrites: stateBackend === 'file' });
   writeWorkerPidfile();
   const secret = resolveWorkerSecret();
   const ingress = createShutdownIngress();
