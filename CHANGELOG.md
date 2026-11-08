@@ -3,6 +3,7 @@
 - Preserve summary bodies and cursors while avoiding old+new response amplification: file-backed server summary writes use the engine state::set_ack success-only response, with a pinned JSON request snapshot. Ordinary state::set/Redis and compatibility-mode StateKV remain unchanged.
 - Require read-only acknowledgement capability discovery before writer acquisition and capture admission. Missing/malformed acknowledgement or actual storage failure remains an uncertain mutation; no fallback, timeout extension, message-cap increase or data migration.
 - Cause: identical installed COW engine cc4ff876 + SDK0.25 synthetic overwrite of33556506-byte JSON emits67113039-byte old/new result, exceeds SDK64MiB, reconnects and TIMEOUT despite applied value. Current failure session's stored summary33555971 bytes crosses the same boundary. Operational content is not used as a fixture.
+- Preserve manual/storage holds when a recovered memory hold would otherwise deadlock three-way recovery. Only a fresh stable-memory check and successful storage fence may remove the memory hold; admission stays closed until explicit vector-verified resume, and automatic retries remain bounded.
 - Validation and deployment state: see workspace work/storage-timeout63/REPORT.md. Source implementation is not operating activation. Historical failures and old unknown writes remain preserved. Durable memory recording is pending manual review.
 
 # Changelog

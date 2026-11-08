@@ -108,9 +108,11 @@ export function createBackgroundControl({clock=Date.now}={}){
      if(status==='pausing'||completion||(beforeResume&&active.size))throw Error('background_draining');
      const automatic=source==='memory';
      const memoryWithStorage=automatic&&holds.size===2&&holds.has('storage_error')&&holds.has('memory');
+     const protectedMemoryRelease=automatic&&holds.has('storage_error')&&holds.has('memory')&&(holds.has('manual')||holds.has('deployment'));
      if(automatic){
-      const eligible=memoryWithStorage?status==='paused'||status==='error':status==='paused'&&holds.size===1&&holds.has('memory');
+      const eligible=memoryWithStorage||protectedMemoryRelease?status==='paused'||status==='error':status==='paused'&&holds.size===1&&holds.has('memory');
       if(!eligible||recovery.attempts>=MEMORY_RECOVERY_MAX_ATTEMPTS||clock()<recovery.nextAttemptAt||typeof canResume!=='function')return snapshot();
+      if(protectedMemoryRelease&&active.size)return snapshot();
      }
      if(status==='running')return snapshot();
      const startingRevisionForRelease=revision,remaining=new Set(holds);
@@ -119,11 +121,17 @@ export function createBackgroundControl({clock=Date.now}={}){
      if(remaining.size&&!memoryWithStorage){
       // Do not clear storage recovery while other holds prevent a full resume.
       if(holds.has('storage_error')&&!remaining.has('storage_error'))throw Error('background_storage_recovery_requires_full_resume');
+      if(automatic){
+       if(!await canResume()||revision!==startingRevisionForRelease)return snapshot();
+       recovery={attempts:recovery.attempts+1,nextAttemptAt:clock()+60000*2**recovery.attempts};
+      }
       if(source==='manual')recovery={attempts:0,nextAttemptAt:0};
       begin('resume');
       try{await writeRecord(true,true);await confirmPauseRecord();await persist();
        // Concurrent pause intent must survive even a partial hold release.
-       if(revision===startingRevisionForRelease){holds=remaining;}
+       if(revision===startingRevisionForRelease&&(!protectedMemoryRelease||await canResume())&&revision===startingRevisionForRelease){
+        holds=remaining;if(protectedMemoryRelease)revision++;
+       }
        await writeRecord(true,false);await confirmPauseRecord();status='paused';stage('complete');return snapshot();
       }catch(e){fail(e);try{await writeRecord(true,true);await confirmPauseRecord(false);}catch{}throw Error(error);}
      }
