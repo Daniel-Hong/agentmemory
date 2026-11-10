@@ -4,7 +4,7 @@ import {networkErrorCode} from './provider-readiness.mjs';
 export const EMBEDDING_RETRY_NAMESPACE='mem:embedding-retry:v1';
 export const EMBEDDING_COMMITTED_NAMESPACE='mem:embedding-committed:v1';
 const digest=text=>createHash('sha256').update(text).digest('hex');
-export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKeyedLock=async(k,fn)=>fn(),logger,clock=Date.now,schedule=true,onIndexChanged,persistIndex}) {
+export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKeyedLock=async(k,fn)=>fn(),logger,clock=Date.now,schedule=true,onIndexChanged,persistIndex,verifyRetainedPublication}) {
   const state={pendingCount:0,completedCount:0,counterEpoch:randomUUID(),initialized:false,lastError:null,lastSuccessAt:null};
   let pumping=false,reconciled=false,stopped=false,started=false,interval=null,initialization=null,committedRows=null,committedOffset=0;
   const active=new Set(),sourceGuards=new Set(),publications=new Map(),accepted=new Map(),pendingIds=new Set();
@@ -162,7 +162,8 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
           const canonical=await current(item);
           if(canonical!==null&&digest(canonical)!==fingerprint){await retainUnlocked(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);return;}
           if(canonical===null){await discardUnlocked(item);return;}
-          await kv.set(EMBEDDING_COMMITTED_NAMESPACE,item.id,{id:item.id,sessionId:item.sessionId,kind:item.kind,fingerprint,committedAt:new Date(clock()).toISOString()});
+          await kv.set(EMBEDDING_COMMITTED_NAMESPACE,item.id,{id:item.id,sessionId:item.sessionId,kind:item.kind,fingerprint,committedAt:new Date(clock()).toISOString(),
+            ...(queued.retainedRecovery?{retainedRecovery:queued.retainedRecovery}:{})});
           await fence([{scope:EMBEDDING_COMMITTED_NAMESPACE,key:item.id}]);
           await kv.delete(EMBEDDING_RETRY_NAMESPACE,item.id);
           const latest=await current(item);
@@ -193,16 +194,22 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
     if(!inMemory&&readiness&&!await readiness.ensureReady()){await retain(item,{code:'PROVIDER_UNAVAILABLE'},false);return false;}
     const generation=randomUUID();
     // Durable intent precedes inference and mutation; restart always reads canonical text.
+    let previousIntent;
     await withKeyedLock(intentKey(item.id),async()=>{
       forgetPublication(item.id);
       const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+      if(verifyRetainedPublication&&queued)previousIntent=Object.fromEntries(
+        ['id','sessionId','kind','attempts','retryAt','generation','fingerprint','phase','errorCode'].flatMap(key=>{
+          const value=queued[key];
+          return typeof value==='string'?[[key,value.slice(0,256)]]:Number.isSafeInteger(value)&&value>=0?[[key,value]]:[];
+        }));
       await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...queued,id:item.id,sessionId:item.sessionId,kind:item.kind,attempts:queued?.attempts??0,retryAt:queued?.retryAt??0,generation,fingerprint,phase:inMemory?'embedded':'queued'});
       pending(item);
       if(certify)await certifyIntent(item);
     });
-    return {item,text,generation,fingerprint,inMemory};
+    return {item,text,generation,fingerprint,inMemory,previousIntent};
   }
-  async function executePrepared({item,text,generation,fingerprint,inMemory}) {
+  async function executePrepared({item,text,generation,fingerprint,inMemory,previousIntent}) {
     if(stopped||backgroundPaused())return false;
     const queued=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
     if(queued?.generation!==generation||queued.fingerprint!==fingerprint)return false;
@@ -214,12 +221,29 @@ export function registerEmbeddingRecovery({kv,KV,index,provider,readiness,withKe
       const vector=inMemory?null:await provider.embed(text);
       if(!inMemory&&(!vector||vector.length!==provider.dimensions))throw Object.assign(Error('embedding_dimension_mismatch'),{code:'EMBEDDING_DIMENSION_MISMATCH'});
       const ready=await withKeyedLock(intentKey(item.id),async()=>{
-        const owned=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+        let owned=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
         if(owned?.generation!==generation||owned.fingerprint!==fingerprint)return false;
         const canonical=await current(item);
         if(canonical===null){await discardUnlocked(item);return false;}
         if(digest(canonical)!==fingerprint){await retainUnlocked(item,{code:'EMBEDDING_PROJECTION_CHANGED'},false);return false;}
-        if(vector){index.add(item.id,item.sessionId,vector);accepted.set(item.id,fingerprint);onIndexChanged?.();}
+        if(vector){
+          const reused=verifyRetainedPublication && await verifyRetainedPublication({id:item.id,entry:{sessionId:item.sessionId,embedding:vector}});
+          if(!reused){index.add(item.id,item.sessionId,vector);onIndexChanged?.();}
+          else {
+            if(stopped||backgroundPaused())return false;
+            owned=await kv.get(EMBEDDING_RETRY_NAMESPACE,item.id);
+            if(owned?.generation!==generation||owned.fingerprint!==fingerprint)return false;
+            const currentText=await current(item);
+            if(currentText===null||digest(currentText)!==fingerprint)return false;
+            if(!owned.retainedRecovery){
+              const committed=await kv.get(EMBEDDING_COMMITTED_NAMESPACE,item.id);
+              const previousCommit=committed?Object.fromEntries(
+                ['id','sessionId','kind','fingerprint','committedAt'].filter(key=>typeof committed[key]==='string').map(key=>[key,committed[key].slice(0,256)])):null;
+              owned={...owned,retainedRecovery:{version:1,completion:'sdk',verified:false,synced:false,previousIntent:previousIntent??null,previousCommit}};
+            }
+          }
+          accepted.set(item.id,fingerprint);
+        }
         await kv.set(EMBEDDING_RETRY_NAMESPACE,item.id,{...owned,phase:'embedded'});
         return true;
       });

@@ -27,4 +27,5 @@ export function registerEmbeddingRecovery(options: {
  logger?: Pick<typeof import("../logger.js").logger, "warn">;
  clock?: () => number; schedule?: boolean; onIndexChanged?: () => void;
  persistIndex?: (publication?: VectorPublication) => Promise<void>;
+ verifyRetainedPublication?: (publication: VectorPublication) => Promise<boolean>;
 }): EmbeddingRecovery;

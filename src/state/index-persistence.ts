@@ -354,7 +354,8 @@ export class IndexPersistence {
         const validMeta = meta === null ? expected === null && bucket === undefined :
           meta.v === 3 && Number.isInteger(meta.count) && meta.count >= (expected ? 1 : 0) &&
           Number.isInteger(meta.bucketCount) && meta.bucketCount >= 0 && (bucket === undefined || bucket < meta.bucketCount);
-        if (!isDeepStrictEqual(row, expected) || pending !== null || clear !== null || !validMeta) throw unverified();
+        if (!isDeepStrictEqual(row, expected) || clear !== null || !validMeta ||
+            ((pending !== null || this.retainedRows.has(id)) && !await this.verifyRetainedVectorPublication(publication))) throw unverified();
       };
       await Promise.all([this.logChains.get(id), this.logChains.get(PENDING_CLEAR_KEY)]);
       await check();
@@ -564,6 +565,21 @@ export class IndexPersistence {
         checkpointMeta: meta, expectedCount: meta.count}, rows);
       await this.kv.reconcileVectorCheckpoint(selected, current, revision, false, true);
       return current();
+    } catch { return false; }
+  }
+
+  async verifyRetainedVectorPublication(publication: VectorPublication): Promise<boolean> {
+    const retained = this.retainedRows.get(publication.id), entry = publication.entry;
+    if (this.kv.durability?.completion !== 'sdk' || !retained || !entry || !(entry.embedding instanceof Float32Array)) return false;
+    const matches = () => {
+      const loaded = this.vector?.get(publication.id);
+      return entry.sessionId === retained.s && float32ToBase64(entry.embedding) === retained.e &&
+        loaded?.sessionId === retained.s && float32ToBase64(loaded.embedding) === retained.e;
+    };
+    try {
+      if (!matches()) return false;
+      const pending = await this.kv.get(KV.vectorPendingLog, publication.id);
+      return await this.verifyCaptureVectorPending(publication.id, entry.sessionId, pending) && matches();
     } catch { return false; }
   }
 

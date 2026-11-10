@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.65] — 2026-11-10
+- Complete a retained embedding retry only when a fresh embedding of the current canonical source exactly matches the retained WAL and loaded vector bytes and session, with current native checkpoint/receipt evidence revalidated during publication. Preserve the original WAL and vector mutation guard; changed or missing evidence remains pending. Retain bounded prior retry and commit metadata with the SDK-only completion marker.
+- Apply the operator's 2026-11-10 memory tuning: pause below18% available, recover above22% available continuously for120seconds. Keep the2GiB pause floor,3GiB recovery floor,5%/512MiB critical boundary and existing storage/manual holds.
+- Implementation and focused regression evidence are recorded in `docs/customizations/RETAINED-EMBEDDING-65.md`. Operating application, selected capture recovery and long-term memory review remain separate acceptance steps.
+
 ## [0.9.32-daniel.64] — 2026-11-08
 ## [0.9.32-daniel.63] — 2026-11-07
 - Keep fresh SDK-v2 source retention and reference admission under one lease. Share the native hook's original deadline across lock acquisition and transport, reserving 750ms for final state recording. Preserve retained-source acknowledgement if reference admission fails, retain the default 150ms lock contract without an explicit deadline, and leave exhausted pending work queued before any send. Unknown transport outcomes remain held; existing held/sending records never become a successful pending result merely because time ran out.
@@ -603,6 +608,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.65]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.64...v0.9.32-daniel.65
 [0.9.32-daniel.64]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.63...v0.9.32-daniel.64
 [0.9.32-daniel.63]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.62...v0.9.32-daniel.63
 [0.9.32-daniel.62]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.61...v0.9.32-daniel.62

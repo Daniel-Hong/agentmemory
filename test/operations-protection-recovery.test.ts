@@ -15,7 +15,7 @@ it('persists distinct overlapping holds and never automatically releases manual 
 });
 it('recovers only after strictly greater recovery threshold and sustained fresh samples',async()=>{
  const f=fixture();await f.control.init(f.kv);await f.guard.refresh();await f.control.settled();expect(f.control.snapshot().holds).toEqual(['memory']);
- f.memory(4*GiB);for(let i=0;i<30;i++){f.time(f.clock()+5000);await f.guard.refresh();}expect(f.control.isPaused()).toBe(true);
+ f.memory(16*GiB*.22);for(let i=0;i<30;i++){f.time(f.clock()+5000);await f.guard.refresh();}expect(f.control.isPaused()).toBe(true);
  await f.normal(115000);expect(f.control.isPaused()).toBe(true);f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();expect(f.control.isPaused()).toBe(false);
  expect(f.record()).toMatchObject({version:2,paused:false,resumePending:true,recovery:{attempts:1}});
 });
@@ -112,7 +112,20 @@ it('bounds automatic attempts durably and honors persisted backoff',async()=>{
  const g=fixture({version:2,paused:true,resumePending:false,holds:['memory'],recovery:{attempts:1,nextAttemptAt:999999}});await g.control.init(g.kv);await g.normal();expect(g.control.isPaused()).toBe(true);expect(g.record().recovery.attempts).toBe(1);
 });
 it('uses exact pressure boundaries and never recovers with unavailable samples',async()=>{
- const f=fixture();await f.control.init(f.kv);f.memory(16*GiB*.2);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('normal');f.memory(16*GiB*.05);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('high');await f.control.settled();f.memory(NaN);await f.normal(0);f.memory(NaN);f.time(f.clock()+120000);await f.guard.refresh();expect(f.control.isPaused()).toBe(true);
+ const f=fixture();await f.control.init(f.kv);f.memory(16*GiB*.18);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('normal');f.memory(16*GiB*.05);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('high');await f.control.settled();f.memory(NaN);await f.normal(0);f.memory(NaN);f.time(f.clock()+120000);await f.guard.refresh();expect(f.control.isPaused()).toBe(true);
+});
+
+it('uses the approved 18% reserve and recovers only above 22% for two minutes',async()=>{
+ const f=fixture();await f.control.init(f.kv);
+ f.memory(16*GiB*.18-1);await f.guard.refresh();await f.guard.drain();await f.control.settled();
+ expect(f.guard.snapshot()).toMatchObject({level:'high',reserveBytes:16*GiB*.18,recoveryBytes:16*GiB*.22,criticalBytes:16*GiB*.05});
+ f.memory(16*GiB*.18);f.time(f.clock()+5000);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('normal');
+ f.memory(16*GiB*.22);for(let i=0;i<30;i++){f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();}
+ expect(f.control.isPaused()).toBe(true);
+ f.memory(16*GiB*.22+1);for(let i=0;i<24;i++){f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();}
+ expect(f.control.isPaused()).toBe(true);
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();expect(f.control.isPaused()).toBe(false);
+ await f.guard.stop();
 });
 it('retains cumulative attempts through repeated pressure and clean restart until manual acknowledgment',async()=>{
  const f=fixture();await f.control.init(f.kv);

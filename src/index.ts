@@ -678,6 +678,7 @@ async function main() {
     operationalState.embeddingRecovery = lifecycle.track(registerEmbeddingRecovery({
       kv, KV, index: vectorIndex, provider: embeddingProvider, readiness, withKeyedLock, logger,
       schedule: false, persistIndex: (publication?: VectorPublication) => indexPersistence.saveVerified(publication),
+      verifyRetainedPublication: publication => indexPersistence.verifyRetainedVectorPublication(publication),
     }));
     await operationalState.embeddingRecovery.initialize();
   }

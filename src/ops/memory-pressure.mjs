@@ -16,7 +16,7 @@ export function createMemoryPressureGuard({control,readSample=readHostMemory,sch
  async function readFresh(){
   const sequence=++sampleSequence,before=clock(),m=await readSample(),now=clock();
   if(sequence!==sampleSequence||!m||!Number.isFinite(m.total)||m.total<=0||!Number.isFinite(m.available)||m.available<0||m.available>m.total||!Number.isFinite(now)||now<before||now-before>10000)throw Error('memory_sample_unavailable');
-  const reserve=Math.max(2*GiB,m.total*.20),critical=Math.max(GiB/2,m.total*.05),recoveryBytes=Math.max(3*GiB,m.total*.25);
+  const reserve=Math.max(2*GiB,m.total*.18),critical=Math.max(GiB/2,m.total*.05),recoveryBytes=Math.max(3*GiB,m.total*.22);
   state={...state,level:m.available<critical?'critical':m.available<reserve?'high':'normal',totalBytes:m.total,availableBytes:m.available,reserveBytes:reserve,criticalBytes:critical,recoveryBytes,sampleError:false,checkedAt:now};
   return{now,recovered:m.available>recoveryBytes};
  }
