@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+## [0.9.32-daniel.66] — 2026-11-10
+- Add one bounded, in-memory final retained-vector proof diagnostic to the existing persistence status. Report only a known retained ID, an enumerated result, fresh/loaded exact-byte and session matches, admission/queue/revision state, and an allowlisted physical-proof error code. Do not retain provider vector bytes, original text, arbitrary error messages or unknown requested IDs.
+- Preserve retained publication/capture verification decisions, exact Float32 byte comparison (including negative zero), physical checkpoint and receipt proof, mutation guards, SDK-only completion and existing retry/backoff. This change explains later attempts; it cannot reconstruct the fresh vector or physical race from earlier .65 failures.
+- Prepared separately from source `87a3d10026b5a727e059c12d6ed9416cfacf84a5`, with the parent-authorized .66 version metadata synchronized. Commit, packaging and deployment remain pending parent review. Validation and limits: `docs/customizations/RETAINED-PROOF-DIAGNOSTICS.md`. Long-term memory recording remains pending manual review.
+
 ## [0.9.32-daniel.65] — 2026-11-10
 - Complete a retained embedding retry only when a fresh embedding of the current canonical source exactly matches the retained WAL and loaded vector bytes and session, with current native checkpoint/receipt evidence revalidated during publication. Preserve the original WAL and vector mutation guard; changed or missing evidence remains pending. Retain bounded prior retry and commit metadata with the SDK-only completion marker.
 - Apply the operator's 2026-11-10 memory tuning: pause below18% available, recover above22% available continuously for120seconds. Keep the2GiB pause floor,3GiB recovery floor,5%/512MiB critical boundary and existing storage/manual holds.
@@ -608,6 +613,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.32-daniel.66]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.65...v0.9.32-daniel.66
 [0.9.32-daniel.65]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.64...v0.9.32-daniel.65
 [0.9.32-daniel.64]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.63...v0.9.32-daniel.64
 [0.9.32-daniel.63]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.62...v0.9.32-daniel.63

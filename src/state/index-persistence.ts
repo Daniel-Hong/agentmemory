@@ -103,6 +103,55 @@ export interface VectorCountShortfall {
   loaded: number;
 }
 
+const RETAINED_PROOF_ERROR_CODES = [
+  'VECTOR_CHECKPOINT_UNVERIFIED', 'FILE_WRITER_EPOCH_UNVERIFIED',
+  'vector_recovery_writer_unverified', 'vector_recovery_selection_invalid', 'vector_recovery_epoch_changed',
+  'vector_recovery_pending_changed', 'vector_recovery_meta_changed', 'vector_recovery_checkpoint_changed',
+  'vector_recovery_checkpoint_incomplete', 'vector_recovery_checkpoint_mismatch',
+  'vector_retention_store_unverified', 'vector_retention_receipts_invalid', 'vector_retention_original_missing',
+  'vector_retention_original_changed', 'vector_retention_manual_verification_required',
+  'vector_retention_disk_sync_unconfirmed', 'vector_retention_receipts_changed',
+  'ENOENT', 'EACCES', 'EPERM', 'EIO', 'ELOOP', 'UNCLASSIFIED_PROOF_ERROR',
+] as const;
+type RetainedProofErrorCode = typeof RETAINED_PROOF_ERROR_CODES[number];
+type RetainedProofReason = 'verified' | 'retention_not_ready' | 'recovery_not_admitted' | 'pending_row_mismatch' |
+  'vector_unavailable' | 'checkpoint_meta_unverified' | 'checkpoint_selection_rejected' | 'physical_proof_rejected' |
+  'postproof_not_admitted' | 'sdk_required' | 'publication_invalid' | 'publication_mismatch' | 'pending_read_rejected' |
+  'capture_pending_rejected';
+
+export interface RetainedProofDiagnostic {
+  id: string;
+  operation: 'capture_pending' | 'retained_publication';
+  reason: RetainedProofReason;
+  freshBytesMatch: boolean | null;
+  loadedBytesMatch: boolean | null;
+  freshSessionMatch: boolean | null;
+  loadedSessionMatch: boolean | null;
+  retentionReady: boolean;
+  stopped: boolean;
+  storageHeld: boolean;
+  storageGenerationChanged: boolean;
+  storageRecovering: boolean;
+  storageBlocked: boolean;
+  recoveryPaused: boolean;
+  pendingLog: number;
+  logChains: number;
+  dirty: number;
+  revisionChanged: boolean | null;
+  physicalProofErrorCode: RetainedProofErrorCode | null;
+}
+
+function retainedProofErrorCode(error: unknown): RetainedProofErrorCode {
+  try {
+    const value = error as {code?: unknown; message?: unknown} | null;
+    for (const candidate of [value?.code, value?.message]) {
+      if (typeof candidate === 'string' && RETAINED_PROOF_ERROR_CODES.includes(candidate as RetainedProofErrorCode))
+        return candidate as RetainedProofErrorCode;
+    }
+  } catch { /* An error accessor is untrusted metadata too. */ }
+  return 'UNCLASSIFIED_PROOF_ERROR';
+}
+
 export interface IndexPersistenceStatus {
   saveIntervalMs: number;
   firstCheckpointPending?: boolean;
@@ -117,6 +166,7 @@ export interface IndexPersistenceStatus {
   retainedCheckpointRows?: number;
   pendingLogAcknowledged?: number;
   pendingLogError?: string | null;
+  retainedProofLastCheck?: RetainedProofDiagnostic | null;
 }
 
 export type VectorLoadState = "buckets" | "migrated" | "none" | "unavailable";
@@ -246,6 +296,7 @@ export class IndexPersistence {
   private vectorCountShortfall: VectorCountShortfall | null = null;
   private seq = 0;
   private retainedRows = new Map<string, RecoveryUpsert>();
+  private retainedProofLastCheck: RetainedProofDiagnostic | null = null;
   private retentionReady = true;
   private pendingLog: Map<string, number> = new Map();
   private acknowledgedLog: Map<string, number> = new Map();
@@ -379,6 +430,7 @@ export class IndexPersistence {
       pendingLogKnown: this.pendingLogInspected && !this.pendingLogUnknown,
       pendingLogAcknowledged: this.pendingLogInspected && !this.pendingLogUnknown ? this.acknowledgedLog.size : undefined,
       pendingLogError: this.pendingLogError,
+      retainedProofLastCheck: this.retainedProofLastCheck ? {...this.retainedProofLastCheck} : null,
     };
   }
 
@@ -548,39 +600,95 @@ export class IndexPersistence {
 
   /** Revalidate existing WAL evidence for one explicitly selected capture, without creating receipts. */
   async verifyCaptureVectorPending(id: string, sessionId: string, pending: unknown): Promise<boolean> {
-    if (!this.retentionReady || this.storageRecovering || this.storageBlocked || this.isRecoveryPaused()) return false;
+    if (!this.retentionReady || this.storageRecovering || this.storageBlocked || this.isRecoveryPaused()) {
+      this.recordRetainedProof(id, sessionId, 'capture_pending', this.retentionReady ? 'recovery_not_admitted' : 'retention_not_ready');
+      return false;
+    }
     const row = this.retainedRows.get(id);
     if (!row) return pending == null;
-    if (!this.vector || row.s !== sessionId || !isDeepStrictEqual(row, pending)) return false;
+    if (!this.vector || row.s !== sessionId || !isDeepStrictEqual(row, pending)) {
+      this.recordRetainedProof(id, sessionId, 'capture_pending', this.vector ? 'pending_row_mismatch' : 'vector_unavailable');
+      return false;
+    }
     const revision = this.kv.vectorCheckpointRevision;
+    const finish = (result: boolean, reason: RetainedProofReason, error: RetainedProofErrorCode | null = null) => {
+      this.recordRetainedProof(id, sessionId, 'capture_pending', reason, undefined, revision, error);
+      return result;
+    };
     const current = () => !this.stopped && !this.isStorageHeld() && this.storageGeneration() === this.bootStorageGeneration &&
       !this.storageBlocked && !this.storageRecovering && !this.isRecoveryPaused() &&
       !this.pendingLog.size && !this.logChains.size && !this.vector?.pendingChanges;
+    let stage: RetainedProofReason = 'checkpoint_meta_unverified';
     try {
-      if (!current()) return false;
+      if (!current()) return finish(false, 'recovery_not_admitted');
       const meta = await this.kv.get<VectorMeta>(KV.bm25Index, VECTOR_META_KEY);
-      if (meta?.v !== 3) return false;
+      if (meta?.v !== 3) return finish(false, 'checkpoint_meta_unverified');
       const rows = [...this.retainedRows.values()];
+      stage = 'checkpoint_selection_rejected';
       const selected = this.checkpointSelection({state: 'buckets', vector: this.vector, savedAt: meta.savedAt,
         checkpointMeta: meta, expectedCount: meta.count}, rows);
+      stage = 'physical_proof_rejected';
       await this.kv.reconcileVectorCheckpoint(selected, current, revision, false, true);
-      return current();
-    } catch { return false; }
+      const result = current();
+      return finish(result, result ? 'verified' : 'postproof_not_admitted');
+    } catch (error) { return finish(false, stage, retainedProofErrorCode(error)); }
   }
 
   async verifyRetainedVectorPublication(publication: VectorPublication): Promise<boolean> {
     const retained = this.retainedRows.get(publication.id), entry = publication.entry;
-    if (this.kv.durability?.completion !== 'sdk' || !retained || !entry || !(entry.embedding instanceof Float32Array)) return false;
+    if (this.kv.durability?.completion !== 'sdk' || !retained || !entry || !(entry.embedding instanceof Float32Array)) {
+      this.recordRetainedProof(publication.id, undefined, 'retained_publication',
+        this.kv.durability?.completion !== 'sdk' ? 'sdk_required' : 'publication_invalid');
+      return false;
+    }
+    const finish = (result: boolean, reason: RetainedProofReason, nested?: RetainedProofDiagnostic | null) => {
+      this.recordRetainedProof(publication.id, entry.sessionId, 'retained_publication', reason, entry, undefined,
+        nested?.physicalProofErrorCode ?? null, nested?.revisionChanged ?? null);
+      return result;
+    };
     const matches = () => {
       const loaded = this.vector?.get(publication.id);
       return entry.sessionId === retained.s && float32ToBase64(entry.embedding) === retained.e &&
         loaded?.sessionId === retained.s && float32ToBase64(loaded.embedding) === retained.e;
     };
+    let stage: RetainedProofReason = 'publication_mismatch';
     try {
-      if (!matches()) return false;
+      if (!matches()) return finish(false, 'publication_mismatch');
+      stage = 'pending_read_rejected';
       const pending = await this.kv.get(KV.vectorPendingLog, publication.id);
-      return await this.verifyCaptureVectorPending(publication.id, entry.sessionId, pending) && matches();
-    } catch { return false; }
+      stage = 'capture_pending_rejected';
+      const previousDiagnostic = this.retainedProofLastCheck;
+      const verified = await this.verifyCaptureVectorPending(publication.id, entry.sessionId, pending);
+      const nested = this.retainedProofLastCheck !== previousDiagnostic && this.retainedProofLastCheck?.id === publication.id && this.retainedProofLastCheck.operation === 'capture_pending'
+        ? this.retainedProofLastCheck : null;
+      if (!verified) return finish(false, nested?.reason ?? 'capture_pending_rejected', nested);
+      stage = 'publication_mismatch';
+      const result = matches();
+      return finish(result, result ? 'verified' : 'publication_mismatch', nested);
+    } catch { return finish(false, stage); }
+  }
+
+  private recordRetainedProof(id: string, sessionId: string | undefined, operation: RetainedProofDiagnostic['operation'],
+    reason: RetainedProofReason, fresh?: VectorEntry, revision?: number, physicalProofErrorCode: RetainedProofErrorCode | null = null,
+    revisionChanged: boolean | null = null): void {
+    const row = this.retainedRows.get(id);
+    if (!row) return;
+    // Diagnostic reads must never alter a verification decision or retain provider vector bytes.
+    try {
+      const loaded = this.vector?.get(id);
+      this.retainedProofLastCheck = {
+        id, operation, reason,
+        freshBytesMatch: fresh?.embedding instanceof Float32Array ? float32ToBase64(fresh.embedding) === row.e : null,
+        loadedBytesMatch: loaded?.embedding instanceof Float32Array ? float32ToBase64(loaded.embedding) === row.e : null,
+        freshSessionMatch: sessionId === undefined ? null : sessionId === row.s,
+        loadedSessionMatch: loaded ? loaded.sessionId === row.s : null,
+        retentionReady: this.retentionReady, stopped: this.stopped, storageHeld: this.isStorageHeld(),
+        storageGenerationChanged: this.storageGeneration() !== this.bootStorageGeneration,
+        storageRecovering: this.storageRecovering, storageBlocked: this.storageBlocked, recoveryPaused: this.isRecoveryPaused(),
+        pendingLog: this.pendingLog.size, logChains: this.logChains.size, dirty: this.vector?.pendingChanges ?? 0,
+        revisionChanged: revision === undefined ? revisionChanged : this.kv.vectorCheckpointRevision !== revision, physicalProofErrorCode,
+      };
+    } catch { this.retainedProofLastCheck = null; }
   }
 
   private rememberRetained(rows: RecoveryUpsert[]): void {

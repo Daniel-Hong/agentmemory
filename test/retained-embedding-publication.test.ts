@@ -143,3 +143,108 @@ it('keeps completed SDK metadata and retained WAL valid after a new persistence 
   f.assertOriginals();
  }finally{nextPersistence.stop();}
 });
+
+it('records only one defensive-copy retained proof diagnostic and ignores unknown IDs',async()=>{
+ const f=await fixture();expect(f.persistence.status().retainedProofLastCheck).toBeNull();
+ expect(await f.persistence.verifyRetainedVectorPublication({id:'unknown-untrusted-id',entry:null})).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toBeNull();
+ for(const row of f.rows)expect(await f.persistence.verifyRetainedVectorPublication({id:row.id,entry:f.index.get(row.id)!})).toBe(true);
+ const status=f.persistence.status();expect(status.retainedProofLastCheck).toMatchObject({id:f.rows[3].id,operation:'retained_publication',reason:'verified',
+  freshBytesMatch:true,loadedBytesMatch:true,freshSessionMatch:true,loadedSessionMatch:true,retentionReady:true,
+  stopped:false,storageHeld:false,storageGenerationChanged:false,storageRecovering:false,storageBlocked:false,recoveryPaused:false,
+  pendingLog:0,logChains:0,dirty:0,revisionChanged:false,physicalProofErrorCode:null});
+ status.retainedProofLastCheck!.reason='publication_invalid';expect(f.persistence.status().retainedProofLastCheck!.reason).toBe('verified');
+ expect(JSON.stringify(status)).not.toContain(f.rows[0].e);expect(JSON.stringify(status)).not.toContain('source text');
+ expect(f.actions).toEqual([]);f.assertOriginals();
+});
+
+it.each(['different bytes','negative zero','fresh owner','loaded owner','loaded bytes'])('diagnoses %s without relaxing exact publication rejection',async mode=>{
+ const f=await fixture(),row=f.rows[0],entry={...f.index.get(row.id)!,embedding:new Float32Array([1,0])};
+ if(mode==='different bytes')entry.embedding=new Float32Array([0,1]);
+ if(mode==='negative zero')entry.embedding=new Float32Array([1,-0]);
+ if(mode==='fresh owner')entry.sessionId='other';
+ if(mode==='loaded owner')f.index.get(row.id)!.sessionId='other';
+ if(mode==='loaded bytes')f.index.get(row.id)!.embedding[0]=0;
+ expect(await f.persistence.verifyRetainedVectorPublication({id:row.id,entry})).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toMatchObject({id:row.id,reason:'publication_mismatch',physicalProofErrorCode:null,
+  freshBytesMatch:mode!=='different bytes'&&mode!=='negative zero',loadedBytesMatch:mode!=='loaded bytes',
+  freshSessionMatch:mode!=='fresh owner',loadedSessionMatch:mode!=='loaded owner'});
+ expect(f.actions).toEqual([]);f.assertOriginals();
+ expect(()=>f.index.remove(row.id)).toThrow(/VECTOR_RECOVERY_PAUSED/);
+});
+
+it.each(['known','unknown'])('retains only allowlisted physical proof error codes (%s)',async mode=>{
+ const f=await fixture(),row=f.rows[0];
+ vi.spyOn(f.kv,'reconcileVectorCheckpoint').mockRejectedValue(Object.assign(new Error('synthetic private path and source text'),{code:mode==='known'?'VECTOR_CHECKPOINT_UNVERIFIED':'PRIVATE_UNKNOWN_SECRET'}));
+ expect(await f.persistence.verifyRetainedVectorPublication({id:row.id,entry:f.index.get(row.id)!})).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toMatchObject({reason:'physical_proof_rejected',freshBytesMatch:true,loadedBytesMatch:true,
+  physicalProofErrorCode:mode==='known'?'VECTOR_CHECKPOINT_UNVERIFIED':'UNCLASSIFIED_PROOF_ERROR'});
+ expect(JSON.stringify(f.persistence.status().retainedProofLastCheck)).not.toMatch(/private|source text|PRIVATE_UNKNOWN_SECRET/);
+ expect(f.actions).toEqual([]);f.assertOriginals();
+});
+
+it.each(['stopped','held','generation','dirty','log chain','pending log','not ready','recovering','blocked','paused','pending mismatch'])('reports %s while preserving capture pending false',async mode=>{
+ const f=await fixture(),row=f.rows[0],p=f.persistence as any;
+ if(mode==='stopped')p.stopped=true;
+ if(mode==='held')f.hold();
+ if(mode==='generation')f.changeEpoch();
+ if(mode==='dirty')vi.spyOn(f.index,'pendingChanges','get').mockReturnValue(1);
+ if(mode==='log chain')p.logChains.set('synthetic',Promise.resolve());
+ if(mode==='pending log')p.pendingLog.set('synthetic',1);
+ if(mode==='not ready')p.retentionReady=false;
+ if(mode==='recovering')p.storageRecovering=true;
+ if(mode==='blocked')p.storageBlocked=true;
+ if(mode==='paused')p.recoveryReady=false;
+ const pending=mode==='pending mismatch'?{...row,q:99}:row;
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',pending)).toBe(false);
+ const last=f.persistence.status().retainedProofLastCheck!;
+ expect(last).toMatchObject({id:row.id,operation:'capture_pending',freshBytesMatch:null,physicalProofErrorCode:null});
+ if(mode==='stopped')expect(last.stopped).toBe(true);
+ if(mode==='held')expect(last.storageHeld).toBe(true);
+ if(mode==='generation')expect(last.storageGenerationChanged).toBe(true);
+ if(mode==='dirty')expect(last.dirty).toBe(1);
+ if(mode==='log chain')expect(last.logChains).toBe(1);
+ if(mode==='pending log')expect(last.pendingLog).toBe(1);
+ if(mode==='not ready')expect(last.retentionReady).toBe(false);
+ if(mode==='recovering')expect(last.storageRecovering).toBe(true);
+ if(mode==='blocked')expect(last.storageBlocked).toBe(true);
+ if(mode==='paused')expect(last.recoveryPaused).toBe(true);
+ if(mode==='pending mismatch')expect(last.reason).toBe('pending_row_mismatch');
+ expect(f.actions).toEqual([]);f.assertOriginals();
+});
+
+it('reports revision changes and preserves both successful and rejected capture decisions',async()=>{
+ const f=await fixture(),row=f.rows[0];
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',row)).toBe(true);
+ expect(f.persistence.status().retainedProofLastCheck).toMatchObject({reason:'verified',freshBytesMatch:null,loadedBytesMatch:true,revisionChanged:false});
+ vi.spyOn(f.kv,'reconcileVectorCheckpoint').mockImplementation(async()=>{Object.defineProperty(f.kv,'vectorCheckpointRevision',{value:999});throw Error('vector_recovery_checkpoint_changed');});
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',row)).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toMatchObject({reason:'physical_proof_rejected',revisionChanged:true,physicalProofErrorCode:'vector_recovery_checkpoint_changed'});
+ expect(f.actions).toEqual([]);f.assertOriginals();
+});
+
+it('never lets hostile physical error properties escape the original false result',async()=>{
+ const f=await fixture(),row=f.rows[0];
+ vi.spyOn(f.kv,'reconcileVectorCheckpoint').mockRejectedValue(Object.defineProperty({},'code',{get(){throw Error('synthetic private getter');}}));
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',row)).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toMatchObject({reason:'physical_proof_rejected',physicalProofErrorCode:'UNCLASSIFIED_PROOF_ERROR'});
+ f.assertOriginals();
+});
+
+it('does not label a rejected publication with an earlier verified capture diagnostic',async()=>{
+ const f=await fixture(),row=f.rows[0];
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',row)).toBe(true);
+ vi.spyOn(f.persistence,'verifyCaptureVectorPending').mockResolvedValue(false);
+ expect(await f.persistence.verifyRetainedVectorPublication({id:row.id,entry:f.index.get(row.id)!})).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toMatchObject({reason:'capture_pending_rejected'});
+ f.assertOriginals();
+});
+
+it('clears an earlier diagnostic if local diagnostic collection becomes unavailable',async()=>{
+ const f=await fixture(),row=f.rows[0];
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',row)).toBe(true);
+ (f.persistence as any).isStorageHeld=()=>{throw Error('synthetic unavailable local observation');};
+ expect(await f.persistence.verifyCaptureVectorPending(row.id,'session',row)).toBe(false);
+ expect(f.persistence.status().retainedProofLastCheck).toBeNull();
+ f.assertOriginals();
+});
