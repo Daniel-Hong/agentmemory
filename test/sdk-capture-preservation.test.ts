@@ -84,3 +84,32 @@ it('does not migrate or delete legacy index originals on an SDK-only completion'
  try{const loaded=await persistence.load();expect(loaded.state).toBe('unavailable');expect(loaded.vector?.size).toBe(1);expect(JSON.stringify([...kv.store].map(([scope,rows])=>[scope,[...rows]]))).toBe(before);}
  finally{persistence.stop();}
 });
+it('reports matching SDK resolutions as historical reviews and keeps unverifiable items in the warning',async()=>{
+ const {kv}=setup();
+ const {createCaptureAutoRecovery}=await import('../src/capture/auto-recovery.js');
+ const {capturePayloadDigest}=await import('../src/capture/receipt-digest.js');
+ const {captureFailureHistoryDigest}=await import('../src/capture/sdk-resolution-record.js');
+ const sourceDigest=capturePayloadDigest(payload);
+ const projection='a'.repeat(64);
+ const at='2026-11-10T00:00:00.000Z';
+ const requestId='00000000-0000-4000-8000-000000000001';
+ for(const [n,phase] of ['blocked','checking','blocked','checking'].entries()){
+  const key='cap_'+String(n).repeat(40), eventId='synthetic-event-'+n, observationId='synthetic-obs-'+n;
+  const identity={key,eventId,observationId,sessionId:payload.sessionId,project:payload.project,hookType:payload.hookType};
+  const row={...identity,id:'historical-'+n,version:1,kind:'item',phase,reason:phase==='blocked'?'VERIFICATION_BUDGET_EXHAUSTED':'VERIFICATION_PENDING',
+   sourceDigest:n===2?'b'.repeat(64):sourceDigest,projection,verificationAttempts:phase==='blocked'?3:2,nextAttemptAt:0};
+  const history={...identity,status:'completed',failures:[],requests:{},totalAttempts:3,cycleAttempts:3,manualRetries:0,acceptedAt:at};
+  const sdkResolution={version:1,phase:'committed',completion:'sdk',requestId,sourceDigest,
+   initialProjection:projection,verifiedProjection:projection,priorFailureDigest:captureFailureHistoryDigest(history as never),
+   priorInboxState:'dead',startedAt:at,completedAt:at};
+  await kv.set(KV.captureRecovery,key,row);
+  await kv.set(KV.captureReview,key,{...history,sdkResolution});
+  await kv.set(KV.captureInbox,key,{...identity,status:'pending',storageCompletion:'sdk',payload,
+   sdkResolutionId:requestId,sdkResolutionState:n===3?'pending':'committed'});
+ }
+ const before=JSON.stringify([...kv.store].map(([scope,rows])=>[scope,[...rows]]));
+ const auto=createCaptureAutoRecovery(kv as never,{enabled:false,writerOwned:()=>true,admitted:()=>true,indexReady:()=>true});
+ await auto.initialize();
+ expect(auto.snapshot()).toMatchObject({blocked:1,verifying:1,resolved:0,sdkReviewed:2,blockedReason:'SDK_COMPLETION_ONLY'});
+ expect(JSON.stringify([...kv.store].map(([scope,rows])=>[scope,[...rows]]))).toBe(before);
+});

@@ -780,7 +780,7 @@ export function registerCaptureFunctions(
     return trackWork(()=>backgroundTask(async()=>{
       try{
         const result=await sdkReconciliation.reconcile(selection);
-        if(result.status==='reconciled'){counters.recovered++;updateActiveInbox(selection.key,false);}
+        if(result.status==='reconciled'){counters.recovered++;updateActiveInbox(selection.key,false);trackMaintenance(()=>automaticRecovery.refreshSdkReviews());}
         return result;
       }catch(error){const code=(error as {code?:unknown})?.code;return{completed:false,completion:'sdk',verified:false,synced:false,code:typeof code==='string'&&/^SDK_RECONCILIATION_[A-Z_]+$/.test(code)?code:'SDK_RECONCILIATION_UNAVAILABLE'};}
     })());

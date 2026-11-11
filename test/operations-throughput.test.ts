@@ -4,7 +4,7 @@ import {describe,it,expect} from 'vitest';
 const html=readFileSync('src/viewer/index.html','utf8');
 function setup(){
  const ctx:any={operations:{progressSamples:{}},autoRefresh:{seconds:30},Number,Date};
- for(const name of ['progressDuration','operationsStages','recordOperationsProgress','stageProgress']){
+ for(const name of ['progressDuration','summaryStageProgress','operationsStages','recordOperationsProgress','stageProgress']){
   const start=html.indexOf('function '+name+'(');if(start<0)continue;
   let depth=0;for(let n=html.indexOf('{',start);n<html.length;n++){if(html[n]==='{')depth++;if(html[n]==='}'&&--depth===0){runInNewContext(html.slice(start,n+1),ctx);break;}}
  }

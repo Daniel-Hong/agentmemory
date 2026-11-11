@@ -2516,6 +2516,15 @@
       return records;
     }
 
+    function summaryStageProgress(session) {
+      if (session.summaryProgress) return session.summaryProgress;
+      var count = session.summaryCoveredCount;
+      if (Number.isSafeInteger(count) && count > 0 && count === session.observationCount) {
+        return {status:'current',pendingCount:0,processedCount:count};
+      }
+      return null;
+    }
+
     function backgroundWorkSnapshot(sessions, health, available) {
       var totals = {summary:0,compress:0,graph:0,embedding:null,features:null}, knownTotals = {summary:0,compress:0,graph:0,embedding:null,features:null};
       var unknownStageCounts = {summary:0,compress:0,graph:0}, unknownSessionsCount = 0, knownCounts = {summary:0,compress:0,graph:0}, rows = [], quarantined = 0;
@@ -2525,7 +2534,7 @@
         return empty ? 0 : null;
       }
       (sessions || []).forEach(function(s) {
-        var enrichment = s.enrichmentProgress || {}, progress = [s.summaryProgress,enrichment.compress,enrichment.graph];
+        var enrichment = s.enrichmentProgress || {}, progress = [summaryStageProgress(s),enrichment.compress,enrichment.graph];
         var empty = s.observationCount === 0 || s.observations === 0;
         var counts = {summary:pending(progress[0],empty),compress:pending(progress[1],empty),graph:pending(progress[2],empty)};
         Object.keys(counts).forEach(function(k) {
@@ -2646,7 +2655,7 @@
       [['summary','요약'],['compress','압축'],['graph','그래프']].forEach(function(pair) {
         var counters = Object.create(null), statuses = [], complete = available, blocked = 0;
         (sessions || []).forEach(function(s) {
-          var p = pair[0] === 'summary' ? s.summaryProgress : (s.enrichmentProgress || {})[pair[0]];
+          var p = pair[0] === 'summary' ? summaryStageProgress(s) : (s.enrichmentProgress || {})[pair[0]];
           if (p && p.enabled === false || s.observationCount === 0 || s.observations === 0) return;
           if (!p || !Number.isSafeInteger(p.processedCount) || p.processedCount < 0 || typeof s.id !== 'string') { complete = false; return; }
           counters[s.id] = p.processedCount; statuses.push(p.status);
@@ -2787,7 +2796,7 @@
       operations.loading = true; renderOperations();
       operations.request = (async function() {
         try {
-          var results = await Promise.all([apiGet('health'),apiGet('sessions?includeSummary=false'),apiGet('background/control')]);
+          var results = await Promise.all([apiGet('health'),apiGet('sessions?includeSummary=false&includeSummaryCoverage=true'),apiGet('background/control')]);
           if (generation !== operations.generation) return;
           var h = results[0], sessions = results[1], control = results[2];
           operations.error = h ? '' : 'Health 조회 실패 · 이전 상태는 최신 상태가 아닐 수 있습니다.';

@@ -20,7 +20,7 @@ function context(names: string[], extra: Record<string, unknown> = {}) {
   return ctx;
 }
 function fixtures(extra: Record<string, unknown> = {}) {
-  return context(["esc", "fmtNum", "humanizeHealthFlag", "quarantineReason", "quarantineRecords", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "storageDurabilityHtml", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
+  return context(["esc", "fmtNum", "humanizeHealthFlag", "quarantineReason", "quarantineRecords", "summaryStageProgress", "backgroundWorkSnapshot", "memoryPressureStatus", "snapshotStatus", "storageDurabilityHtml", "inspectionErrorText", "inspectionRequest", "readinessStatusHtml", "controlDiagnosticHtml", "operationsStages", "recordOperationsProgress", "stageProgress", "progressDuration", "operationsProgressHtml", "operationsPanelHtml"], {
     operations: { health: {}, sessions: [], control: null, job: null, available: false, loading: false, error: '', controlError: '', jobError: '', checking: false, submitting: false, controlBusy: false, detailsOpen: false },
     store: {}, conn: { state: 'offline' }, autoRefresh: { enabled: true, seconds: 30 }, ...extra,
   });
@@ -71,6 +71,23 @@ describe("custom operations panel", () => {
     const c = fixtures();
     expect(c.backgroundWorkSnapshot([{ id:'x', status:'completed', observationCount:10 }], {}, true).totals.summary).toBeNull();
     expect(c.backgroundWorkSnapshot([], {}, false).totals.graph).toBeNull();
+  });
+  it("uses confirmed legacy coverage in both summary counts and stage progress", () => {
+    const c = fixtures();
+    const session = { id: 'legacy', status: 'completed', observationCount: 1, summaryCoveredCount: 1,
+      enrichmentProgress: { compress: { enabled: false }, graph: { enabled: false } } };
+    const work = c.backgroundWorkSnapshot([session], {}, true);
+    expect(work.totals.summary).toBe(0);
+    expect(work.unknownStageCounts.summary).toBe(0);
+    expect(work.rows).toEqual([]);
+    expect(c.operationsStages(work, [session], {}, true).find((stage:any) => stage.key === 'summary'))
+      .toMatchObject({ pending: 0, completed: 1, counters: { legacy: 1 } });
+    const mismatch = { ...session, observationCount: 2 };
+    const unknown = c.backgroundWorkSnapshot([mismatch], {}, true);
+    expect(unknown.totals.summary).toBeNull();
+    expect(c.operationsStages(unknown, [mismatch], {}, true).find((stage:any) => stage.key === 'summary').completed).toBeNull();
+    const retry = { ...session, summaryProgress: { status: 'retrying', pendingCount: 1, processedCount: 0 } };
+    expect(c.backgroundWorkSnapshot([retry], {}, true).totals.summary).toBe(1);
   });
   it("shows the confirmed minimum and the unknown session/stage scope separately",()=> {
     const c=fixtures();c.operations.available=true;
@@ -212,7 +229,7 @@ describe("manual operations commands", () => {
     const c=fixtures({apiGet,renderOperations:vi.fn(),operations:{health:{},sessions:[],control:null,job,available:false,generation:0,progressSamples:{}}});
     runInNewContext(source('loadOperations'),c);
     await c.loadOperations();
-    expect(apiGet.mock.calls.map(call=>call[0])).toEqual(['health','sessions?includeSummary=false','background/control']);
+    expect(apiGet.mock.calls.map(call=>call[0])).toEqual(['health','sessions?includeSummary=false&includeSummaryCoverage=true','background/control']);
     expect(c.operations.job).toEqual(job);
     expect(viewer).not.toMatch(/action === ['"](?:submit-codex-inspection|copy-inspection-request)['"]/);
   });

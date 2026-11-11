@@ -7,6 +7,7 @@ import { InvocationError, TriggerAction, type IIIClient } from "iii-sdk";
 import { DEDUP_WINDOW_MS, getDedupSkippedCount } from "../functions/dedup.js";
 import type { HttpRequest } from "@iii-dev/helpers/http";
 import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Session, CompressedObservation, HookPayload, CommitLink, SessionSummary, HealthSnapshot, AuditQueryResult, AuditMigrationState, Lesson } from "../types.js";
 import { AUDIT_MIGRATION_STATE_KEY } from "../functions/audit.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
@@ -68,7 +69,7 @@ import { isValidEventId } from "../capture/event-id.js";
 import { getCaptureController, type CaptureResult } from "../functions/capture.js";
 import { withoutObservationSource } from "../functions/observation-source.js";
 import { clearSessionFinalize, scheduleSessionFinalize } from "../functions/session-finalize.js";
-import { requestSummaryRefresh } from "../functions/summary-state.js";
+import { requestSummaryRefresh, summaryCovers, summaryObservations } from "../functions/summary-state.js";
 import { registerCompressionApi } from "./compression.js";
 import {
   getFinalizeIdleMs,
@@ -98,6 +99,85 @@ function parseOptionalInt(raw: unknown): number | undefined {
   if (raw === undefined || raw === null || raw === "") return undefined;
   const n = typeof raw === "number" ? raw : parseInt(String(raw), 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function createSessionSummaryCoverage(kv: StateKV) {
+  let busy = false;
+  return async (sessions: Session[]): Promise<Map<string, number>> => {
+    const reader = kv.observationReader;
+    const durability = kv.durability;
+    if (!reader || !durability || busy) return new Map();
+    const candidates = sessions.filter(session => !("summaryProgress" in session) &&
+      Number.isSafeInteger(session.observationCount) && session.observationCount > 0 &&
+      session.observationCount <= 16).slice(0, 8);
+    if (!candidates.length) return new Map();
+
+    const controller = new AbortController();
+    const { signal } = controller;
+    const expiresAt = performance.now() + 1250;
+    const releases: Array<() => void> = [];
+    busy = true;
+    const work = (async () => {
+      const verified: Array<{ session: Session; fresh: () => boolean }> = [];
+      for (const session of candidates) {
+        if (signal.aborted) break;
+        try {
+          const guard = durability.watchKeys([
+            { scope: KV.sessions, key: session.id }, { scope: KV.summaries, key: session.id },
+          ]);
+          releases.push(() => guard.release());
+          if (!guard.unchanged()) continue;
+          const current = await kv.get<Session>(KV.sessions, session.id);
+          signal.throwIfAborted();
+          if (!isDeepStrictEqual(current, session)) continue;
+          const summary = await kv.get<SessionSummary>(KV.summaries, session.id);
+          signal.throwIfAborted();
+          if (summary?.sessionId !== session.id || !summary.coveredFingerprint ||
+              summary.observationCount !== session.observationCount) continue;
+
+          const scope = KV.observations(session.id);
+          const mutation = reader.mutationRevision(scope);
+          const fresh = () => !signal.aborted && performance.now() < expiresAt && guard.unchanged() &&
+            mutation === reader.mutationRevision(scope) && !reader.pendingMutations(scope);
+          if (!fresh()) continue;
+          const revision = await reader.revision(scope);
+          signal.throwIfAborted();
+          const view = await reader.work(scope, { kind: "summary", signal });
+          if (view.rows.length !== session.observationCount) continue;
+          const rows: CompressedObservation[] = [];
+          let bytes = 0;
+          for (const descriptor of view.rows) {
+            signal.throwIfAborted();
+            const row = await view.load(descriptor);
+            if (!row || row.sessionId !== session.id || typeof row.title !== "string") break;
+            bytes += Buffer.byteLength(JSON.stringify(row));
+            if (bytes > 2 * 1024 * 1024) break;
+            rows.push(row);
+          }
+          if (rows.length !== view.rows.length) continue;
+          const observations = summaryObservations(rows);
+          if (observations.length !== rows.length || !summaryCovers(session, observations, summary)) continue;
+          if (revision !== await reader.revision(scope) || !fresh()) continue;
+          view.validate();
+          verified.push({ session, fresh: () => { view.validate(); return fresh(); } });
+        } catch { /* A missing or unstable source leaves coverage unknown. */ }
+      }
+      const coverage = new Map<string, number>();
+      for (const { session, fresh } of verified) {
+        try { if (fresh()) coverage.set(session.id, session.observationCount); } catch { /* Writer changed. */ }
+      }
+      return coverage;
+    })().finally(() => { busy = false; });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<Map<string, number>>(resolve => {
+      timer = setTimeout(() => { controller.abort(); resolve(new Map()); }, 1250);
+    });
+    try { return await Promise.race([work, deadline]); }
+    finally {
+      clearTimeout(timer);
+      for (const release of releases) release();
+    }
+  };
 }
 
 let restOriginPorts: () => Array<number | null | undefined> = () => [];
@@ -1580,6 +1660,7 @@ export function registerApiTriggers(
     },
   });
 
+  const sessionSummaryCoverage = createSessionSummaryCoverage(kv);
   sdk.registerFunction("api::sessions",
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
@@ -1649,9 +1730,17 @@ export function registerApiTriggers(
         );
         summaries.push(...results);
       }
+      const metadataOnly = req.query_params?.["includeSummary"] === "false";
+      const coverage = metadataOnly && req.query_params?.["includeSummaryCoverage"] === "true"
+        ? await sessionSummaryCoverage(filtered) : undefined;
       const withSummary = filtered.map((s, i) => {
-        if(req.query_params?.["includeSummary"]==="false") {const {summary:_,...metadata}=s;return metadata;}
-        return summaries[i] ? { ...s, summary: summaries[i] } : s;
+        const { summaryCoveredCount: _storedCount, ...session } = s as Session & { summaryCoveredCount?: unknown };
+        if (metadataOnly) {
+          const { summary: _, ...metadata } = session;
+          const count = coverage?.get(s.id);
+          return count === undefined ? metadata : { ...metadata, summaryCoveredCount: count };
+        }
+        return summaries[i] ? { ...session, summary: summaries[i] } : session;
       });
       return {
         status_code: 200,
