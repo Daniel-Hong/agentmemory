@@ -43,9 +43,15 @@ const recordKey = (buildId: string, kind: GraphIndexRecordKind, id: string) => `
 const rootKey = (buildId: string, posting: string) => `${buildId}:root:${posting}`;
 const entryKey = (buildId: string, posting: string, id: string) => `${buildId}:entry:${posting}:${id}`;
 const countKey = (kind: GraphIndexRecordKind) => kind === "node" ? "nodes" : kind === "edge" ? "edges" : "historyEdges";
+function indexDataScope(control: GraphRetrievalIndexControl, key: string): string {
+  if (control.schema === 2) return KV.graphRetrievalData;
+  // Each key ends in a SHA-256 digest. Two hex digits make 256 independent
+  // files per build, including for a single very large linked posting.
+  return `${KV.graphRetrievalData}:build:${control.buildId}:${key.slice(-64, -62)}`;
+}
 
 function validateControl(value: GraphRetrievalIndexControl): void {
-  if (bytes(value) > MAX_CONTROL_BYTES || value.schema !== 2 || typeof value.buildId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value.buildId) ||
+  if (bytes(value) > MAX_CONTROL_BYTES || (value.schema !== 2 && value.schema !== 3) || typeof value.buildId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value.buildId) ||
       !["building", "ready", "paused"].includes(value.status) ||
       ![value.revision, value.nodes, value.edges, value.historyEdges, value.incompleteRecords, value.otherTypes].every(finiteCount) ||
       !value.nodesByType || !value.edgesByType ||
@@ -63,10 +69,10 @@ export async function getGraphIndexStatus(state: StateKV): Promise<GraphRetrieva
   return value ?? null;
 }
 
-export async function initializeGraphIndex(state: StateKV, options: { status: "building" | "ready"; buildId?: string }): Promise<GraphRetrievalIndexControl> {
+export async function initializeGraphIndex(state: StateKV, options: { status: "building" | "ready"; buildId?: string; schema?: 2 | 3 }): Promise<GraphRetrievalIndexControl> {
   const kv = await pinGraphState(state);
   return lock(kv, async () => {
-    const value: GraphRetrievalIndexControl = { schema: 2, buildId: options.buildId ?? randomUUID(), status: options.status,
+    const value: GraphRetrievalIndexControl = { schema: options.schema ?? 2, buildId: options.buildId ?? randomUUID(), status: options.status,
       revision: 0, nodes: 0, edges: 0, historyEdges: 0, incompleteRecords: 0, nodesByType: {}, edgesByType: {}, otherTypes: 0, updatedAt: new Date().toISOString() };
     validateControl(value);
     const previous = await kv.get<GraphRetrievalIndexControl>(KV.graphRetrievalControl, CONTROL_KEY);
@@ -172,7 +178,7 @@ function validateRecord(value: GraphRetrievalIndexRecord): void {
 
 async function planRecord(kv: StateKV, control: GraphRetrievalIndexControl, kind: GraphIndexRecordKind, id: string, input: unknown): Promise<IndexJournal> {
   const writes = new Map<string, unknown>();
-  const read = async <T>(key: string): Promise<T | null> => writes.has(key) ? writes.get(key) as T | null : kv.get<T>(KV.graphRetrievalData, key);
+  const read = async <T>(key: string): Promise<T | null> => writes.has(key) ? writes.get(key) as T | null : kv.get<T>(indexDataScope(control, key), key);
   const put = (key: string, value: unknown) => { if (bytes(value) > GRAPH_INDEX_MAX_RECORD_BYTES) throw new GraphIndexError("Graph retrieval index write exceeds record budget"); writes.set(key, value); };
   const key = recordKey(control.buildId, kind, id);
   const before = await read<GraphRetrievalIndexRecord>(key);
@@ -243,16 +249,18 @@ async function planRecord(kv: StateKV, control: GraphRetrievalIndexControl, kind
 async function applyJournal(kv: StateKV, control: GraphRetrievalIndexControl, journal: IndexJournal): Promise<void> {
   if (journal.schema !== 1 || journal.buildId !== control.buildId || journal.revision !== control.revision ||
       !Array.isArray(journal.writes) || journal.writes.length > 2048 || bytes(journal) > MAX_JOURNAL_BYTES || journal.next.buildId !== control.buildId ||
-      journal.next.revision !== control.revision + 1 || journal.next.pending) throw new GraphIndexError("Invalid graph retrieval recovery journal");
+      journal.next.schema !== control.schema || journal.next.revision !== control.revision + 1 || journal.next.pending) throw new GraphIndexError("Invalid graph retrieval recovery journal");
   validateControl(journal.next);
   for (const write of journal.writes) {
-    if (!write || typeof write.key !== "string" || !write.key.startsWith(`${control.buildId}:`) || write.key.length > 512 || bytes(write.value) > GRAPH_INDEX_MAX_RECORD_BYTES) {
+    if (!write || typeof write.key !== "string" || !write.key.startsWith(`${control.buildId}:`) || write.key.length > 512 ||
+        (control.schema === 3 && !/:[a-f0-9]{64}$/.test(write.key)) || bytes(write.value) > GRAPH_INDEX_MAX_RECORD_BYTES) {
       throw new GraphIndexError("Invalid graph retrieval recovery write");
     }
   }
   for (const write of journal.writes) {
-    if (write.value === null) await kv.delete(KV.graphRetrievalData, write.key);
-    else await kv.set(KV.graphRetrievalData, write.key, write.value);
+    const scope = indexDataScope(control, write.key);
+    if (write.value === null) await kv.delete(scope, write.key);
+    else await kv.set(scope, write.key, write.value);
   }
   await kv.set(KV.graphRetrievalControl, CONTROL_KEY, journal.next);
 }
@@ -325,6 +333,10 @@ export async function finishGraphIndexBuild(state: StateKV, buildId: string): Pr
   return lock(kv, async () => {
     const current = await getGraphIndexStatus(kv);
     if (!current || current.buildId !== buildId || current.status === "paused" || current.pending || current.batchPending) throw new GraphIndexError("Graph index build is incomplete or superseded");
+    if (current.schema === 3) {
+      const reader = new GraphIndexReader(kv, await getGraphGeneration(kv), current, { maxReads: 16 });
+      for (const kind of ["nodes", "edges", "historyEdges"] as const) await reader.posting(kind, "", { limit: 1 });
+    }
     const next = { ...current, status: "ready" as const, revision: current.revision + 1, updatedAt: new Date().toISOString() };
     await kv.set(KV.graphRetrievalControl, CONTROL_KEY, next);
     return next;
@@ -429,7 +441,7 @@ export class GraphIndexReader {
     else this.active++;
     try {
       if (this.options.signal?.aborted || this.exhausted) { this.exhausted = true; return null; }
-      const value = await this.state.get<T>(scope, key);
+      const value = await this.state.get<T>(scope === KV.graphRetrievalData ? indexDataScope(this.status, key) : scope, key);
       const size = bytes(value);
       this.readBytes += size;
       if (this.readBytes > this.maxBytes || this.options.signal?.aborted) { this.exhausted = true; return null; }

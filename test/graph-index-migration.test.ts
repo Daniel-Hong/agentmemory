@@ -7,7 +7,8 @@ import {
   GraphIndexMigrationController, getGraphIndexMigrationStatus, graphIndexManifestKey,
   type GraphIndexManifestPage, type GraphIndexMigration,
 } from "../src/state/graph-index-migration.js";
-import { createGraphIndexReader, getGraphIndexStatus } from "../src/state/graph-retrieval-index.js";
+import { createGraphIndexReader, getGraphIndexStatus, initializeGraphIndex } from "../src/state/graph-retrieval-index.js";
+import { queryGraphIndex } from "../src/functions/graph-index-query.js";
 import type { GraphNode } from "../src/types.js";
 
 const now = "2026-10-14T00:00:00.000Z";
@@ -37,6 +38,43 @@ function setup() {
 }
 
 describe("explicit graph index migration", () => {
+  it("replaces a ready legacy index with isolated shards without changing its data or canonical rows", async () => {
+    const { kv, controller, rows, intercept } = setup();
+    const old = await initializeGraphIndex(kv, { status: "ready" });
+    for (const id of ["a", "b", "c", "d"]) await kv.set(KV.graphNodes, id, node(id));
+    await kv.set(KV.graphEdges, "ab", {
+      id: "ab", sourceNodeId: "a", targetNodeId: "b", type: "related_to", weight: 1,
+      sourceObservationIds: ["observation"], createdAt: now,
+    });
+    const protectedScopes = [KV.graphNodes, KV.graphEdges, KV.graphRetrievalData];
+    const before = protectedScopes.map(scope => structuredClone(rows.get(scope)));
+    expect((await controller.start()).buildId).toBe(old.buildId);
+    let shardWrites = 0;
+    intercept((fn, payload) => {
+      if (fn === "state::set" && payload.scope.startsWith(`${KV.graphRetrievalData}:build:`) && ++shardWrites === 3) {
+        throw new Error("interrupted shard publication");
+      }
+    });
+    await controller.start({ allowLegacyScan: true });
+    await controller.waitForIdle();
+    expect(await controller.status()).toMatchObject({ state: "paused", ready: false });
+    const interrupted = await getGraphIndexStatus(kv);
+    expect(interrupted).toMatchObject({ schema: 3, pending: { kind: "node" } });
+    intercept();
+    await controller.start({ resume: true });
+    await controller.waitForIdle();
+    const index = await getGraphIndexStatus(kv);
+    expect(index).toMatchObject({ schema: 3, status: "ready", nodes: 4, edges: 1 });
+    expect(index!.buildId).toBe(interrupted!.buildId);
+    expect(index!.buildId).not.toBe(old.buildId);
+    expect(protectedScopes.map(scope => rows.get(scope))).toEqual(before);
+    expect([...rows.keys()].filter(scope => scope.startsWith(`${KV.graphRetrievalData}:build:${index!.buildId}:`)).length).toBeGreaterThan(1);
+    const result = await queryGraphIndex(kv, { limit: 500 });
+    expect(result.nodes.map(row => row.id).sort()).toEqual(["a", "b", "c", "d"]);
+    expect(result.edges.map(row => row.id)).toEqual(["ab"]);
+    expect((await controller.start({ allowLegacyScan: true })).buildId).toBe(index!.buildId);
+  });
+
   it("keeps legacy status and boot read-only without a snapshot or graph listing", async () => {
     const { kv, controller, calls, rows } = setup();
     rows.set(KV.graphNodes, new Map([["old", node("old")]]));

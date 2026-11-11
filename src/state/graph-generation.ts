@@ -105,7 +105,7 @@ function graphView(kv: StateKV, id: string | null): StateKV {
 export async function resetGraphGeneration(kv: StateKV, snapshot: unknown): Promise<void> {
   const id = randomUUID();
   await kv.set(physicalScope(KV.graphSnapshot, id), "current", snapshot);
-  await initializeGraphIndex(graphView(kv, id), { status: "ready" });
+  await initializeGraphIndex(graphView(kv, id), { status: "ready", schema: 3 });
   await kv.set(CONTROL_SCOPE, CONTROL_KEY, id);
 }
 
@@ -114,7 +114,7 @@ export async function replaceGraphGeneration<T>(kv: StateKV, initialize: (fresh:
   const { target, id: previous } = views.get(pinnedState)!;
   const id = randomUUID();
   const fresh = graphView(target, id);
-  await initializeGraphIndex(fresh, { status: "ready" });
+  await initializeGraphIndex(fresh, { status: "ready", schema: 3 });
   const result = await initialize(fresh);
   // A delayed import cannot replace a reset that happened after it was pinned.
   if (await generation(target) === previous) {

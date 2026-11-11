@@ -1,3 +1,9 @@
+## 0.9.32-daniel.68 — Sharded graph retrieval index
+
+- Store new graph retrieval builds in per-build hash shards to stay below the native file namespace size limit.
+- Explicit graph-index migration rebuilds a ready legacy index from canonical graph records and verifies inventory before publishing readiness. The old index data and canonical nodes, edges, and history are preserved.
+- Continue to read legacy indexes and resume their existing journals. Newly rebuilt indexes use schema 3 and require the sharding-aware server.
+
 ## 0.9.32-daniel.67 — Health current-state display
 
 - Count recorded matching SDK resolutions separately from unresolved recovery checkpoints.
