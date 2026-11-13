@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Official v0.9.33 source-only integration review (unverified)
+
+- Import 25 upstream implementation/regression file blobs only where personal is unchanged from official v0.9.32; preserve all modified personal files and the modified iii engine/SDK pin.
+- Candidate provider, retrieval, CLIP, MCP, Claude connector, core hook redaction and SessionEnd fixes require full tests, generated-client verification and manual parity review before merging or deploying.
+- No private customization has been removed, no service/host/data has been touched. See `docs/customizations/UPSTREAM-0.9.33-INTEGRATION.md`.
+
+
 ### Bounded capture proof pages
 
 - Limit routine authenticated capture/status checks to 32 physical-key SDK proofs per page. Keep whole retained-source counts separate and omit whole-inbox completion counts for partial pages.
