@@ -1,0 +1,49 @@
+name: Personal fork PR checks
+
+# Source-only validation for changes proposed against personal.
+# No production credentials, service control, data migration or deployment.
+on:
+  pull_request:
+    branches: [personal]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Source, generated hooks and unit regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Generate explicit Codex compatibility artifacts
+        run: npm run build:codex-compat
+      - name: Reject stale checked-in hook bundles
+        run: git diff --exit-code -- plugin/scripts
+      - name: Verify skills and documented facts
+        run: |
+          npm run skills:check
+          npm run docs:check
+      - name: Eval TypeScript contract
+        run: npx tsc --noEmit --project tsconfig.eval.json
+      - name: Unit and non-integration regressions (isolated HOME)
+        shell: bash
+        run: |
+          test_home="$(mktemp -d "${RUNNER_TEMP}/agentmemory-pr-home.XXXXXX")"
+          trap 'rm -rf "$test_home"' EXIT
+          export HOME="$test_home"
+          npm test
