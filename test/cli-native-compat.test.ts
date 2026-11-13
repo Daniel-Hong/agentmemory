@@ -240,5 +240,5 @@ describe("native startup prior ownership", () => {
       const rejected=spawnSync(process.execPath,["--import","tsx",resolve("src/cli.ts"),"stop","--force","--port",String(port)],{env,cwd:process.cwd(),encoding:"utf8",timeout:15000});
       expect(rejected.error).toBeUndefined();expect(rejected.status).toBe(1);expect(rejected.stdout+rejected.stderr).toContain("Unsupported native compatibility lifecycle version");expect(fs.existsSync(marker)).toBe(false);expect(fs.readFileSync(join(runtime,"engine-state.json"),"utf8")).toBe(unsupported);
     }finally{child.kill("SIGTERM");await new Promise<void>(done=>child.exitCode!==null?done():child.once("exit",()=>done()));fs.rmSync(dir,{recursive:true,force:true});}
-  },20000);
+  },60000);
 });

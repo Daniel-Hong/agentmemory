@@ -102,3 +102,82 @@ it('allows the SDK caller metadata without accepting extra inspection fields',as
 
 it('requires a configured secret and exact original metadata for uncertain inspection',async()=>{const f=await fixture(),body={key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp};const handler=f.sdk.fns.get('api::capture-inspect-uncertain')!;expect((await handler({headers:{},body}) as any).status_code).toBe(401);expect((await handler({headers:f.headers,body:{...body,cwd:'/different'}}) as any).status_code).toBe(409);registerApiTriggers(f.sdk as never,f.kv as never,'');const unconfigured=await f.sdk.fns.get('api::capture-inspect-uncertain')!({headers:{},body}) as any;expect(unconfigured.status_code).toBe(503);expect(f.writes).not.toHaveBeenCalled()});
 it('refuses changing observations and reports read failures without mutation',async()=>{const f=await fixture(),body={key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp},handler=f.sdk.fns.get('api::capture-inspect-uncertain')!,get=f.kv.get;let reads=0;f.kv.get=async<T>(scope:string,k:string)=>{const v=await get<T>(scope,k);if(scope===KV.observations(payload.sessionId)&&++reads===2)return {...v as object,title:'changed'} as T;return v};expect((await handler({headers:f.headers,body}) as any)).toMatchObject({status_code:409,body:{outcome:'changed_during_inspection',retryAuthorized:false}});f.kv.get=async()=>{throw Error('synthetic read unavailable')};expect((await handler({headers:f.headers,body}) as any)).toMatchObject({status_code:503,body:{error:'UNCERTAIN_INSPECTION_UNAVAILABLE'}});expect(f.writes).not.toHaveBeenCalled()});
+
+it('keeps timed-out or overlapping inbox calculations single while returning unavailable rather than stale counts',async()=>{
+ const f=await fixture();await f.call();
+ const list=f.kv.list.bind(f.kv);let release!:()=>void,entered!:()=>void,inboxReads=0;
+ const began=new Promise<void>(resolve=>entered=resolve),blocked=new Promise<void>(resolve=>release=resolve);
+ f.kv.list=async(scope)=>{if(scope===KV.captureInbox){inboxReads++;entered();await blocked;}return list(scope)};
+ const first=f.control.status();await began;
+ expect(await Promise.race([first.then(()=>false),new Promise(resolve=>setTimeout(()=>resolve('caller_timed_out'),5))])).toBe('caller_timed_out');
+ const overlapping=await f.control.status();
+ expect(overlapping.inbox).toBeNull();expect(inboxReads).toBe(1);
+ release();const result=await first;expect(result.inbox?.sdkCompleted).toBe(1);
+ result.inbox!.sdkCompleted=999;
+ const history=await f.kv.get<any>(KV.captureReview,key);history.sdkResolution.version=99;await f.kv.set(KV.captureReview,key,history);
+ expect((await f.control.status()).inbox?.sdkCompleted).toBe(0);expect(inboxReads).toBe(2);
+});
+it('retains physical history-key verification rather than counting a mis-keyed resolution as complete',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),history=await f.kv.get<any>(KV.captureReview,key);
+ const {sdkResolutionId,sdkResolutionState,...ordinary}=rec;await f.kv.set(KV.captureInbox,key,ordinary);
+ await f.kv.set(KV.captureReview,key,{...history,key:'cap_'+'f'.repeat(40)});
+ expect((await f.control.status()).inbox?.sdkCompleted).toBe(0);
+});
+it('releases the status admission after the underlying read fails so a fresh retry can succeed',async()=>{
+ const f=await fixture();await f.call();const list=f.kv.list.bind(f.kv);let fail=true;
+ f.kv.list=async scope=>{if(scope===KV.captureInbox&&fail)throw Error('synthetic_read_failure');return list(scope)};
+ expect((await f.control.status()).inbox).toBeNull();fail=false;expect((await f.control.status()).inbox?.sdkCompleted).toBe(1);
+});
+
+it('holds admission until every already-started history read settles after a sibling read fails',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),other='cap_'+'e'.repeat(40);
+ await f.kv.set(KV.captureInbox,other,{...rec,key:other});
+ const get=f.kv.get.bind(f.kv),list=f.kv.list.bind(f.kv);let release!:()=>void,entered!:()=>void,lists=0;
+ const began=new Promise<void>(resolve=>entered=resolve),blocked=new Promise<void>(resolve=>release=resolve);
+ f.kv.list=async scope=>{if(scope===KV.captureInbox)lists++;return list(scope)};
+ f.kv.get=async(scope,k)=>{if(scope!==KV.captureReview)return get(scope,k);if(k===key)throw Error('synthetic_sibling_failure');entered();await blocked;return get(scope,k)};
+ const first=f.control.status();await began;await new Promise(resolve=>setTimeout(resolve,0));
+ const second=f.control.status();await new Promise(resolve=>setTimeout(resolve,0));
+ try{expect(lists).toBe(1);}finally{release();await Promise.all([first,second]);}
+});
+
+it('bounds an explicit SDK proof page at 32 physical-key reads without presenting a partial count as total completion',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
+ for(let i=1;i<96;i++){const k='cap_'+String(i).padStart(40,'0');await f.kv.set(KV.captureInbox,k,{...ordinary,key:k});}
+ const get=f.kv.get.bind(f.kv);let reads=0;f.kv.get=async(s,k)=>{if(s===KV.captureReview)reads++;return get(s,k)};
+ const result=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never);
+ expect(reads).toBe(32);expect(result.inbox?.sdkCompleted).toBeUndefined();expect(result.inbox).toMatchObject({sdkRetained:96,sdkProofPage:{offset:0,checked:32,total:96,completed:32,nextOffset:32}});
+ expect(result.inbox?.sdkProofPage?.generation).toMatch(/^[0-9a-f]{64}$/);
+ const page=await f.control.status({sdkProofPage:{offset:32,limit:32,generation:result.inbox!.sdkProofPage!.generation}} as never);
+ expect(reads).toBe(64);expect(page.inbox?.sdkCompleted).toBeUndefined();expect(page.inbox?.sdkProofPage?.offset).toBe(32);
+});
+it('rejects proof page continuation after source generation changes and never counts old proof as current',async()=>{
+ const f=await fixture();await f.call();const first=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never);
+ const rec=await f.kv.get<any>(KV.captureInbox,key);await f.kv.set(KV.captureInbox,key,{...rec,payload:{...rec.payload,data:{changed:'synthetic'}}});
+ await expect(f.control.status({sdkProofPage:{offset:0,limit:32,generation:first.inbox!.sdkProofPage!.generation}} as never)).rejects.toMatchObject({code:'CAPTURE_PROOF_GENERATION_CHANGED'});
+});
+it.each([{offset:-1,limit:32},{offset:0,limit:33},{offset:32,limit:32},{offset:0,limit:0}])('rejects invalid proof page %j before reading',async page=>{
+ const f=await fixture();const list=vi.spyOn(f.kv,'list');await expect(f.control.status({sdkProofPage:page} as never)).rejects.toMatchObject({code:'INVALID_CAPTURE_PROOF_PAGE'});expect(list).not.toHaveBeenCalled();
+});
+
+it('uses the bounded proof page in the authenticated capture HTTP path and rejects stale continuations',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
+ for(let i=1;i<40;i++){const k='cap_'+String(i).padStart(40,'0');await f.kv.set(KV.captureInbox,k,{...ordinary,key:k});}
+ const get=f.kv.get.bind(f.kv);let reads=0;f.kv.get=async(s,k)=>{if(s===KV.captureReview)reads++;return get(s,k)};
+ const call=f.sdk.fns.get('api::capture')!;
+ expect((await call({headers:{},query_params:{}}) as any).status_code).toBe(401);expect(reads).toBe(0);
+ const first=await call({headers:f.headers,query_params:{}}) as any;
+ expect(first.status_code).toBe(200);expect(first.body.capture.inbox.sdkProofPage.checked).toBe(32);expect(reads).toBe(32);
+ expect((await call({headers:f.headers,query_params:{proofOffset:'-1'}}) as any).status_code).toBe(400);
+ expect((await call({headers:f.headers,query_params:{proofOffset:'32',proofGeneration:'a'.repeat(64)}}) as any).status_code).toBe(409);
+});
+
+it('keeps next offsets usable after more than ten thousand retained SDK originals',async()=>{
+ const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
+ const records=Array.from({length:10033},(_,i)=>({...ordinary,key:'cap_'+i.toString(16).padStart(40,'0')})),list=f.kv.list.bind(f.kv);
+ f.kv.list=async (scope,options)=>scope===KV.captureInbox?options?.project?records.map(row=>options.project!(row,row.key)):records:list(scope,options);
+ const first=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never),generation=first.inbox!.sdkProofPage!.generation;
+ const near=await f.control.status({sdkProofPage:{offset:9984,limit:32,generation}} as never);expect(near.inbox?.sdkProofPage?.nextOffset).toBe(10016);
+ const last=await f.control.status({sdkProofPage:{offset:10016,limit:32,generation}} as never);expect(last.inbox?.sdkProofPage).toMatchObject({checked:17,nextOffset:null});
+ const response=await f.sdk.fns.get('api::capture')!({headers:f.headers,query_params:{proofOffset:'10016',proofGeneration:generation}}) as any;expect(response.status_code).toBe(200);expect(response.body.capture.inbox.sdkProofPage.checked).toBe(17);
+});

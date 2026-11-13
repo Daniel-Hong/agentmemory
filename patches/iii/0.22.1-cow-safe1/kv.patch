@@ -1,0 +1,717 @@
+diff --git a/engine/src/builtins/kv.rs b/engine/src/builtins/kv.rs
+index f7c7682..21b4ba5 100644
+--- a/engine/src/builtins/kv.rs
++++ b/engine/src/builtins/kv.rs
+@@ -31,6 +31,45 @@ const DEFAULT_SAVE_INTERVAL_MS: u64 = 5000;
+ /// clamped up so it can never drive the save loop into a tight busy-loop.
+ const MIN_SAVE_INTERVAL_MS: u64 = 100;
+ 
++#[derive(Clone)]
++struct SharedValue(Arc<Value>);
++
++impl From<Value> for SharedValue {
++    fn from(value: Value) -> Self {
++        Self(Arc::new(value))
++    }
++}
++
++impl std::ops::Deref for SharedValue {
++    type Target = Value;
++
++    fn deref(&self) -> &Self::Target {
++        self.0.as_ref()
++    }
++}
++
++impl Serialize for SharedValue {
++    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++        self.0.as_ref().serialize(serializer)
++    }
++}
++
++impl SharedValue {
++    fn owned(&self) -> Value {
++        self.0.as_ref().clone()
++    }
++
++    fn into_owned(self) -> Value {
++        match Arc::try_unwrap(self.0) {
++            Ok(value) => value,
++            Err(shared) => shared.as_ref().clone(),
++        }
++    }
++}
++
++type ScopeValues = IndexMap<String, SharedValue>;
++type StoreValues = HashMap<String, ScopeValues>;
++
+ #[derive(Archive, RkyvSerialize, RkyvDeserialize)]
+ struct KeyStorage(String);
+ 
+@@ -92,7 +131,7 @@ fn index_from_path(path: &Path) -> Option<String> {
+     decode_index(file_name)
+ }
+ 
+-fn load_store_from_dir(dir: &Path) -> HashMap<String, IndexMap<String, Value>> {
++fn load_store_from_dir(dir: &Path) -> StoreValues {
+     let mut store = HashMap::new();
+     let entries = match std::fs::read_dir(dir) {
+         Ok(entries) => entries,
+@@ -138,16 +177,16 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, IndexMap<String, Value>> {
+                 continue;
+             }
+         };
+-        store.insert(index, value);
++        store.insert(index, value.into_iter().map(|(key, value)| (key, SharedValue::from(value))).collect());
+     }
+ 
+     store
+ }
+ 
+-async fn persist_index_to_disk(
++async fn persist_index_to_disk<T: Serialize + ?Sized>(
+     dir: &Path,
+     index: &str,
+-    value: &IndexMap<String, Value>,
++    value: &T,
+ ) -> anyhow::Result<()> {
+     if let Err(err) = tokio::fs::create_dir_all(dir).await {
+         tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+@@ -176,7 +215,7 @@ async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
+ }
+ 
+ pub struct BuiltinKvStore {
+-    store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
++    store: Arc<RwLock<StoreValues>>,
+     file_store_dir: Option<PathBuf>,
+     dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+     /// Stop signal for the current save-loop instance. Replaced (and the prior
+@@ -184,6 +223,7 @@ pub struct BuiltinKvStore {
+     /// [`BuiltinKvStore::reconfigure`]. `None` for in-memory stores, which run
+     /// no save loop.
+     save_loop_stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
++    save_loop_gate: Arc<tokio::sync::Mutex<()>>,
+     /// The boot-configured save cadence (ms, already floored). A reconfigure
+     /// that clears `save_interval_ms` reverts to this rather than to the global
+     /// default, so clearing the runtime knob restores the adapter's configured
+@@ -252,6 +292,7 @@ impl BuiltinKvStore {
+             file_store_dir,
+             dirty,
+             save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
++            save_loop_gate: Arc::new(tokio::sync::Mutex::new(())),
+             default_interval: interval,
+         };
+ 
+@@ -282,8 +323,9 @@ impl BuiltinKvStore {
+ 
+         let store = Arc::clone(&self.store);
+         let dirty = Arc::clone(&self.dirty);
++        let save_loop_gate = Arc::clone(&self.save_loop_gate);
+         tokio::spawn(async move {
+-            Self::save_loop(store, dirty, interval_ms, dir, stop_rx).await;
++            Self::save_loop(store, dirty, save_loop_gate, interval_ms, dir, stop_rx).await;
+         });
+     }
+ 
+@@ -310,8 +352,9 @@ impl BuiltinKvStore {
+     }
+ 
+     async fn save_loop(
+-        store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
++        store: Arc<RwLock<StoreValues>>,
+         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
++        save_loop_gate: Arc<tokio::sync::Mutex<()>>,
+         polling_interval: u64,
+         dir: PathBuf,
+         mut stop_rx: tokio::sync::watch::Receiver<bool>,
+@@ -330,6 +373,10 @@ impl BuiltinKvStore {
+                     }
+                 }
+                 _ = interval.tick() => {
++                    let _save_guard = save_loop_gate.lock().await;
++                    if stop_rx.has_changed().is_err() || *stop_rx.borrow() {
++                        break;
++                    }
+                     let batch = {
+                         let mut dirty = dirty.write().await;
+                         if dirty.is_empty() {
+@@ -351,14 +398,14 @@ impl BuiltinKvStore {
+                                 {
+                                     tracing::error!(error = ?err, index = %index, "failed to persist index");
+                                     let mut dirty = dirty.write().await;
+-                                    dirty.insert(index, DirtyOp::Upsert);
++                                    dirty.entry(index).or_insert(DirtyOp::Upsert);
+                                 }
+                             }
+                             DirtyOp::Delete => {
+                                 if let Err(err) = delete_index_from_disk(&dir, &index).await {
+                                     tracing::error!(error = ?err, index = %index, "failed to delete index");
+                                     let mut dirty = dirty.write().await;
+-                                    dirty.insert(index, DirtyOp::Delete);
++                                    dirty.entry(index).or_insert(DirtyOp::Delete);
+                                 }
+                             }
+                         }
+@@ -374,8 +421,8 @@ impl BuiltinKvStore {
+             let index_map = store.get_mut(&index);
+ 
+             if let Some(index_map) = index_map {
+-                let old_value = index_map.get(&key).cloned();
+-                index_map.insert(key.clone(), data.clone());
++                let old_value = index_map.get(&key).map(SharedValue::owned);
++                index_map.insert(key.clone(), SharedValue::from(data.clone()));
+ 
+                 StreamSetResult {
+                     old_value,
+@@ -383,7 +430,7 @@ impl BuiltinKvStore {
+                 }
+             } else {
+                 let mut index_map = IndexMap::new();
+-                index_map.insert(key, data.clone());
++                index_map.insert(key, SharedValue::from(data.clone()));
+                 store.insert(index.clone(), index_map);
+ 
+                 StreamSetResult {
+@@ -405,7 +452,7 @@ impl BuiltinKvStore {
+         let index = store.get(&index);
+ 
+         if let Some(index) = index {
+-            return index.get(&key).cloned();
++            return index.get(&key).map(SharedValue::owned);
+         }
+ 
+         None
+@@ -427,7 +474,7 @@ impl BuiltinKvStore {
+                 } else {
+                     None
+                 };
+-                (StreamDeleteResult { old_value: removed }, dirty_op)
++                (StreamDeleteResult { old_value: removed.map(SharedValue::into_owned) }, dirty_op)
+             } else {
+                 (StreamDeleteResult { old_value: None }, None)
+             }
+@@ -458,14 +505,14 @@ impl BuiltinKvStore {
+ 
+             let can_acquire = match index_map.get(key) {
+                 None => true,
+-                Some(value) => match serde_json::from_value::<KvLockEntry>(value.clone()) {
++                Some(value) => match serde_json::from_value::<KvLockEntry>(value.owned()) {
+                     Ok(entry) => entry.is_expired(now_ms),
+                     Err(_) => true,
+                 },
+             };
+ 
+             if can_acquire {
+-                index_map.insert(key.to_string(), lock_value);
++                index_map.insert(key.to_string(), SharedValue::from(lock_value));
+                 true
+             } else {
+                 false
+@@ -489,7 +536,7 @@ impl BuiltinKvStore {
+ 
+             if let Some(index_map) = index_map {
+                 let should_remove = match index_map.get(key) {
+-                    Some(value) => match serde_json::from_value::<KvLockEntry>(value.clone()) {
++                    Some(value) => match serde_json::from_value::<KvLockEntry>(value.owned()) {
+                         Ok(entry) => entry.owner == owner,
+                         Err(_) => false,
+                     },
+@@ -533,11 +580,11 @@ impl BuiltinKvStore {
+         // Automatically create index_map if it doesn't exist
+         let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
+ 
+-        let old_value = index_map.get(&key).cloned();
++        let old_value = index_map.get(&key).map(SharedValue::owned);
+         let (updated_value, errors) = crate::update_ops::apply_update_ops(old_value.clone(), &ops);
+ 
+         // Write the updated value back to the store
+-        index_map.insert(key.clone(), updated_value.clone());
++        index_map.insert(key.clone(), SharedValue::from(updated_value.clone()));
+ 
+         drop(store);
+ 
+@@ -568,7 +615,7 @@ impl BuiltinKvStore {
+         let store = self.store.read().await;
+         store
+             .get(&index)
+-            .map_or(vec![], |topic| topic.values().cloned().collect())
++            .map_or(vec![], |topic| topic.values().map(SharedValue::owned).collect())
+     }
+ 
+     pub async fn list_groups(&self) -> Vec<String> {
+@@ -580,6 +627,8 @@ impl BuiltinKvStore {
+ #[cfg(test)]
+ mod test {
+     use iii_helpers::stream::UpdateOp;
++    use tracing::instrument::WithSubscriber;
++    use tracing_subscriber::prelude::*;
+ 
+     use super::*;
+ 
+@@ -589,6 +638,466 @@ mod test {
+         dir
+     }
+ 
++    struct SaveFailureObserved(Arc<std::sync::atomic::AtomicBool>);
++
++    async fn wait_for_saved_value(path: &Path, key: &str, expected: Value) {
++        tokio::time::timeout(std::time::Duration::from_secs(5), async {
++            loop {
++                match std::fs::read(path) {
++                    Ok(bytes) => {
++                        let archived = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
++                        let stored: IndexMap<String, Value> = serde_json::from_str(&archived.0).unwrap();
++                        if stored.get(key) == Some(&expected) { break; }
++                    }
++                    Err(error) if error.kind() == ErrorKind::NotFound => {}
++                    Err(error) => panic!("cannot read saved fixture: {error}"),
++                }
++                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++            }
++        }).await.expect("expected value was not published to the native file");
++    }
++
++    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SaveFailureObserved {
++        fn on_event(&self, event: &tracing::Event<'_>, _context: tracing_subscriber::layer::Context<'_, S>) {
++            struct Message<'a>(&'a std::sync::atomic::AtomicBool);
++            impl tracing::field::Visit for Message<'_> {
++                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
++                    if field.name() == "message" && format!("{value:?}").contains("failed to persist index") {
++                        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
++                    }
++                }
++            }
++            event.record(&mut Message(&self.0));
++        }
++    }
++
++    #[tokio::test]
++    async fn test_persistence_snapshot_shares_nested_value_allocation() {
++        let kv = BuiltinKvStore::new(None);
++        kv.set("scope".into(), "key".into(), serde_json::json!({"payload": "x".repeat(16384)})).await;
++        let live = kv.store.read().await;
++        let scope = live.get("scope").unwrap();
++        let snapshot = scope.clone();
++        let original = scope.get("key").unwrap()["payload"].as_str().unwrap();
++        let copied = snapshot.get("key").unwrap()["payload"].as_str().unwrap();
++        assert_eq!(original.len(), 16384);
++        assert_eq!(original.as_ptr(), copied.as_ptr(), "persistence snapshot copied a complete Value tree");
++    }
++
++    #[tokio::test]
++    async fn test_snapshot_survives_concurrent_replacement_and_deletion() {
++        let kv = Arc::new(BuiltinKvStore::new(None));
++        kv.set("scope".into(), "replace".into(), serde_json::json!({"version": 1})).await;
++        kv.set("scope".into(), "delete".into(), serde_json::json!({"kept": true})).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        let writer = Arc::clone(&kv);
++        tokio::spawn(async move {
++            writer.set("scope".into(), "replace".into(), serde_json::json!({"version": 2})).await;
++            writer.delete("scope".into(), "delete".into()).await;
++        }).await.unwrap();
++        assert_eq!(snapshot.get("replace").unwrap()["version"], 1);
++        assert_eq!(snapshot.get("delete").unwrap()["kept"], true);
++        assert_eq!(kv.get("scope".into(), "replace".into()).await.unwrap()["version"], 2);
++        assert_eq!(kv.get("scope".into(), "delete".into()).await, None);
++    }
++
++    #[tokio::test]
++    async fn test_delete_moves_a_uniquely_owned_value_allocation() {
++        let kv = BuiltinKvStore::new(None);
++        kv.set("scope".into(), "key".into(), serde_json::json!({"payload": "x".repeat(16384)})).await;
++        let original = kv.store.read().await.get("scope").unwrap().get("key").unwrap()["payload"].as_str().unwrap().as_ptr();
++        let removed = kv.delete("scope".into(), "key".into()).await.old_value.unwrap();
++        assert_eq!(removed["payload"].as_str().unwrap().as_ptr(), original, "delete copied a uniquely owned Value tree");
++    }
++
++    #[tokio::test]
++    async fn test_delete_shared_value_keeps_snapshot_and_owned_response_independent() {
++        let kv = BuiltinKvStore::new(None);
++        kv.set("scope".into(), "key".into(), serde_json::json!({"payload": "before"})).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        let mut removed = kv.delete("scope".into(), "key".into()).await.old_value.unwrap();
++        removed["payload"] = serde_json::json!("caller mutation");
++        assert_eq!(snapshot.get("key").unwrap()["payload"], "before");
++        assert_eq!(kv.get("scope".into(), "key".into()).await, None);
++    }
++
++    #[tokio::test]
++    async fn test_snapshot_update_keeps_old_value_and_returns_owned_values() {
++        let kv = BuiltinKvStore::new(None);
++        let initial = serde_json::json!({"counter": 0, "name": "before"});
++        kv.set("scope".into(), "key".into(), initial.clone()).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        let updated = kv.update("scope".into(), "key".into(), vec![UpdateOp::Increment { path: "counter".into(), by: 2 }]).await;
++        assert_eq!(updated.old_value, Some(initial.clone()));
++        assert_eq!(updated.new_value["counter"], 2);
++        assert_eq!(snapshot.get("key").unwrap()["counter"], 0);
++        let mut returned = kv.get("scope".into(), "key".into()).await.unwrap();
++        returned["name"] = serde_json::json!("caller mutation");
++        assert_eq!(kv.get("scope".into(), "key".into()).await.unwrap()["name"], "before");
++    }
++
++    #[tokio::test]
++    async fn test_snapshot_json_has_fixed_legacy_bytes() {
++        let kv = BuiltinKvStore::new(None);
++        kv.set("scope".into(), "z".into(), serde_json::json!({"arr": [2, 1], "num": 1.5, "s": "한😀"})).await;
++        kv.set("scope".into(), "a".into(), Value::Null).await;
++        kv.set("scope".into(), "__proto__".into(), serde_json::json!({"constructor": true})).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        assert_eq!(serde_json::to_string(&snapshot).unwrap(), r#"{"z":{"arr":[2,1],"num":1.5,"s":"한😀"},"a":null,"__proto__":{"constructor":true}}"#);
++    }
++
++    #[tokio::test]
++    async fn test_snapshot_persistence_matches_legacy_file_bytes() {
++        let dir = temp_store_dir();
++        let legacy = IndexMap::from([
++            ("z".to_string(), serde_json::json!({"arr": [2, 1], "name": "한😀"})),
++            ("a".to_string(), serde_json::json!({"__proto__": 9})),
++        ]);
++        persist_index_to_disk(&dir, "scope", &legacy).await.unwrap();
++        let old_bytes = std::fs::read(dir.join(index_file_name("scope"))).unwrap();
++        let kv = BuiltinKvStore::new(Some(serde_json::json!({"store_method": "file_based", "file_path": dir, "save_interval_ms": 3600000})));
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        persist_index_to_disk(&dir, "scope", &snapshot).await.unwrap();
++        let new_bytes = std::fs::read(dir.join(index_file_name("scope"))).unwrap();
++        assert_eq!(old_bytes, new_bytes);
++        let archived = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&new_bytes).unwrap();
++        assert_eq!(serde_json::from_str::<IndexMap<String, Value>>(&archived.0).unwrap(), legacy);
++        std::fs::remove_dir_all(&dir).unwrap();
++    }
++
++    #[tokio::test]
++    async fn test_snapshot_lock_owner_is_not_changed_by_reacquisition() {
++        let kv = BuiltinKvStore::new(None);
++        assert!(kv.try_acquire_lock("scope", "lock", "owner-a", 60000).await);
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        assert!(!kv.release_lock("scope", "lock", "owner-b").await);
++        assert!(kv.release_lock("scope", "lock", "owner-a").await);
++        assert!(kv.try_acquire_lock("scope", "lock", "owner-b", 60000).await);
++        assert_eq!(snapshot.get("lock").unwrap()["owner"], "owner-a");
++        assert_eq!(kv.get("scope".into(), "lock".into()).await.unwrap()["owner"], "owner-b");
++    }
++
++    #[tokio::test]
++    async fn test_snapshot_can_be_serialized_after_io_error_without_mutating_current_value() {
++        let root = temp_store_dir();
++        let blocked = root.join("blocked");
++        std::fs::write(&blocked, b"not a directory").unwrap();
++        let kv = BuiltinKvStore::new(None);
++        kv.set("scope".into(), "key".into(), serde_json::json!({"version": 1})).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        assert!(persist_index_to_disk(&blocked, "scope", &snapshot).await.is_err());
++        kv.set("scope".into(), "key".into(), serde_json::json!({"version": 2})).await;
++        persist_index_to_disk(&root, "scope", &snapshot).await.unwrap();
++        let bytes = std::fs::read(root.join(index_file_name("scope"))).unwrap();
++        let archived = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
++        let stored: IndexMap<String, Value> = serde_json::from_str(&archived.0).unwrap();
++        assert_eq!(stored.get("key").unwrap()["version"], 1);
++        assert_eq!(kv.get("scope".into(), "key".into()).await.unwrap()["version"], 2);
++        std::fs::remove_dir_all(root).unwrap();
++    }
++
++    #[tokio::test]
++    async fn test_save_loop_requeues_failed_scope_and_reacquires_latest_values() {
++        let root = tempfile::tempdir().unwrap();
++        let blocked = root.path().join("store");
++        std::fs::write(&blocked, b"not a directory").unwrap();
++        let kv = BuiltinKvStore::new(None);
++        kv.set("retry-scope".into(), "key".into(), serde_json::json!({"version": 1})).await;
++        kv.dirty.write().await.insert("retry-scope".into(), DirtyOp::Upsert);
++        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let subscriber = tracing_subscriber::registry().with(SaveFailureObserved(Arc::clone(&failed)));
++        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
++        let task = tokio::spawn(BuiltinKvStore::save_loop(
++            Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 100, blocked.clone(), stop_rx,
++        ).with_subscriber(subscriber));
++        tokio::time::timeout(std::time::Duration::from_secs(3), async {
++            while !failed.load(std::sync::atomic::Ordering::SeqCst) {
++                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++            }
++        }).await.expect("actual persistence failure was not observed");
++        kv.set("retry-scope".into(), "key".into(), serde_json::json!({"version": 2})).await;
++        std::fs::remove_file(&blocked).unwrap();
++        std::fs::create_dir(&blocked).unwrap();
++        let file = blocked.join(index_file_name("retry-scope"));
++        wait_for_saved_value(&file, "key", serde_json::json!({"version": 2})).await;
++        stop_tx.send(true).unwrap();
++        task.await.unwrap();
++        assert!(kv.dirty.read().await.is_empty());
++    }
++
++    #[tokio::test]
++    async fn test_save_loop_deletes_last_key_and_recreates_scope_with_a_live_snapshot() {
++        let root = tempfile::tempdir().unwrap();
++        let kv = BuiltinKvStore {
++            store: Arc::new(RwLock::new(HashMap::new())),
++            file_store_dir: Some(root.path().to_path_buf()),
++            dirty: Arc::new(RwLock::new(HashMap::new())),
++            save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
++            save_loop_gate: Arc::new(tokio::sync::Mutex::new(())),
++            default_interval: 100,
++        };
++        kv.set("scope".into(), "last".into(), serde_json::json!({"version": 1})).await;
++        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
++        let task = tokio::spawn(BuiltinKvStore::save_loop(
++            Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 100, root.path().to_path_buf(), stop_rx,
++        ));
++        let file = root.path().join(index_file_name("scope"));
++        wait_for_saved_value(&file, "last", serde_json::json!({"version": 1})).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        let removed = kv.delete("scope".into(), "last".into()).await;
++        assert_eq!(removed.old_value, Some(serde_json::json!({"version": 1})));
++        tokio::time::timeout(std::time::Duration::from_secs(5), async {
++            while file.exists() { tokio::time::sleep(std::time::Duration::from_millis(5)).await; }
++        }).await.expect("deleting the last key did not remove the native scope file");
++        let replacement = kv.set("scope".into(), "last".into(), serde_json::json!({"version": 2})).await;
++        assert_eq!(replacement.old_value, None);
++        wait_for_saved_value(&file, "last", serde_json::json!({"version": 2})).await;
++        assert_eq!(snapshot.get("last").unwrap()["version"], 1);
++        stop_tx.send(true).unwrap();
++        task.await.unwrap();
++        assert!(kv.dirty.read().await.is_empty());
++    }
++
++    #[tokio::test]
++    async fn test_reconfigure_keeps_snapshot_independent_and_publishes_new_value() {
++        let root = tempfile::tempdir().unwrap();
++        let kv = BuiltinKvStore::new(Some(serde_json::json!({
++            "store_method": "file_based",
++            "file_path": root.path(),
++            "save_interval_ms": 100
++        })));
++        kv.set("scope".into(), "key".into(), serde_json::json!({"version": 1})).await;
++        let file = root.path().join(index_file_name("scope"));
++        wait_for_saved_value(&file, "key", serde_json::json!({"version": 1})).await;
++        let snapshot = kv.store.read().await.get("scope").unwrap().clone();
++        kv.reconfigure(&serde_json::json!({"save_interval_ms": 200}));
++        kv.set("scope".into(), "key".into(), serde_json::json!({"version": 2})).await;
++        wait_for_saved_value(&file, "key", serde_json::json!({"version": 2})).await;
++        assert_eq!(serde_json::to_string(&snapshot).unwrap(), r#"{"key":{"version":1}}"#);
++        if let Some(stop) = kv.save_loop_stop.lock().unwrap().take() {
++            stop.send(true).unwrap();
++        }
++    }
++
++    #[test]
++    fn test_failed_delete_does_not_lose_a_newer_recreated_value() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .max_blocking_threads(1)
++            .build()
++            .unwrap();
++        runtime.block_on(async {
++            let root = tempfile::tempdir().unwrap();
++            let kv = BuiltinKvStore {
++                store: Arc::new(RwLock::new(HashMap::new())),
++                file_store_dir: Some(root.path().to_path_buf()),
++                dirty: Arc::new(RwLock::new(HashMap::new())),
++                save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
++            save_loop_gate: Arc::new(tokio::sync::Mutex::new(())),
++                default_interval: 3_600_000,
++            };
++            kv.set("scope".into(), "key".into(), serde_json::json!({"version": 1})).await;
++            kv.delete("scope".into(), "key".into()).await;
++            let file = root.path().join(index_file_name("scope"));
++            std::fs::create_dir(&file).unwrap();
++            let (release, blocked) = std::sync::mpsc::channel::<()>();
++            let (started, acknowledged) = tokio::sync::oneshot::channel();
++            let blocker = tokio::task::spawn_blocking(move || {
++                let _ = started.send(());
++                let _ = blocked.recv();
++            });
++            acknowledged.await.unwrap();
++            let (old_stop, old_rx) = tokio::sync::watch::channel(false);
++            let mut old = Box::pin(BuiltinKvStore::save_loop(
++                Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 3_600_000,
++                root.path().to_path_buf(), old_rx,
++            ));
++            tokio::time::timeout(std::time::Duration::from_secs(3), std::future::poll_fn(|cx| {
++                assert!(std::future::Future::poll(old.as_mut(), cx).is_pending());
++                if kv.dirty.try_read().unwrap().is_empty() {
++                    std::task::Poll::Ready(())
++                } else {
++                    std::task::Poll::Pending
++                }
++            })).await.unwrap();
++            // remove_file is queued behind the sole occupied blocking thread.
++            kv.set("scope".into(), "key".into(), serde_json::json!({"version": 2})).await;
++            assert!(matches!(kv.dirty.read().await.get("scope"), Some(DirtyOp::Upsert)));
++            old_stop.send(true).unwrap();
++            release.send(()).unwrap();
++            blocker.await.unwrap();
++            tokio::time::timeout(std::time::Duration::from_secs(3), old).await.unwrap();
++            eprintln!("synthetic retry operation after failure: {:?}", kv.dirty.read().await.get("scope"));
++            std::fs::remove_dir(&file).unwrap();
++            let (stop, rx) = tokio::sync::watch::channel(false);
++            let retry = tokio::spawn(BuiltinKvStore::save_loop(
++                Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 100,
++                root.path().to_path_buf(), rx,
++            ));
++            let published = tokio::time::timeout(std::time::Duration::from_secs(5), async {
++                loop {
++                    if let Ok(bytes) = std::fs::read(&file) {
++                        let native = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
++                        let values: IndexMap<String, Value> = serde_json::from_str(&native.0).unwrap();
++                        if values.get("key") == Some(&serde_json::json!({"version": 2})) { break; }
++                    }
++                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++                }
++            }).await.is_ok();
++            stop.send(true).unwrap();
++            retry.await.unwrap();
++            assert_eq!(kv.get("scope".into(), "key".into()).await, Some(serde_json::json!({"version": 2})));
++            assert!(published, "failed old Delete discarded the newer recreated value's pending publication");
++        });
++    }
++
++    #[test]
++    fn test_failed_upsert_does_not_lose_a_newer_delete() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .max_blocking_threads(1)
++            .build()
++            .unwrap();
++        runtime.block_on(async {
++            let root = tempfile::tempdir().unwrap();
++            let dir = root.path().join("store");
++            std::fs::create_dir(&dir).unwrap();
++            let kv = BuiltinKvStore {
++                store: Arc::new(RwLock::new(HashMap::new())),
++                file_store_dir: Some(dir.clone()),
++                dirty: Arc::new(RwLock::new(HashMap::new())),
++                save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
++            save_loop_gate: Arc::new(tokio::sync::Mutex::new(())),
++                default_interval: 3_600_000,
++            };
++            kv.set("scope".into(), "key".into(), serde_json::json!({"version": 1})).await;
++            let initial = IndexMap::from([("key".to_owned(), serde_json::json!({"version": 1}))]);
++            persist_index_to_disk(&dir, "scope", &initial).await.unwrap();
++            let file = dir.join(index_file_name("scope"));
++            let preserved = root.path().join("temporarily-unavailable-store");
++            std::fs::rename(&dir, &preserved).unwrap();
++            std::fs::write(&dir, b"synthetic transient storage fault").unwrap();
++            let (release, blocked) = std::sync::mpsc::channel::<()>();
++            let (started, acknowledged) = tokio::sync::oneshot::channel();
++            let blocker = tokio::task::spawn_blocking(move || {
++                let _ = started.send(());
++                let _ = blocked.recv();
++            });
++            acknowledged.await.unwrap();
++            let (old_stop, old_rx) = tokio::sync::watch::channel(false);
++            let mut old = Box::pin(BuiltinKvStore::save_loop(
++                Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 3_600_000,
++                dir.clone(), old_rx,
++            ));
++            tokio::time::timeout(std::time::Duration::from_secs(3), std::future::poll_fn(|cx| {
++                assert!(std::future::Future::poll(old.as_mut(), cx).is_pending());
++                if kv.dirty.try_read().unwrap().is_empty() {
++                    std::task::Poll::Ready(())
++                } else {
++                    std::task::Poll::Pending
++                }
++            })).await.unwrap();
++            // create_dir_all is queued behind the sole occupied blocking thread.
++            kv.delete("scope".into(), "key".into()).await;
++            assert!(matches!(kv.dirty.read().await.get("scope"), Some(DirtyOp::Delete)));
++            old_stop.send(true).unwrap();
++            release.send(()).unwrap();
++            blocker.await.unwrap();
++            tokio::time::timeout(std::time::Duration::from_secs(3), old).await.unwrap();
++            eprintln!("synthetic retry operation after failure: {:?}", kv.dirty.read().await.get("scope"));
++            std::fs::remove_file(&dir).unwrap();
++            std::fs::rename(&preserved, &dir).unwrap();
++            let (stop, rx) = tokio::sync::watch::channel(false);
++            let retry = tokio::spawn(BuiltinKvStore::save_loop(
++                Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 100,
++                dir.clone(), rx,
++            ));
++            let removed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
++                while file.exists() {
++                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++                }
++            }).await.is_ok();
++            stop.send(true).unwrap();
++            retry.await.unwrap();
++            assert_eq!(kv.get("scope".into(), "key".into()).await, None);
++            assert!(removed, "failed old Upsert discarded the newer deletion and left an unwanted native scope file");
++        });
++    }
++
++    #[test]
++    fn test_replacement_loop_waits_for_the_previous_persistence_batch() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all().max_blocking_threads(1).build().unwrap();
++        runtime.block_on(async {
++            let root = tempfile::tempdir().unwrap();
++            let kv = BuiltinKvStore {
++                store: Arc::new(RwLock::new(HashMap::new())),
++                file_store_dir: Some(root.path().to_path_buf()),
++                dirty: Arc::new(RwLock::new(HashMap::new())),
++                save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
++                save_loop_gate: Arc::new(tokio::sync::Mutex::new(())),
++                default_interval: 3_600_000,
++            };
++            kv.set("scope".into(), "key".into(), serde_json::json!({"version": 1})).await;
++            let (release, blocked) = std::sync::mpsc::channel::<()>();
++            let (started, acknowledged) = tokio::sync::oneshot::channel();
++            let blocker = tokio::task::spawn_blocking(move || {
++                let _ = started.send(());
++                let _ = blocked.recv();
++            });
++            acknowledged.await.unwrap();
++            let (old_stop, old_rx) = tokio::sync::watch::channel(false);
++            let mut old = Box::pin(BuiltinKvStore::save_loop(
++                Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 3_600_000,
++                root.path().to_path_buf(), old_rx,
++            ));
++            tokio::time::timeout(std::time::Duration::from_secs(3), std::future::poll_fn(|cx| {
++                assert!(std::future::Future::poll(old.as_mut(), cx).is_pending());
++                if kv.dirty.try_read().unwrap().is_empty() { std::task::Poll::Ready(()) }
++                else { std::task::Poll::Pending }
++            })).await.unwrap();
++            // The old loop is in its first mkdir I/O, not in rename or write.
++            kv.set("scope".into(), "key".into(), serde_json::json!({"version": 2})).await;
++            old_stop.send(true).unwrap();
++            let (new_stop, new_rx) = tokio::sync::watch::channel(false);
++            let mut replacement = Box::pin(BuiltinKvStore::save_loop(
++                Arc::clone(&kv.store), Arc::clone(&kv.dirty), Arc::clone(&kv.save_loop_gate), 3_600_000,
++                root.path().to_path_buf(), new_rx,
++            ));
++            // Drive the actual replacement future, allowing the immediate timer
++            // to become ready. Neither filesystem job can finish while blocked.
++            for _ in 0..3 {
++                std::future::poll_fn(|cx| {
++                    assert!(std::future::Future::poll(replacement.as_mut(), cx).is_pending());
++                    std::task::Poll::Ready(())
++                }).await;
++                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++            }
++            let newer_work_still_pending = matches!(kv.dirty.read().await.get("scope"), Some(DirtyOp::Upsert));
++            release.send(()).unwrap();
++            blocker.await.unwrap();
++            tokio::time::timeout(std::time::Duration::from_secs(3), old).await.unwrap();
++            let file = root.path().join(index_file_name("scope"));
++            tokio::time::timeout(std::time::Duration::from_secs(5), async {
++                loop {
++                    std::future::poll_fn(|cx| {
++                        assert!(std::future::Future::poll(replacement.as_mut(), cx).is_pending());
++                        std::task::Poll::Ready(())
++                    }).await;
++                    if let Ok(bytes) = std::fs::read(&file) {
++                        let native = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
++                        let values: IndexMap<String, Value> = serde_json::from_str(&native.0).unwrap();
++                        if values.get("key") == Some(&serde_json::json!({"version": 2})) { break; }
++                    }
++                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++                }
++            }).await.unwrap();
++            new_stop.send(true).unwrap();
++            tokio::time::timeout(std::time::Duration::from_secs(3), replacement).await.unwrap();
++            assert!(newer_work_still_pending, "replacement drained newer dirty work before the old persistence batch completed");
++        });
++    }
++
+     #[tokio::test(flavor = "multi_thread")]
+     async fn test_file_based_load_set_delete() {
+         let dir = temp_store_dir();

@@ -22,6 +22,30 @@
 
 ## [Unreleased]
 
+### .68 and personal integration
+
+- Preserve the .68 operating behavior and the personal capture proof pages and deployment checks. This source integration does not change the active deployment.
+- Integration verification (2026-11-13): build, Codex compatibility, docs and skills checks passed. The regression run passed 6,597 tests with 13 skips. The large SDK fixture stopped at its 12 GiB host-memory precondition on both the integration and .68 baseline, so the regression gate remains pending. Long-term memory review remains pending.
+
+### Bounded capture proof pages
+
+- Limit routine authenticated capture/status checks to 32 physical-key SDK proofs per page. Keep whole retained-source counts separate and omit whole-inbox completion counts for partial pages.
+- Reject continuation when original capture data changes, preserve unchanged bearer authentication and expose page-specific evidence without claiming atomic history across pages or crash-durable flush.
+- Keep the original complete controller query available; one whole inbox metadata read and source-generation hash remain size-dependent. Prepared source changes are not an operating deployment.
+
+### Capture status read admission
+
+- Admit one inbox status calculation per controller and keep admission until all started history checks settle, including sibling read failures. Overlapping callers receive an explicitly unchecked inbox instead of duplicating SDK reads.
+- Preserve the unavailable status notice for an unchecked inbox. Keep physical per-key resolution checks and the four-read limit; full-count latency and outer timeout cancellation remain separate limitations.
+
+### Deployment verification and code preservation
+
+- Keep each CLI safety check bounded at 15 seconds while allowing 60 seconds for its nine-case fixture. Preserve the blocked-read 15ms deadline and give the subsequent successful readback its own default budget. Production deadlines are unchanged.
+
+- Refresh an existing server SDK inventory after Codex compatibility generation; reject audit failures instead of leaving an apparently complete stale manifest. Regression reproduces the missing generated runtime entries. This is source-only packaging tooling; the operating .55 package was already audited after generation.
+- Preserve the exact modified iii0.22.1 KV/save-loop patch and synthetic successor examples for writer exclusion, immutable epoch binding, bounded admission observation and enrollment-added review evidence. Host selectors and operational records are excluded.
+- Document representative native HTTP/SDK/storage verification and the remaining full capture-status scan/timeout limitation without claiming disk flush or historical unknown resolution.
+
 ## [0.9.32-daniel.67]
 
 - Health counts matching committed SDK recovery records as reviewed history and recognizes verified legacy summary coverage without rewriting session progress.
