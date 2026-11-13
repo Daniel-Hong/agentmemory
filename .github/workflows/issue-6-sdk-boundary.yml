@@ -1,0 +1,27 @@
+name: Issue 6 SDK boundary
+on:
+  push:
+    branches: [audit/issue-6-sdk-boundary]
+permissions:
+  contents: read
+jobs:
+  boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 08bb147d1c5146ca23d6955418f69880a8a05c18
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Run isolated SDK boundary test
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          awk '/MemAvailable/ {print}' /proc/meminfo
+          export HOME="$(mktemp -d)"
+          node node_modules/vitest/vitest.mjs run test/summary-sdk-boundary.test.ts
