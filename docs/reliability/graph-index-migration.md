@@ -14,7 +14,7 @@ To build indexes for existing graph data, schedule a maintenance window and expl
 agentmemory graph-index migrate --allow-legacy-scan --json
 ```
 
-**Initial discovery is not bounded.** The pinned engine cannot paginate its state listings. Migration reads each complete legacy node, edge and history scope once, including full record values. Large stores can consume substantial memory and delay other requests during those reads. An HTTP timeout does not cancel an engine allocation already in progress. No ordinary search, status request or startup silently authorizes this scan.
+Initial discovery scans each canonical node, edge and history scope. File-backed node and edge scans retain only IDs for the manifest. Other backends can still require a complete state listing. Large stores can delay other requests during discovery. An HTTP timeout does not cancel an engine allocation already in progress. No ordinary search, status request or startup silently authorizes this scan.
 
 The command returns a job ID after saving its intent. It runs in the background in an isolated index build within the current graph generation; canonical records are preserved. Capture, imports, mesh updates, temporal changes and snapshot restores maintain that build while migration runs. Status reports discovered and processed totals, readiness and partial coverage.
 
@@ -37,6 +37,8 @@ A sealed build with a missing control cannot resume; it requires a new explicit 
 Progress and recovery journals use the configured state backend. An acknowledged state write is not a filesystem flush guarantee: the engine's persistence window still applies. Crash recovery tests wait for the sealed manifest to reach disk before terminating the worker and engine. They do not establish power-loss atomicity across separate state scopes.
 
 Oversized source fields remain in canonical storage. Bounded projections record partial coverage when they cannot represent a field fully, and status exposes the affected record count. A ready index with partial coverage does not claim every graph fact is searchable. Search budgets and pagination can also truncate a request; callers should check its graph diagnostics.
+
+An explicit migration can replace a ready schema-2 index with schema 3. Schema 3 stores each build in independent shards. The previous index remains on disk. The server verifies the new inventory before declaring it ready.
 
 Indexes add storage and write overhead. A replacement build isolates previous derived records by build ID; it does not reclaim their disk space. Repeated rebuilds and graph generations can therefore accumulate retained data. Bounded records and reads do not imply bounded total storage.
 

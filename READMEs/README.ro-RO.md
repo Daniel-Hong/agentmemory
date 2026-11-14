@@ -663,7 +663,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory rulează pe Windows 10/11. WSL2 urmează calea Linux și poate instala automat engine-ul fixat. Windows nativ necesită instalarea manuală a binarului iii-engine v0.25.0 fixat; descarcă arhiva potrivită de pe [pagina de release iii v0.25.0](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0), verifică checksum-ul și pune `iii.exe` în `PATH` (de exemplu `%USERPROFILE%\.local\bin\iii.exe`). CLI-ul nu extrage automat arhiva ZIP pentru Windows.
+agentmemory rulează pe Windows 10/11. WSL2 urmează calea Linux și poate instala automat engine-ul fixat. Windows nativ necesită instalarea manuală a binarului iii-engine v0.25.1 fixat; descarcă arhiva potrivită de pe [pagina de release iii v0.25.1](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1), verifică checksum-ul și pune `iii.exe` în `PATH` (de exemplu `%USERPROFILE%\.local\bin\iii.exe`). CLI-ul nu extrage automat arhiva ZIP pentru Windows.
 
 Conectarea MCP automatizată pe Windows nativ acceptă doar `agentmemory connect copilot-cli`. Pentru ceilalți agenți nativi Windows, folosește blocul MCP manual din [Alți agenți](#other-agents). Rulează `connect` în WSL doar când agentul țintă este instalat în același mediu WSL.
 
@@ -1154,7 +1154,7 @@ Referința completă [`.env.example`](../.env.example) include furnizori, filtre
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 de endpoint-uri pe portul `3111`. API-ul REST se leagă implicit la `127.0.0.1`. Endpoint-urile protejate necesită `Authorization: Bearer <secret>`, iar endpoint-urile de sincronizare mesh necesită un `AGENTMEMORY_SECRET` setat explicit pe ambii parteneri (peers).
+161 de endpoint-uri pe portul `3111`. API-ul REST se leagă implicit la `127.0.0.1`. Endpoint-urile protejate necesită `Authorization: Bearer <secret>`, iar endpoint-urile de sincronizare mesh necesită un `AGENTMEMORY_SECRET` setat explicit pe ambii parteneri (peers).
 
 **Autentificarea este activată implicit.** Dacă `AGENTMEMORY_SECRET` nu este setat, CLI-ul generează la prima pornire un secret aleatoriu în `~/.agentmemory/secret`, cu permisiuni `0600`, și îl copiază și în directorul de date selectat. Toți clienții incluși îl citesc de acolo când comunică cu un server local: CLI-ul, vizualizatorul, hook-urile din `plugin/scripts`, serverul MCP și shim-ul `@agentmemory/mcp`, configurațiile scrise de `agentmemory connect` și integrările incluse OpenCode, Pi, OpenClaw, Hermes și filesystem-watcher. Secretul stocat este trimis doar către URL-uri loopback (`localhost`, `127.0.0.0/8`, `::1`). Un `AGENTMEMORY_SECRET` explicit are întotdeauna prioritate, iar clienții la distanță trebuie să seteze secretul în mediul lor. Implementările Docker self-host pornite din repository și entrypoint-urile `deploy/` își generează și exportă propriul secret. Pentru a apela API-ul manual:
 

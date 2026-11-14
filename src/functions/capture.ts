@@ -1,9 +1,11 @@
+import { listCaptureInboxMetadata, listLocalCaptureResolutionKeys, projectCaptureInbox, committedInboxMetadata, type CaptureInboxMetadata } from '../capture/inbox-metadata.js';
+import {inspectUncertainCapture,validUncertainInspection} from "../capture/uncertain-inspection.js";
 import { committedSdkResolution } from '../capture/sdk-resolution-record.js';
 import {recordAudit} from "./audit.js";
 import {requireSdkSourceWriter,sameSdkSource,sdkObservationMatches,sdkSourceKeys,sdkSourceFailure,assertSdkSourceClaim,assertSdkSourceLegacyProtection} from "../capture/sdk-source-restore.js";
 import{createSdkCaptureReconciliation,sdkReconciliationInvocation}from'../capture/sdk-reconciliation.js';
 import {createCaptureAutoRecovery,type CaptureAutoRecoveryOptions} from "../capture/auto-recovery.js";
-import {getSearchIndex,getVectorIndex,getKeywordRebuildEpoch,isKeywordRebuildInProgress} from "./search.js";
+import {getSearchIndex,getVectorIndex,getKeywordRebuildEpoch,isKeywordRebuildInProgress,verifyCaptureVectorPending} from "./search.js";
 import {createCaptureIndexEvidence,captureIndexEvidenceInvocationQuery} from "../capture/index-evidence.js";
 import { createOutboxMetadata, type OutboxMetadata } from "../capture/outbox-metadata.js";
 import { registerCaptureReceipts } from "../capture/receipts.js";
@@ -28,7 +30,7 @@ import {
 } from "../capture/event-record.js";
 import { captureReviewPage, recordCaptureFailure, resolveCaptureReview, reviewHistory } from "../capture/review.js";
 import { createCaptureRetryJobs } from "../capture/retry-jobs.js";
-import { backgroundTask, backgroundPaused } from "../ops/background-control.mjs";
+import { backgroundTask, backgroundPaused, backgroundControl } from "../ops/background-control.mjs";
 import { restoreIndexEntries,extractImage } from "./observe.js";
 import { prunePromptLedgers } from "../capture/prompt-ledger.js";
 import { scrubRecord,normalizeCaptureData } from "./privacy.js";
@@ -57,6 +59,7 @@ export interface InboxRecord {
   sdkRestoreState?:"pending"|"completed";
   sdkResolutionId?:string;
   sdkResolutionState?:'pending'|'committed';
+  deferredByStorageHold?: true;
   key: string;
   eventId: string;
   eventSource: "client" | "server";
@@ -83,7 +86,7 @@ export type CaptureResult =
   | { status: "accepted"; state: "completed" | "sdk_completed"; eventId: string; observationId: string; attempts: number }
   | { status: "accepted"; state: "retrying"; eventId: string; observationId: string; attempts: number; nextAttemptAt: string; error: string }
   | { status: "duplicate"; state: "completed" | "sdk_completed" | InboxState; eventId: string; observationId?: string; deduplicated: true }
-  | { status: "rejected"; eventId: string; error: string; retryable: boolean; observationId?: string };
+  | { status: "rejected"; eventId: string; error: string; retryable: boolean; observationId?: string; reconciliationRequired?: true };
 
 export interface CapturePolicy {
   maxAttempts: number;
@@ -226,7 +229,7 @@ export interface CaptureController {
   sweep(): Promise<{ processed: number; recovered: number; deadLettered: number }>;
   prune(): Promise<number>;
   drainLocalSpool(): Promise<DrainResult[]>;
-  status(options?:{sdkProofPage?:CaptureSdkProofQuery}): Promise<CaptureStatus>;
+  status(options?:{scanInbox?:boolean;sdkProofPage?:CaptureSdkProofQuery}): Promise<CaptureStatus>;
   setAutomaticRecoveryEnabled(value:boolean):ReturnType<ReturnType<typeof createCaptureAutoRecovery>["setEnabled"]>;
   progress(): CaptureProgress;
   durability(): SentMark | null;
@@ -276,7 +279,7 @@ export function registerCaptureFunctions(
   let lastPruneAt: string | null = null;
   let lastBootDrain: CaptureStatus["lastBootDrain"] = null;
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
-  let inboxSize: number | null = null;
+  let inboxKeys: Set<string | object> | null = null;
   let activeInboxKeys: Set<string> | null = null;
   let stopped = false;
   const timers: Array<ReturnType<typeof setInterval>> = [];
@@ -288,6 +291,7 @@ export function registerCaptureFunctions(
   }
   const trackMaintenance=(work:()=>Promise<unknown>)=>{void trackWork(work).catch(()=>{});};
   const sdkReconciliation=createSdkCaptureReconciliation(kv,{
+    verifyCaptureVectorPending,
     admitted:()=>!stopped&&!backgroundPaused()&&(options.autoRecovery?.admitted()??true),
     indexEvidence:obs=>({keyword:{present:getSearchIndex().has(obs.id),sessionId:getSearchIndex().sessionOf(obs.id)},vectorSessionId:getVectorIndex()?.get(obs.id)?.sessionId}),
     audit:selection=>recordAudit(kv,'capture_sdk_reconciliation','api::capture-reconcile-sdk',[],{requestId:selection.requestId,completion:'sdk',stage:'verification_pending'}),
@@ -299,8 +303,7 @@ export function registerCaptureFunctions(
     else if (activeInboxKeys && pendingSince === null) pendingSince = Date.now();
   }
 
-  function refreshInbox(records: InboxRecord[]): void {
-    inboxSize = records.length;
+  function refreshInbox(records: Array<InboxRecord | CaptureInboxMetadata>): void {
     activeInboxKeys = new Set(records.filter((rec) => rec && rec.status !== "dead" && rec.storageCompletion !== "sdk").map((rec) => rec.key));
     updatePendingSince();
   }
@@ -312,13 +315,22 @@ export function registerCaptureFunctions(
   }
 
   async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) refreshInbox(await kv.list<InboxRecord>(KV.captureInbox));
-    return inboxSize!;
+    // Only admission initializes membership, under its lock. Status/sweep snapshots
+    // must not overwrite it after a concurrent completion or admission.
+    if (inboxKeys === null) {
+      const records = await listCaptureInboxMetadata(kv);
+      inboxKeys = new Set(records.filter(rec => rec?.storageCompletion !== "sdk").map(rec => typeof rec?.key === "string" ? rec.key : {}));
+      refreshInbox(records);
+    }
+    return inboxKeys.size;
   }
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
     if(sdkCompletion){
-      await kv.set(KV.captureInbox,rec.key,{...rec,observationId,storageCompletion:'sdk',updatedAt:new Date().toISOString()});
+      await withKeyedLock('capture:inbox-admission',async()=>{
+        await kv.set(KV.captureInbox,rec.key,{...rec,observationId,storageCompletion:'sdk',updatedAt:new Date().toISOString()});
+        inboxKeys?.delete(rec.key); // Idempotent; retained evidence is not pending capacity.
+      });
       updateActiveInbox(rec.key,false);return;
     }
     await resolveCaptureReview(kv,rec,observationId);
@@ -333,8 +345,10 @@ export function registerCaptureFunctions(
       attempts: rec.attempts,
     };
     if (rec.eventSource === "client") await kv.set(eventScope(rec.key), rec.key, done);
-    await kv.delete(KV.captureInbox, rec.key);
-    if (inboxSize !== null) inboxSize = Math.max(0, inboxSize - 1);
+    await withKeyedLock('capture:inbox-admission',async()=>{
+      await kv.delete(KV.captureInbox, rec.key);
+      inboxKeys?.delete(rec.key);
+    });
     updateActiveInbox(rec.key, false);
     counters.completed++;
     lastCompletedAt = done.completedAt;
@@ -352,7 +366,7 @@ export function registerCaptureFunctions(
   async function attempt(rec: InboxRecord): Promise<CaptureResult> {
     rec.cycleAttempts = (rec.cycleAttempts ?? rec.attempts) + 1;
     rec.attempts++;
-    type ObserveResult = { observationId?: string; deduplicated?: boolean; success?: boolean; error?: string };
+    type ObserveResult = { observationId?: string; deduplicated?: boolean; success?: boolean; error?: string; retryable?: boolean };
     let result = null as ObserveResult | null;
     let failure: string | null = null;
     try {
@@ -386,6 +400,11 @@ export function registerCaptureFunctions(
       counters.duplicates++;
       return { status: "duplicate", state: "completed", eventId: rec.eventId, deduplicated: true };
     }
+    if (!failure && result?.success === false && result.retryable === true && result.error === "vector_recovery_paused") {
+      rec.attempts = Math.max(0, rec.attempts - 1);
+      rec.cycleAttempts = Math.max(0, (rec.cycleAttempts ?? 1) - 1);
+    }
+    if (!failure && result?.success === false && result.retryable === true) failure = typeof result.error === "string" ? result.error : "observation_temporarily_unavailable";
     const permanent = !failure;
     const message = failure ?? (result && typeof result.error === "string" ? result.error : "mem::observe returned no observation");
     if (permanent || rec.cycleAttempts >= policy.maxAttempts) {
@@ -396,21 +415,24 @@ export function registerCaptureFunctions(
       updateActiveInbox(rec.key, false);
       counters.deadLettered++;
       logger.warn("capture moved to dead letters", { eventId: rec.eventId, attempts: rec.attempts, error: message });
-      return { status: "rejected", eventId: rec.eventId, error: message, retryable: false, observationId: rec.observationId };
+      return { status: "rejected", eventId: rec.eventId, error: message, retryable: false, observationId: rec.observationId, ...(sdkCompletion && message === "vector_recovery_interrupted" ? {reconciliationRequired:true as const} : {}) };
     }
     const nextAttemptAt = new Date(now.getTime() + backoffMs(rec.cycleAttempts, policy)).toISOString();
-    const retrying: InboxRecord = { ...rec, status: "retrying", updatedAt: now.toISOString(), nextAttemptAt, lastError: message };
+    const retrying: InboxRecord = { ...rec, status: "retrying", updatedAt: now.toISOString(), nextAttemptAt, lastError: message, ...(sdkCompletion && message === 'vector_recovery_paused' && result?.retryable === true ? {deferredByStorageHold:true as const} : {}) };
     await recordCaptureFailure(kv,retrying);
     await kv.set(KV.captureInbox, rec.key, retrying);
     counters.retried++;
     logger.warn("capture processing failed, will retry", { eventId: rec.eventId, attempts: rec.attempts, nextAttemptAt, error: message });
+    if (sdkCompletion && retrying.deferredByStorageHold) return { status: "rejected", eventId: rec.eventId, error: "capture_reconciliation_required", retryable: false, reconciliationRequired: true, observationId: rec.observationId };
     return { status: "accepted", state: "retrying", eventId: rec.eventId, observationId: rec.observationId, attempts: rec.attempts, nextAttemptAt, error: message };
   }
 
-  async function sdkRecordCompleted(rec:InboxRecord):Promise<boolean>{
+  async function sdkRecordCompleted(rec:InboxRecord | CaptureInboxMetadata,resolutionKeys?:Set<string>):Promise<boolean>{
     if(rec.storageCompletion!=='sdk'||rec.sdkRestoreState==='pending'||rec.sdkResolutionState==='pending')return false;
+    const requiresResolution=resolutionKeys?.has(rec.key)||rec.sdkResolutionId!==undefined||rec.sdkResolutionState!==undefined;
+    if(resolutionKeys&&!requiresResolution)return true;
     const history=await kv.get<CaptureReviewHistory>(KV.captureReview,rec.key);
-    if(rec.sdkResolutionId!==undefined||rec.sdkResolutionState!==undefined||history?.sdkResolution!==undefined)return committedSdkResolution(history,rec);
+    if(requiresResolution||history?.sdkResolution!==undefined)return 'payload' in rec?committedSdkResolution(history,rec):committedInboxMetadata(kv,history,rec);
     return true;
   }
 
@@ -418,6 +440,10 @@ export function registerCaptureFunctions(
     const payload = input.payload;
     const clientEventId = isValidEventId(input.eventId) ? input.eventId : undefined;
     const eventId = clientEventId ?? generateId("evs");
+    const state = backgroundControl?.snapshot();
+    if (sdkCompletion && state && (state.holds.includes("storage_error") || state.status === "resuming" || state.status === "initializing")) {
+      return { status: "rejected", eventId, error: "vector_recovery_paused", retryable: true };
+    }
     const key = captureKey(payload.project, payload.sessionId, eventId);
     return withKeyedLock(`capture:${key}`, async () => {
       let storedObservationId: string | undefined;
@@ -438,7 +464,7 @@ export function registerCaptureFunctions(
           const stored = await storedObservation(done);
           if (stored === undefined && done.observationId) throw new Error("capture_existing_observation_unavailable");
           if (stored !== null) {
-            if (stored) await restoreIndexEntries(stored);
+            if (stored) await restoreIndexEntriesAdmitted(stored);
             counters.duplicates++;
             return { status: "duplicate", state: "completed", eventId, observationId: done.observationId, deduplicated: true };
           }
@@ -451,6 +477,11 @@ export function registerCaptureFunctions(
       }
       const queued = await kv.get<InboxRecord>(KV.captureInbox, key);
       if (queued) {
+        if (sdkCompletion && queued.lastError === "vector_recovery_interrupted") return { status: "rejected", eventId, error: "vector_recovery_interrupted", retryable: false, reconciliationRequired: true, observationId: queued.observationId };
+        if (sdkCompletion && queued.deferredByStorageHold === true && queued.status === "retrying" && queued.lastError === "vector_recovery_paused") {
+          if (!clientEventId || queued.eventSource !== "client" || !sameSdkSource(queued.payload, payload)) return { status: "rejected", eventId, error: "capture_deferred_source_mismatch", retryable: false };
+          return { status: "rejected", eventId, error: "capture_reconciliation_required", retryable: false, reconciliationRequired: true, observationId: queued.observationId };
+        }
         counters.duplicates++;
         return { status: "duplicate", state: queued.status, eventId, observationId: queued.observationId, deduplicated: true };
       }
@@ -472,13 +503,21 @@ export function registerCaptureFunctions(
       };
       const admitted=await withKeyedLock('capture:inbox-admission',async()=>{
         if((await currentInboxSize())>=policy.inboxMax)return false;
-        try{await kv.set(KV.captureInbox,key,rec);}catch(error){inboxSize=null;throw error;}
-        if(inboxSize!==null)inboxSize++;updateActiveInbox(key,true);return true;
+        try{await kv.set(KV.captureInbox,key,rec);}catch(error){inboxKeys=null;throw error;}
+        inboxKeys?.add(key);updateActiveInbox(key,true);return true;
       });
       if(!admitted){counters.rejected++;return {status:'rejected',eventId,error:`capture inbox is full (${policy.inboxMax} unprocessed events)`,retryable:true};}
       counters.accepted++;
       return attempt(rec);
     });
+  }
+
+  async function restoreIndexEntriesAdmitted(observation: CompressedObservation): Promise<void> {
+    if (!backgroundControl) return restoreIndexEntries(observation);
+    const result = await backgroundControl.runVectorWrite(() => restoreIndexEntries(observation));
+    if (result && typeof result === "object" && "success" in result && result.success === false) {
+      throw Object.assign(new Error(result.error), { code: result.error });
+    }
   }
 
   async function restoreSdkSource(input:{payload:HookPayload;eventId:string}) {
@@ -500,15 +539,14 @@ export function registerCaptureFunctions(
           alreadyPresent=!!obs;
           if(rec&&['sdkRestoreState','sdkRestoreRequestId','sdkRestoreAttempts'].some(field=>Object.hasOwn(rec,field))&&(!['pending','completed'].includes(rec.sdkRestoreState??'')||typeof rec.sdkRestoreRequestId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(rec.sdkRestoreRequestId)||rec.sdkRestoreAttempts===undefined))throw sdkSourceFailure('SDK_SOURCE_RESTORE_METADATA_INVALID');
           if(rec?.sdkRestoreAttempts!==undefined&&(!Number.isSafeInteger(rec.sdkRestoreAttempts)||rec.sdkRestoreAttempts<0||rec.sdkRestoreAttempts>3))throw sdkSourceFailure('SDK_SOURCE_BUDGET_INVALID');
-          if(!rec&&(await currentInboxSize())>=policy.inboxMax)throw sdkSourceFailure('SDK_SOURCE_INBOX_FULL');
           if(!obs&&(rec?.sdkRestoreAttempts??0)>=3)throw sdkSourceFailure('SDK_SOURCE_RESTORE_LIMIT');
           const now=new Date().toISOString();
           source={...(rec??{key,eventId,eventSource:'client',sessionId:payload.sessionId,project:payload.project,hookType:payload.hookType,observationId:id,status:'pending',attempts:0,acceptedAt:now,payload:{...payload,data:scrubRecord(payload.data)}}),storageCompletion:'sdk',updatedAt:now,sdkRestoreRequestId:requestId,sdkRestoreState:'pending',sdkRestoreAttempts:(rec?.sdkRestoreAttempts??0)+(obs?0:1)};
-          try{await kv.set(KV.captureInbox,key,source);}catch(error){if(!rec)inboxSize=null;throw error;}
-          if(!rec&&inboxSize!==null)inboxSize++;
+          try{await kv.set(KV.captureInbox,key,source);}catch(error){if(!rec)inboxKeys=null;throw error;}
+          // SDK restore preserves a source record, not an unprocessed capture slot.
         }));
         if(!alreadyPresent){const outcome:any=await sdk.trigger({function_id:'mem::observe',payload:{...payload,eventId,captureKey:key,observationId:id,sdkSourceRestore:{key,requestId}}});alreadyPresent=outcome?.deduplicated===true;}
-        else await restoreIndexEntries((await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id))!);
+        else await restoreIndexEntriesAdmitted((await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id))!);
         await recordAudit(kv,'capture_sdk_source_restore','mem::capture-restore-sdk',[key],{completion:'sdk',stage:'verify_pending'});
         await kv.recoveryWrite!.exclusive(keys,async()=>{
           await assertSdkSourceClaim(kv,{...payload,eventId,captureKey:key,observationId:id},{key,requestId});if(stopped)throw sdkSourceFailure('SDK_SOURCE_STOPPED');
@@ -529,13 +567,15 @@ export function registerCaptureFunctions(
     return withKeyedLock(`capture:${key}`, async () => {
       if (stopped) return "stopped";
       if(sdkCompletion)return "waiting";
-      await currentInboxSize();
       const stored=await kv.get<InboxRecord>(KV.captureInbox,key);
       if (!stored) return "gone";
       const rec={...stored};
+      if(rec.lastError==='vector_recovery_interrupted')return 'waiting';
       if(rec.eventSource==='client'&&(await kv.get<CompletedEvent>(eventScope(key),key))?.state==='deleted'){
-        await kv.delete(KV.captureInbox,key);
-        if(inboxSize!==null)inboxSize=Math.max(0,inboxSize-1);
+        await withKeyedLock('capture:inbox-admission',async()=>{
+          await kv.delete(KV.captureInbox,key);
+          inboxKeys?.delete(key);
+        });
         updateActiveInbox(key, false);
         counters.duplicates++;return 'gone';
       }
@@ -584,7 +624,7 @@ export function registerCaptureFunctions(
 
   async function runSweep(): Promise<{ processed: number; recovered: number; deadLettered: number }> {
     if (stopped || sdkCompletion) return { processed: 0, recovered: 0, deadLettered: 0 };
-    const records = await kv.list<InboxRecord>(KV.captureInbox);
+    const records = await listCaptureInboxMetadata(kv);
     refreshInbox(records);
     let processed = 0;
     let recovered = 0;
@@ -637,7 +677,7 @@ export function registerCaptureFunctions(
     }
     // Unprocessed originals and their review history have no age/count expiry.
     if (!stopped) removed += await prunePromptLedgers(kv, cutoff, policy.eventsMax);
-    inboxSize = null;
+    inboxKeys = null;
     activeInboxKeys = null;
     counters.pruned += removed;
     lastPruneAt = new Date().toISOString();
@@ -702,32 +742,41 @@ export function registerCaptureFunctions(
   }
 
   let inboxStatusReading=false;
-  async function status(options:{sdkProofPage?:CaptureSdkProofQuery}={}): Promise<CaptureStatus> {
+  async function status(options:{scanInbox?:boolean;sdkProofPage?:CaptureSdkProofQuery}={}): Promise<CaptureStatus> {
     const page=options.sdkProofPage;
     if(page&&(!Number.isSafeInteger(page.offset)||page.offset<0||!Number.isSafeInteger(page.limit)||page.limit<1||page.limit>32||page.generation!==undefined&&!/^[0-9a-f]{64}$/.test(page.generation)||page.offset>0&&page.generation===undefined))throw Object.assign(Error('INVALID_CAPTURE_PROOF_PAGE'),{code:'INVALID_CAPTURE_PROOF_PAGE'});
     await automaticRecovery.initialize().catch(()=>{});
     let inbox: CaptureStatus["inbox"] = null;
-    if(!inboxStatusReading){
+    if(options.scanInbox!==false&&!inboxStatusReading){
     inboxStatusReading=true;
     try {
-      const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+      const proofSources = sdkCompletion && page ? (await kv.list(KV.captureInbox, { project: value => {
+        if (!value) return null;
+        return {
+          metadata: projectCaptureInbox(value),
+          digest: createHash('sha256').update(JSON.stringify(value)).digest('hex'),
+        };
+      } })).filter(row => row !== null) : undefined;
+      const records = proofSources?.map(row => row.metadata) ?? (await listCaptureInboxMetadata(kv)).filter(Boolean);
       refreshInbox(records);
       let sdkCompleted=0;
       let sdkProofPage:NonNullable<CaptureStatus['inbox']>['sdkProofPage'];
       let sdkRetained:number|undefined;
       let selected=records;
-      if(sdkCompletion&&page){
-        const ordered=[...records].sort((a,b)=>a.key.localeCompare(b.key));
-        const hash=createHash('sha256');for(const record of ordered)hash.update(JSON.stringify(record)+'\n');
+      if(proofSources&&page){
+        const ordered=proofSources.sort((a,b)=>a.metadata.key.localeCompare(b.metadata.key));
+        const hash=createHash('sha256');
+        for(const row of ordered)hash.update(row.digest);
         const generation=hash.digest('hex');
         if(page.generation!==undefined&&page.generation!==generation)throw Object.assign(Error('CAPTURE_PROOF_GENERATION_CHANGED'),{code:'CAPTURE_PROOF_GENERATION_CHANGED'});
-        const archived=ordered.filter(r=>r.storageCompletion==='sdk');sdkRetained=archived.length;
+        const archived=ordered.filter(r=>r.metadata.storageCompletion==='sdk');sdkRetained=archived.length;
         if(page.offset>archived.length)throw Object.assign(Error('INVALID_CAPTURE_PROOF_PAGE'),{code:'INVALID_CAPTURE_PROOF_PAGE'});
-        selected=archived.slice(page.offset,page.offset+page.limit);
+        selected=archived.slice(page.offset,page.offset+page.limit).map(row=>row.metadata);
         sdkProofPage={offset:page.offset,checked:selected.length,completed:0,total:archived.length,nextOffset:page.offset+selected.length<archived.length?page.offset+selected.length:null,generation,checkedAt:new Date().toISOString()};
       }
+      const resolutionKeys=sdkCompletion&&!page?await listLocalCaptureResolutionKeys(kv):undefined;
       if(sdkCompletion)for(let at=0;at<selected.length;at+=4){
-        const checked=await Promise.allSettled(selected.slice(at,at+4).map(r=>sdkRecordCompleted(r)));
+        const checked=await Promise.allSettled(selected.slice(at,at+4).map(r=>sdkRecordCompleted(r,resolutionKeys)));
         if(checked.some(r=>r.status==='rejected'))throw Error('CAPTURE_STATUS_HISTORY_UNAVAILABLE');
         sdkCompleted+=checked.filter(r=>r.status==='fulfilled'&&r.value).length;
       }
@@ -763,13 +812,29 @@ export function registerCaptureFunctions(
     return { automaticRecovery:automaticRecovery.snapshot(),policy, inbox, legacyOutbox:await inspectOutbox(), progress:progress(), sinceStart: { ...counters }, lastSweepAt, lastPruneAt, lastBootDrain, spool };
   }
 
+  sdk.registerFunction('mem::capture-inspect-uncertain', async (input: unknown) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('INVALID_UNCERTAIN_INSPECTION');
+    const { _caller_worker_id, ...selection } = input as Record<string, unknown>;
+    if ((_caller_worker_id !== undefined && typeof _caller_worker_id !== 'string') || !validUncertainInspection(selection)) throw new Error('INVALID_UNCERTAIN_INSPECTION');
+    return inspectUncertainCapture(kv, selection);
+  });
   sdk.registerFunction("mem::capture-restore-sdk",(input:{payload:HookPayload;eventId:string})=>trackWork(()=>backgroundTask(restoreSdkSource)(input)));
   sdk.registerFunction('mem::capture-reconcile-sdk',input=>{
     const selection=sdkReconciliationInvocation(input);
     return trackWork(()=>backgroundTask(async()=>{
       try{
-        const result=await sdkReconciliation.reconcile(selection);
-        if(result.status==='reconciled'){counters.recovered++;updateActiveInbox(selection.key,false);}
+        let result:Awaited<ReturnType<typeof sdkReconciliation.reconcile>>;
+        try{result=await sdkReconciliation.reconcile(selection);}
+        finally{
+          // Reconcile releases its capture:key lock before taking admission; never
+          // invert capture/restore's key -> admission order. A partial SDK source
+          // remains evidence, not a claim of completed reconciliation.
+          await withKeyedLock('capture:inbox-admission',async()=>{
+            try{if((await kv.get<InboxRecord>(KV.captureInbox,selection.key))?.storageCompletion==='sdk')inboxKeys?.delete(selection.key);}
+            catch{inboxKeys=null;}
+          });
+        }
+        if(result.status==='reconciled'){counters.recovered++;updateActiveInbox(selection.key,false);trackMaintenance(()=>automaticRecovery.refreshSdkReviews());}
         return result;
       }catch(error){const code=(error as {code?:unknown})?.code;return{completed:false,completion:'sdk',verified:false,synced:false,code:typeof code==='string'&&/^SDK_RECONCILIATION_[A-Z_]+$/.test(code)?code:'SDK_RECONCILIATION_UNAVAILABLE'};}
     })());
@@ -784,7 +849,7 @@ export function registerCaptureFunctions(
 
   sdk.registerFunction("mem::capture-retry", async (input: { eventId?: string; key?: string; all?: boolean; requestId?: string } = {}) => {
     if(input.requestId && (!input.eventId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.requestId))) throw new Error("INVALID_RETRY_REQUEST");
-    const records = (await kv.list<InboxRecord>(KV.captureInbox)).filter(Boolean);
+    const records = (await listCaptureInboxMetadata(kv)).filter(Boolean);
     refreshInbox(records);
     if(input.eventId && input.requestId && !records.some(r=>input.key?r.key===input.key:r.eventId===input.eventId)){
       const h=(await kv.list<CaptureReviewHistory>(KV.captureReview)).find(h=>(input.key?h.key===input.key:h.eventId===input.eventId)&&h.eventId===input.eventId&&h.requests[input.requestId!]);
@@ -809,15 +874,12 @@ export function registerCaptureFunctions(
   sdk.registerFunction("mem::capture-list", async (input: { status?: InboxState | "completed"; limit?: number; review?: boolean; eventId?: string; key?: string; cursor?: string; historyOffset?: number } = {}) => {
     if(input.review) return captureReviewPage(kv,input);
     const limit = Math.min(Math.max(1, Number(input.limit) || 50), 500);
-    const records = (await kv.list<InboxRecord>(KV.captureInbox))
+    const records = (await listCaptureInboxMetadata(kv))
       .filter((r) => r && (!input.status || r.status === input.status))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return {
       total: records.length,
-      items: records.slice(0, limit).map(({ payload, ...rest }) => ({
-        ...rest,
-        preview: previewPayload(payload),
-      })),
+      items: records.slice(0, limit).map(({ reviewPreview, ...rest }) => rest),
     };
   });
 
@@ -877,15 +939,4 @@ function spoolPayload(body: Record<string, unknown>): HookPayload | null {
   const timestamp = str(body["timestamp"]);
   if (!hookType || !sessionId || !project || !cwd || !timestamp) return null;
   return { hookType: hookType as HookPayload["hookType"], sessionId, project, cwd, timestamp, data: body["data"] };
-}
-
-function previewPayload(payload: HookPayload | undefined): string {
-  if (!payload) return "";
-  const d = payload.data && typeof payload.data === "object" ? (payload.data as Record<string, unknown>) : {};
-  const label = typeof d["tool_name"] === "string" ? d["tool_name"] : payload.hookType;
-  let text = "";
-  try {
-    text = JSON.stringify(d["tool_input"] ?? d["prompt"] ?? payload.data ?? "");
-  } catch {}
-  return `${label}: ${text}`.slice(0, 160);
 }

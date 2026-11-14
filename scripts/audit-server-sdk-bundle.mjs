@@ -3,7 +3,7 @@ import {join,relative,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import ts from 'typescript';
-const versions={'iii-sdk':'0.25.0','@iii-dev/helpers':'0.25.0',yaml:'2.8.1',json5:'2.2.3'};
+const versions={'iii-sdk':'0.25.1','@iii-dev/helpers':'0.25.1',yaml:'2.8.1',json5:'2.2.3'};
 export async function auditServerSdkBundle(root){
  const files={},externalSpecifiers={};let totalBytes=0;
  for(const [name,version]of Object.entries(versions)){const installed=JSON.parse(await readFile(join(root,'node_modules',name,'package.json'),'utf8'));if(installed.version!==version)throw Error('SDK_SERVER_VERSION_MISMATCH');}

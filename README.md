@@ -686,7 +686,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory runs on Windows 10/11. WSL2 follows the Linux path and can install the pinned engine automatically. Native Windows requires the pinned iii-engine v0.25.0 binary installed manually; download the matching archive from the [iii v0.25.0 release page](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0), verify its checksum, and place `iii.exe` on `PATH` (for example `%USERPROFILE%\.local\bin\iii.exe`). The CLI does not extract the Windows ZIP automatically.
+agentmemory runs on Windows 10/11. WSL2 follows the Linux path and can install the pinned engine automatically. Native Windows requires the pinned iii-engine v0.25.1 binary installed manually; download the matching archive from the [iii v0.25.1 release page](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1), verify its checksum, and place `iii.exe` on `PATH` (for example `%USERPROFILE%\.local\bin\iii.exe`). The CLI does not extract the Windows ZIP automatically.
 
 Native Windows automated MCP wiring supports only `agentmemory connect copilot-cli`. For other native Windows agents, use the manual MCP block from [Other agents](#other-agents). Run `connect` inside WSL only when the target agent is installed in that same WSL environment.
 
@@ -1221,7 +1221,7 @@ The complete reference is [`.env.example`](.env.example), including provider cre
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/tags/light/section-api.svg"><img src="assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 endpoints on port `3111`. The REST API binds to `127.0.0.1` by default. Protected endpoints require `Authorization: Bearer <secret>`, and mesh sync endpoints require an explicitly set `AGENTMEMORY_SECRET` on both peers.
+161 endpoints on port `3111`. The REST API binds to `127.0.0.1` by default. Protected endpoints require `Authorization: Bearer <secret>`, and mesh sync endpoints require an explicitly set `AGENTMEMORY_SECRET` on both peers.
 
 **Authentication is on by default.** When `AGENTMEMORY_SECRET` is not set (in the shell or in `~/.agentmemory/.env`), the CLI generates a random secret on first start and stores it at `~/.agentmemory/secret`, mirrored to the selected data directory as `secret`, with mode `0600` (the platform-specific default data directory is described above). Bundled clients read the canonical secret first when they talk to a local server: the CLI, the viewer, the hooks under `plugin/scripts`, the MCP server and the `@agentmemory/mcp` shim, the configs written by `agentmemory connect`, and the bundled OpenCode, Pi, OpenClaw, Hermes and filesystem-watcher integrations. The stored secret is only sent to loopback URLs (`localhost`, `127.0.0.0/8`, `::1`). An explicit `AGENTMEMORY_SECRET` always wins, and remote clients need the secret set in their environment. Repository-based Docker self-host deployments and the `deploy/` entrypoints generate and export their own secret. To call the API by hand:
 

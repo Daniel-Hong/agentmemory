@@ -206,11 +206,13 @@ export class GraphIndexMigrationController {
       let job = readJob(await state.get(KV.graphIndexMigration, GRAPH_INDEX_MIGRATION_KEY));
       if (job?.generation !== generation) job = null;
       const unfinishedCheckpoint = job?.buildId === control?.buildId && (job?.state === "paused" || Boolean(job?.error));
-      if (control?.status === "ready" && !control.pending && !control.batchPending && !unfinishedCheckpoint) return;
+      const upgradeLayout = control?.schema === 2 && control.status === "ready" &&
+        !control.pending && !control.batchPending && !unfinishedCheckpoint && !options.resume && options.allowLegacyScan;
+      if (control?.status === "ready" && !control.pending && !control.batchPending && !unfinishedCheckpoint && !upgradeLayout) return;
       if (options.resume && !job) throw new GraphIndexMigrationError("no-job", "No graph index migration exists. Run graph-index migrate --allow-legacy-scan first.");
       if (options.resume && job?.sealed && !control) throw new GraphIndexMigrationError("invalid-state", "The sealed build control is missing. Start a new build with graph-index migrate --allow-legacy-scan.");
       if (options.resume && control?.status === "paused") throw new GraphIndexMigrationError("invalid-state", "The index requires a new build. Run graph-index migrate --allow-legacy-scan after fixing the reported data.");
-      if (!job || replaceCorruptControl || (!control && job.sealed) || control?.status === "paused" || (control && control.buildId !== job.buildId) ||
+      if (!job || replaceCorruptControl || upgradeLayout || (!control && job.sealed) || control?.status === "paused" || (control && control.buildId !== job.buildId) ||
         (!options.resume && options.allowLegacyScan && control?.batchPending)) {
         if (options.resume) throw new GraphIndexMigrationError("invalid-state", "The graph index build changed. Start an explicit migration again.");
         if (!options.allowLegacyScan) throw new GraphIndexMigrationError("consent-required", "Initial discovery requires allowLegacyScan: true; complete legacy graph scopes are read during maintenance.");
@@ -218,14 +220,14 @@ export class GraphIndexMigrationController {
         job = { schema: 1, jobId: randomUUID(), buildId: randomUUID(), generation, state: "discovering", sealed: false,
           phase: "nodes", page: 0, offset: 0, processed: 0, totals: { nodes: 0, edges: 0, history: 0 }, pages: { nodes: 0, edges: 0, history: 0 }, startedAt: now, updatedAt: now };
         await state.set(KV.graphIndexMigration, GRAPH_INDEX_MIGRATION_KEY, job);
-        await initializeGraphIndex(state, { buildId: job.buildId, status: "building" });
+        await initializeGraphIndex(state, { buildId: job.buildId, status: "building", schema: 3 });
       } else {
         if (!job.sealed && !options.allowLegacyScan) throw new GraphIndexMigrationError("consent-required", "Discovery did not finish. Resume with --allow-legacy-scan to authorize another complete legacy scan.");
         if (!control) {
           // A previous control write may have been lost after other index writes succeeded.
           job = { ...job, buildId: randomUUID() };
           await this.save(state, job);
-          await initializeGraphIndex(state, { buildId: job.buildId, status: "building" });
+          await initializeGraphIndex(state, { buildId: job.buildId, status: "building", schema: 3 });
         }
         job = { ...job, state: job.sealed ? "building" : "discovering", error: undefined, updatedAt: new Date().toISOString() };
         await state.set(KV.graphIndexMigration, GRAPH_INDEX_MIGRATION_KEY, job);
@@ -283,7 +285,7 @@ export class GraphIndexMigrationController {
       job.phase = phase;
       await this.assertActive(state, job);
       await this.save(state, job);
-      const rows = await state.list<{ id?: unknown }>(SCOPES[phase]);
+      const keys = await state.listKeys(SCOPES[phase]);
       await this.assertActive(state, job);
       let ids: string[] = [];
       const flush = async () => {
@@ -292,12 +294,12 @@ export class GraphIndexMigrationController {
         await state.set(KV.graphIndexManifest, graphIndexManifestKey(job.jobId, phase, page.page), page);
         job.pages[phase]++; job.totals[phase] += ids.length; ids = [];
       };
-      for (const row of rows) {
-        if (!row || !validId(row.id)) throw new GraphIndexMigrationError("invalid-state", "A legacy graph record has an invalid or oversized ID; repair it before migrating.");
-        if (ids.length >= GRAPH_INDEX_MANIFEST_MAX_IDS || Buffer.byteLength(JSON.stringify(ids)) + Buffer.byteLength(JSON.stringify(row.id)) + 256 > GRAPH_INDEX_MANIFEST_MAX_BYTES) {
+      for (const id of keys) {
+        if (!validId(id)) throw new GraphIndexMigrationError("invalid-state", "A legacy graph record has an invalid or oversized ID; repair it before migrating.");
+        if (ids.length >= GRAPH_INDEX_MANIFEST_MAX_IDS || Buffer.byteLength(JSON.stringify(ids)) + Buffer.byteLength(JSON.stringify(id)) + 256 > GRAPH_INDEX_MANIFEST_MAX_BYTES) {
           await flush(); await this.assertActive(state, job); await yieldToEventLoop();
         }
-        ids.push(row.id);
+        ids.push(id);
       }
       await flush();
     }

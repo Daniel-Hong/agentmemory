@@ -14,16 +14,16 @@ export const backgroundTask=fn=>(...args)=>backgroundControl?backgroundControl.r
 export function createBackgroundControl({clock=Date.now}={}){
  const context=new AsyncLocalStorage(),active=new Set();
  let kv,drain=async()=>{},status='initializing',requested=true,error=null,diagnostics=null,completion=null,changes=Promise.resolve();
- let transition=null,holds=new Set(),revision=0,recovery={attempts:0,nextAttemptAt:0};
+ let transition=null,holds=new Set(),revision=0,storageRevision=0,transitionsPending=0,recovery={attempts:0,nextAttemptAt:0};
  const record=(paused,resumePending,remaining=holds)=>({version:2,paused,resumePending,holds:[...remaining].sort(),recovery:{...recovery}});
  const writeRecord=(paused,resumePending,remaining)=>kv.set(NAMESPACE,'manual-pause',record(paused,resumePending,remaining));
- const snapshot=()=>({formatVersion:2,holds:[...holds].sort(),recovery:{...recovery,maxAttempts:MEMORY_RECOVERY_MAX_ATTEMPTS},status,pausedRequested:requested,activeOperations:active.size,error,diagnostics,
-   transition:transition?{...transition,elapsedMs:Math.max(0,(transition.completedAt??clock())-transition.startedAt),stageElapsedMs:Math.max(0,(transition.completedAt??clock())-transition.stageStartedAt)}:null});
- function begin(action){transition={action,stage:'request',startedAt:clock(),stageStartedAt:clock()};error=null;diagnostics=null;}
+ const snapshot=()=>({formatVersion:2,holds:[...holds].sort(),recovery:{...recovery,maxAttempts:MEMORY_RECOVERY_MAX_ATTEMPTS},status:holds.has('storage_error')?'error':status,pausedRequested:requested,activeOperations:active.size,error:holds.has('storage_error')?'background_storage_unavailable':error,diagnostics:holds.has('storage_error')?(diagnostics??{errorCode:'BACKGROUND_STORAGE_HOLD_RETAINED'}):diagnostics,
+   transition:transition?{...transition,pending:transitionsPending>0||!!completion,elapsedMs:Math.max(0,(transition.completedAt??clock())-transition.startedAt),stageElapsedMs:Math.max(0,(transition.completedAt??clock())-transition.stageStartedAt)}:null});
+ function begin(action){transition={action,stage:'request',startedAt:clock(),stageStartedAt:clock()};if(!holds.has('storage_error')){error=null;diagnostics=null;}}
  function stage(value){transition.stage=value;transition.stageStartedAt=clock();if(value==='complete')transition.completedAt=clock();}
  const safeCode=value=>typeof value==='string'&&/^[A-Za-z0-9_.:-]{1,80}$/.test(value)?value:null;
  function fail(e){
-   holds.add('storage_error');requested=true;status='error';error='background_storage_unavailable';if(transition)transition.completedAt=clock();
+   revision++;storageRevision++;holds.add('storage_error');requested=true;status='error';error='background_storage_unavailable';if(transition)transition.completedAt=clock();
    const details=e?.diagnostics??{};
    diagnostics={errorCode:safeCode(e?.code)??'BACKGROUND_STORAGE_UNAVAILABLE',causeCode:safeCode(details.errorCode),stage:safeCode(details.stage)??transition?.stage??'request'};
    for(const name of ['category','phase'])if(safeCode(details[name]))diagnostics[name]=details[name];
@@ -53,7 +53,7 @@ export function createBackgroundControl({clock=Date.now}={}){
    await drain();
    await persist();
    await writeRecord(true,false);await confirmPauseRecord();
-   status='paused';error=null;diagnostics=null;stage('complete');
+   status='paused';if(!holds.has('storage_error')){error=null;diagnostics=null;}stage('complete');
   })().catch(async e=>{fail(e);try{await writeRecord(true,true);await confirmPauseRecord(false);}catch{}}).finally(()=>{completion=null;});
  }
  return {
@@ -71,19 +71,31 @@ export function createBackgroundControl({clock=Date.now}={}){
      await writeRecord(false,true);await confirmPauseRecord(false);
      requested=false;status='running';
    }else{requested=true;status='paused';}
-  },snapshot,isPaused:()=>requested,
+  },snapshot,isPaused:()=>requested,generation:()=>storageRevision,
   run(fn){return requested?Promise.resolve(deferred()):track(fn);},
+  runVectorWrite(fn){
+   const blocked=()=>holds.has('storage_error')||status==='resuming'||status==='initializing';
+   const denied=()=>({success:false,error:'vector_recovery_paused',retryable:true});
+   if(blocked())return Promise.resolve(denied());
+   const admitted=storageRevision;
+   return track(async()=>{
+    if(blocked())return denied();
+    try{const result=await fn();if(storageRevision!==admitted||holds.has('storage_error'))return{success:false,error:'vector_recovery_interrupted',partial:true,retryable:false,result};return result;}
+    catch(error){if(storageRevision!==admitted||holds.has('storage_error')||error?.code==='VECTOR_RECOVERY_PAUSED')return{success:false,error:'vector_recovery_interrupted',partial:true,retryable:false};throw error;}
+   });
+  },
   infer(fn){
    // An admitted task finishes its current unit, including any subsequent writes.
    if(context.getStore()?.active)return Promise.resolve().then(fn);
    if(requested)return Promise.reject(Object.assign(Error('background_paused'),{providerUnavailable:true,code:'BACKGROUND_PAUSED'}));
    return track(fn);
   },
-  change(action,{source='manual',canResume}={}){
+  change(action,{source='manual',canResume,beforeResume}={}){
    if(!['manual','deployment','memory'].includes(source)||!['pause','resume'].includes(action))return Promise.reject(Error('invalid_background_action'));
    // Close admission at request time, including while another transition awaits disk.
    const requestRevision=revision,added=action==='pause'&&!holds.has(source);
    if(action==='pause'){holds.add(source);requested=true;revision++;}
+   transitionsPending++;
    const operation=changes.then(async()=>{
     if(action==='pause'){
      if((status==='paused'||status==='pausing')&&!added)return snapshot();
@@ -93,19 +105,33 @@ export function createBackgroundControl({clock=Date.now}={}){
      catch(e){fail(e);throw Error(error);}
     }else{
      if(revision!==requestRevision)return snapshot();
-     if(status==='pausing'||completion)throw Error('background_draining');
+     if(status==='pausing'||completion||(beforeResume&&active.size))throw Error('background_draining');
      const automatic=source==='memory';
-     if(automatic&&(status!=='paused'||holds.size!==1||!holds.has('memory')||recovery.attempts>=MEMORY_RECOVERY_MAX_ATTEMPTS||clock()<recovery.nextAttemptAt||typeof canResume!=='function'))return snapshot();
+     const memoryWithStorage=automatic&&holds.size===2&&holds.has('storage_error')&&holds.has('memory');
+     const protectedMemoryRelease=automatic&&holds.has('storage_error')&&holds.has('memory')&&(holds.has('manual')||holds.has('deployment'));
+     if(automatic){
+      const eligible=memoryWithStorage||protectedMemoryRelease?status==='paused'||status==='error':status==='paused'&&holds.size===1&&holds.has('memory');
+      if(!eligible||recovery.attempts>=MEMORY_RECOVERY_MAX_ATTEMPTS||clock()<recovery.nextAttemptAt||typeof canResume!=='function')return snapshot();
+      if(protectedMemoryRelease&&active.size)return snapshot();
+     }
      if(status==='running')return snapshot();
      const startingRevisionForRelease=revision,remaining=new Set(holds);
      if(source==='manual'){for(const h of ['manual','legacy_unknown','storage_error'])remaining.delete(h);}
      else remaining.delete(source);
-     if(remaining.size){
+     if(remaining.size&&!memoryWithStorage){
+      // Do not clear storage recovery while other holds prevent a full resume.
+      if(holds.has('storage_error')&&!remaining.has('storage_error'))throw Error('background_storage_recovery_requires_full_resume');
+      if(automatic){
+       if(!await canResume()||revision!==startingRevisionForRelease)return snapshot();
+       recovery={attempts:recovery.attempts+1,nextAttemptAt:clock()+60000*2**recovery.attempts};
+      }
       if(source==='manual')recovery={attempts:0,nextAttemptAt:0};
       begin('resume');
       try{await writeRecord(true,true);await confirmPauseRecord();await persist();
        // Concurrent pause intent must survive even a partial hold release.
-       if(revision===startingRevisionForRelease){holds=remaining;}
+       if(revision===startingRevisionForRelease&&(!protectedMemoryRelease||await canResume())&&revision===startingRevisionForRelease){
+        holds=remaining;if(protectedMemoryRelease)revision++;
+       }
        await writeRecord(true,false);await confirmPauseRecord();status='paused';stage('complete');return snapshot();
       }catch(e){fail(e);try{await writeRecord(true,true);await confirmPauseRecord(false);}catch{}throw Error(error);}
      }
@@ -120,6 +146,13 @@ export function createBackgroundControl({clock=Date.now}={}){
      try{
        await writeRecord(true,true);await confirmPauseRecord();
        resumePhase='resume_storage';await persist();precedingWritesVerified=true;
+       if(memoryWithStorage){
+        // Keep both holds in the crash record. Only this worker has observed stable memory.
+        if(await allowed()&&revision===startingRevision){
+         holds=remaining;revision++;
+        }
+        status='paused';stage('complete');return snapshot();
+       }
        if(!await allowed()||revision!==startingRevision){
         await writeRecord(true,false);await confirmPauseRecord();status='paused';stage('complete');return snapshot();
        }
@@ -128,18 +161,24 @@ export function createBackgroundControl({clock=Date.now}={}){
        if(!await allowed()||revision!==startingRevision){
         await writeRecord(true,false);await confirmPauseRecord();status='paused';stage('complete');return snapshot();
        }
+       if(beforeResume){
+        holds=remaining;if(!holds.has('storage_error')){error=null;diagnostics=null;}stage('vector_recovery');
+        if(!await beforeResume())throw Object.assign(Error('vector_recovery_unavailable'),{code:'VECTOR_RECOVERY_UNAVAILABLE'});
+        if(!await allowed()||revision!==startingRevision){await writeRecord(true,false);await confirmPauseRecord();status='paused';stage('complete');return snapshot();}
+       }
      }
      catch(e){
        fail(e);diagnostics.phase=resumePhase;diagnostics.precedingWritesVerified=precedingWritesVerified;diagnostics.rollbackVerified=false;
        try{await writeRecord(true,true);await confirmPauseRecord();diagnostics.rollbackVerified=true;}
        catch(rollbackError){diagnostics.rollbackErrorCode=safeCode(rollbackError?.code)??'BACKGROUND_STORAGE_UNAVAILABLE';}
+       if(e?.code==='VECTOR_RECOVERY_UNAVAILABLE')throw e;
        throw Error(error);
      }
      holds=remaining;requested=false;status='running';error=null;diagnostics=null;stage('complete');
     }
     return snapshot();
    });
-   changes=operation.catch(()=>{});return operation;
+   const tracked=operation.finally(()=>{transitionsPending--;});changes=tracked.catch(()=>{});return tracked;
   },commitCleanShutdown(){
    // The caller must first stop ingress/producers and verify the full disk fence.
    const operation=changes.then(async()=>{
@@ -155,15 +194,22 @@ export function createBackgroundControl({clock=Date.now}={}){
 }
 
 const INFERENCE_FUNCTIONS=new Set(['mem::session-finalize','mem::summary-recover','mem::summary-repair','mem::compression-retry','mem::summarize','mem::compress','mem::graph-extract','mem::consolidate','mem::consolidate-pipeline','mem::reflect','mem::slot-reflect','mem::flow-compress','mem::crystallize','mem::skill-extract','mem::enrich-window','mem::temporal-graph-extract','mem::compress-file','mem::expand-query','mem::snapshot-create']);
+const FOREGROUND_VECTOR_WRITES=new Set(['mem::import','mem::replay::import-jsonl','mem::observe','mem::remember','mem::forget','mem::evolve','mem::evict','mem::snapshot-restore','mem::retention-evict','mem::auto-forget','mem::governance-delete','mem::governance-bulk']);
 export function controlBackgroundFunctions(sdk){
  const register=sdk.registerFunction.bind(sdk);
- sdk.registerFunction=(id,handler,...rest)=>register(id,INFERENCE_FUNCTIONS.has(id)?backgroundTask(handler):handler,...rest);
+ sdk.registerFunction=(id,handler,...rest)=>{
+  if(FOREGROUND_VECTOR_WRITES.has(id)){
+   const guarded=(...args)=>backgroundControl?backgroundControl.runVectorWrite(()=>handler(...args)):handler(...args);
+   return register(id,guarded,...rest);
+  }
+  return register(id,INFERENCE_FUNCTIONS.has(id)?backgroundTask(handler):handler,...rest);
+ };
 }
 
 export function backgroundViewerRequestAllowed(req){
  return req.headers?.['x-agentmemory-background']==='1'&&/^application\/json(?:;|$)/i.test(req.headers?.['content-type']||'')&&!['cross-site','same-site'].includes(req.headers?.['sec-fetch-site']);
 }
-export function registerBackgroundControlApi(sdk,secret,control){
+export function registerBackgroundControlApi(sdk,secret,control,onExplicitResume){
  function auth(req){
   if(!secret)return{status_code:503,body:{error:'background_control_requires_authentication'}};
   const a=Buffer.from(req.headers?.authorization||req.headers?.Authorization||''),b=Buffer.from('Bearer '+secret);
@@ -177,8 +223,13 @@ export function registerBackgroundControlApi(sdk,secret,control){
    if(!backgroundViewerRequestAllowed(req))return{status_code:403,body:{error:'background_control_marker_required'}};
    const body=req.body;
    if(!body||Array.isArray(body)||Object.keys(body).some(k=>!['action','reason'].includes(k))||body.reason!==undefined&&body.reason!=='deployment'||!['pause','resume'].includes(body.action))return{status_code:400,body:{error:'invalid_background_action'}};
-   try{return{status_code:202,body:{success:true,control:await control.change(body.action,{source:body.reason??'manual'})}};}
-   catch(e){return{status_code:e.message==='background_draining'?409:503,body:{success:false,error:e.message==='background_draining'?'background_draining':'background_storage_unavailable',control:control.snapshot()}};}
+   try{
+    const source=body.reason??'manual';
+    const beforeResume=body.action==='resume'&&onExplicitResume?()=>onExplicitResume(source==='manual'):undefined;
+    const snapshot=await control.change(body.action,{source,beforeResume});
+    return{status_code:202,body:{success:true,control:snapshot,...(body.action==='resume'&&snapshot.status==='running'&&onExplicitResume?{vectorRecovery:'replay_complete_backfill_pending'}:{})}};
+   }
+   catch(e){const conflict=['background_draining','background_storage_recovery_requires_full_resume'].includes(e?.message);return{status_code:conflict?409:503,body:{success:false,error:e?.code==='VECTOR_RECOVERY_UNAVAILABLE'?'vector_recovery_unavailable':conflict?e.message:'background_storage_unavailable',control:control.snapshot()}};}
   });
   sdk.registerTrigger({type:'http',function_id:id,config:{api_path:'/agentmemory/background/control',http_method:method,middleware_function_ids:['middleware::api-auth']}});
  }

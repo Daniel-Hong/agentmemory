@@ -16,7 +16,7 @@ export function createMemoryPressureGuard({control,readSample=readHostMemory,sch
  async function readFresh(){
   const sequence=++sampleSequence,before=clock(),m=await readSample(),now=clock();
   if(sequence!==sampleSequence||!m||!Number.isFinite(m.total)||m.total<=0||!Number.isFinite(m.available)||m.available<0||m.available>m.total||!Number.isFinite(now)||now<before||now-before>10000)throw Error('memory_sample_unavailable');
-  const reserve=Math.max(2*GiB,m.total*.20),critical=Math.max(GiB/2,m.total*.05),recoveryBytes=Math.max(3*GiB,m.total*.25);
+  const reserve=Math.max(2*GiB,m.total*.18),critical=Math.max(GiB/2,m.total*.05),recoveryBytes=Math.max(3*GiB,m.total*.22);
   state={...state,level:m.available<critical?'critical':m.available<reserve?'high':'normal',totalBytes:m.total,availableBytes:m.available,reserveBytes:reserve,criticalBytes:critical,recoveryBytes,sampleError:false,checkedAt:now};
   return{now,recovered:m.available>recoveryBytes};
  }
@@ -36,7 +36,9 @@ export function createMemoryPressureGuard({control,readSample=readHostMemory,sch
    if(pendingRecovery){state.recoveryStatus='recovering';return;}
    const c=control.snapshot();
    if(!c.holds?.includes('memory')){state.recoveryStatus='observing';return;}
-   if(c.holds.length!==1||c.status==='error'){state.recoveryStatus='held';return;}
+   const memoryWithStorage=c.holds.length===2&&c.holds.includes('storage_error');
+   const protectedMemoryRelease=c.holds.includes('storage_error')&&(c.holds.includes('manual')||c.holds.includes('deployment'));
+   if(!memoryWithStorage&&!protectedMemoryRelease&&(c.holds.length!==1||c.status==='error')){state.recoveryStatus='held';return;}
    if(c.recovery.attempts>=c.recovery.maxAttempts){state.recoveryStatus='attempt_limit';return;}
    if(now<c.recovery.nextAttemptAt){state.recoveryStatus='backoff';return;}
    state.recoveryStatus='stabilizing';

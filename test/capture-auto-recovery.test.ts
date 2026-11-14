@@ -17,7 +17,7 @@ async function setup(){
  const fingerprint=createHash('sha256').update(obs.title+' '+obs.narrative).digest('hex');
  state.set(KV.captureInbox+'|'+key,inbox);state.set(KV.captureReview+'|'+key,history);state.set(KV.observations(sessionId)+'|'+observationId,obs);state.set('mem:embedding-committed:v1|'+observationId,{kind:'observation',id:observationId,sessionId,fingerprint});
  const durability={mutate:(_s:string,_k:string,fn:()=>unknown)=>fn(),waitForKeys:async(_kv:any,keys:any[],opts:any)=>{calls++;if(onProof&&keys.some(x=>x.scope===KV.observations(sessionId))){const fn=onProof;onProof=undefined;await fn();}if(failProof&&keys.some(x=>x.scope===captureEventScope(key))&&state.has(captureEventScope(key)+'|'+key))throw Error('state_durability_timeout');if(opts?.expectedValues)for(let i=0;i<keys.length;i++)expect(await sdk.trigger({function_id:'state::get',payload:keys[i]})).toEqual(opts.expectedValues[i]);return {synced:true,mutationFailures:0};}};
- const kv=new StateKV(sdk as never,{writerLease:lease,durability:durability as never});let admitted=true;
+ const kv=new StateKV(sdk as never,{writerLease:lease,durability:durability as never});await kv.set(KV.captureReview,key,history);let admitted=true;
  const options={enabled:true,writerOwned:()=>true,admitted:()=>admitted,indexReady:()=>true,now:()=>clock};
  return {kv,state,key,lease,evidence,storePath:d,sdk,durability,sessionId,observationId,eventId,obs,history,options,advance:()=>clock+=3600000,failProof:(v:boolean)=>failProof=v,onProof:(fn:()=>Promise<void>)=>onProof=fn,admit:(v:boolean)=>admitted=v,calls:()=>calls};
 }

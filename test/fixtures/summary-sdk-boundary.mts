@@ -5,7 +5,7 @@ import {performance} from 'node:perf_hooks';
 import assert from 'node:assert/strict';
 const root=resolve(process.env.AM_SYNTHETIC_ROOT??'');let rootVerified=false,state:string|undefined,WebSocketServer:any,registerWorker:any,StateKV:any,registerConsolidationPipelineFunction:any,registerEvictFunction:any;
 const require=createRequire(new URL('../../node_modules/iii-sdk/dist/index.mjs',import.meta.url));const net=require('node:net');
-const clients:any[]=[],servers:any[]=[],ports:number[]=[],active=new Set<Promise<unknown>>();const result:any={sdk:'0.25.0',engine:'synthetic WebSocket protocol server, no installed/operating engine'};
+const clients:any[]=[],servers:any[]=[],ports:number[]=[],active=new Set<Promise<unknown>>();const result:any={sdk:'0.25.1',engine:'synthetic WebSocket protocol server, no installed/operating engine'};
 const started=performance.now(),events:any[]=[];let maxRss=0,lastSample=0,stopRequested=false;process.stdin.on('data',()=>{stopRequested=true;});
 function budget(stage:string){
  const u=process.resourceUsage(),now=performance.now(),rss=process.memoryUsage().rss;maxRss=Math.max(maxRss,rss);
@@ -22,6 +22,7 @@ async function server(mode:string){
   let value:any=null;const key=p.scope+'/'+p.key;
   if(x.function_id==='state::get')value=data.get(key)??null;
   else if(x.function_id==='state::set'){value={old_value:data.get(key)??null,new_value:p.value};data.set(key,p.value);}
+  else if(x.function_id==='state::list_keys')value={keys:[...data.keys()].filter(k=>k.startsWith(p.scope+'/')).map(k=>k.slice(p.scope.length+1))};
   else if(x.function_id==='state::list')value=p.scope==='mem:sessions'?[{id:'synthetic_s24',project:'synthetic',cwd:'/synthetic',startedAt:'2020-01-01T00:00:00Z',status:'completed',observationCount:0}]:[];
   else if(x.function_id==='state::delete'){value={old_value:data.get(key)??null};data.delete(key);}
   else{socket.send(JSON.stringify({type:'invocationresult',invocation_id:x.invocation_id,error:{code:'unexpected_synthetic_function',message:'fixture refused unsupported function'}}));return;}

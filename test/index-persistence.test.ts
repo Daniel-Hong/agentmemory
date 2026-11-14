@@ -387,6 +387,54 @@ describe("IndexPersistence bucketed vector storage", () => {
     expect(loaded).toEqual({ vector: null, state: "unavailable", savedAt: null });
   });
 
+  it.each([["sdk", 1], ["disk", 8]] as const)(
+    "limits overlapping %s checkpoint bucket reads to %i",
+    async (completion, expectedPeak) => {
+      const bucketCount = 12;
+      await kv.set(INDEX_SCOPE, META_KEY, { v: 3, bucketCount, count: 1 });
+      const entry = { id: "v_last", s: "session", e: Buffer.from(vec([1, 2, 3]).buffer).toString("base64") };
+      await kv.set(vectorBucketScope(bucketCount - 1), entry.id, entry);
+      let active = 0, peak = 0;
+      const store = {
+        ...kv,
+        durability: { completion },
+        async list<T>(scope: string) {
+          peak = Math.max(peak, ++active);
+          try {
+            return await kv.list<T>(scope);
+          } finally {
+            active--;
+          }
+        },
+      };
+
+      const loaded = await new IndexPersistence(store as never, new VectorIndex()).load();
+      expect(peak).toBe(expectedPeak);
+      expect(loaded.state).toBe("buckets");
+      expect(loaded.vector?.get(entry.id)?.embedding).toEqual(vec([1, 2, 3]));
+    },
+  );
+
+  it("stops SDK checkpoint reads on the first failure without publishing a partial index", async () => {
+    await kv.set(INDEX_SCOPE, META_KEY, { v: 3, bucketCount: 12, count: 0 });
+    kv.ops.length = 0;
+    const visited: string[] = [];
+    const store = {
+      ...kv,
+      durability: { completion: "sdk" },
+      async list<T>(scope: string) {
+        visited.push(scope);
+        if (scope === vectorBucketScope(2)) throw new Error("SDK read timed out");
+        return kv.list<T>(scope);
+      },
+    };
+
+    const loaded = await new IndexPersistence(store as never, new VectorIndex()).load();
+    expect(loaded).toEqual({ vector: null, state: "unavailable", savedAt: null });
+    expect(visited).toEqual([0, 1, 2].map(vectorBucketScope));
+    expect(kv.ops.every(({ op }) => op === "list")).toBe(true);
+  });
+
   it("treats a missing store as empty, including adapters that return undefined", async () => {
     const undefinedKv = { ...kv, get: async () => undefined };
     const loaded = await new IndexPersistence(undefinedKv as never, new VectorIndex(), { bucketSize: 16 }).load();

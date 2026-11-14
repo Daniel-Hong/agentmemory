@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { KV } from '../state/schema.js';
 import type { StateKV } from '../state/kv.js';
-import { withKeyedLock } from '../state/keyed-mutex.js';
 import type { InboxRecord } from '../functions/capture.js';
+import { withKeyedLock } from '../state/keyed-mutex.js';
+import { listCaptureInboxMetadata } from './inbox-metadata.js';
 import { captureEventScope } from './event-record.js';
 import type { CaptureReviewHistory, CaptureRetryJob as Job, CaptureRetryJobItem as Item, CaptureRetryJobItemState as ItemState } from '../types.js';
 
@@ -44,7 +45,7 @@ export function createCaptureRetryJobs(kv: StateKV, retry: (key: string, force: 
         const running=await latest();if(running&&active(running)){
           const now=new Date().toISOString();await save({id:input.requestId,aliasOf:running.id,all:input.all===true,...(input.eventId?{eventId:input.eventId}:{}),...(input.key?{key:input.key}:{}),createdAt:now,updatedAt:now});return view(running)!;
         }
-        const records=(await kv.list<InboxRecord>(KV.captureInbox)).filter(r=>r.status==='dead'&&(input.all||r.eventId===input.eventId&&(!input.key||r.key===input.key)));
+        const records=(await listCaptureInboxMetadata(kv)).filter(r=>r.status==='dead'&&(input.all||r.eventId===input.eventId&&(!input.key||r.key===input.key)));
         if(records.length>10000)throw Error('CAPTURE_JOB_TOO_LARGE');
         const now=new Date().toISOString();const job:Job={id:input.requestId,all:input.all===true,...(input.eventId?{eventId:input.eventId}:{}),...(input.key?{key:input.key}:{}),status:records.length?'running':'completed',stopRequested:false,createdAt:now,updatedAt:now,
           items:records.sort((a,b)=>a.acceptedAt.localeCompare(b.acceptedAt)||a.key.localeCompare(b.key)).map(r=>({key:r.key,eventId:r.eventId,requestId:randomUUID(),status:'queued'}))};

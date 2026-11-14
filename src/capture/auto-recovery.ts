@@ -1,6 +1,6 @@
 import {readerEvidence,validReaderEvidence} from '../ops/read-progress.mjs';
 import {recordAudit} from "../functions/audit.js";
-import type {CaptureRecoveryCheckpoint,CaptureRecoveryFailure} from "../types.js";
+import type {CaptureRecoveryCheckpoint,CaptureRecoveryFailure,CaptureReviewHistory} from "../types.js";
 import {createHash,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import type {StateKV} from '../state/kv.js';
@@ -8,6 +8,7 @@ import {withKeyedLock} from '../state/keyed-mutex.js';
 import {KV} from '../state/schema.js';
 import {captureEventScope} from './event-record.js';
 import {capturePayloadDigest,captureSourceDigest} from './receipt-digest.js';
+import {committedSdkResolution} from './sdk-resolution-record.js';
 
 const SCOPE=KV.captureRecovery;
 const SAFE_REASONS=new Set(['PUBLICATION_PENDING', 'PUBLICATION_WAIT_EXHAUSTED', 'ADMISSION_HELD', 'CHECK_PENDING', 'COMPLETION_PROOF_PENDING', 'VERIFIED_DURABLE', 'VERIFICATION_BUDGET_EXHAUSTED', 'VERIFICATION_PENDING', 'DELETION_RECORDED', 'IDENTITY_CONFLICT', 'SOURCE_MISSING', 'SOURCE_UNSUPPORTED', 'SOURCE_MISMATCH', 'GENERATION_CHANGED', 'INTENT_ACTIVE_OR_UNSUPPORTED', 'PUBLICATION_UNVERIFIED', 'INDEX_RESTORATION_REQUIRED', 'MANUAL_OR_ACTIVE_RETRY', 'REQUEST_REQUIRES_MANUAL_RESTORE', 'RECEIPT_CONFLICT', 'MANUAL_OR_UNKNOWN_COMPLETION', 'STATE_CHANGED', 'COMPLETION_UNVERIFIED', 'ADMISSION_CHANGED', 'FAILURE_UNCLASSIFIED']);
@@ -29,7 +30,7 @@ function failureEvidence(error:any,operation:string):CaptureRecoveryFailure {
 function validRow(v:any):v is Row{return v?.version===1&&v.kind==='item'&&/^cap_[a-f0-9]{40}$/.test(v.key)&&typeof v.id==='string'&&['sessionId','observationId','eventId'].every(k=>typeof v[k]==='string'&&v[k])&&/^[a-f0-9]{64}$/.test(v.sourceDigest)&&/^[a-f0-9]{64}$/.test(v.projection)&&['checking','verifying','resolved','blocked'].includes(v.phase)&&Number.isSafeInteger(v.verificationAttempts)&&v.verificationAttempts>=0&&v.verificationAttempts<=MAX_PROOFS&&Number.isFinite(v.nextAttemptAt)&&v.nextAttemptAt>=0&&(v.lastVerificationFailure===undefined||validFailure(v.lastVerificationFailure));}
 export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecoveryOptions){
  const now=options.now??Date.now;let busy=false,halted=false,enabled=options.enabled,revision=0,initialized:Promise<void>|undefined;let durableEnabled:boolean|null=null,configurationStatus='unloaded';
- let view={enabled:options.enabled,supported:false,phase:'idle',resolved:0,verifying:0,blocked:0,reasonCounts:{}as Record<string,number>,breakerUntil:0,lastCheckedAt:null as string|null,lastErrorCode:null as string|null,verificationFailureCounts:{}as Record<string,number>};
+ let view={enabled:options.enabled,supported:false,phase:'idle',resolved:0,sdkReviewed:0,verifying:0,blocked:0,reasonCounts:{}as Record<string,number>,breakerUntil:0,lastCheckedAt:null as string|null,lastErrorCode:null as string|null,verificationFailureCounts:{}as Record<string,number>};
  const blockReason=()=>{
   if(kv.durability?.completion==='sdk')return 'SDK_COMPLETION_ONLY';
   if(halted)return 'RECOVERY_STORAGE_OR_STATE_UNAVAILABLE';
@@ -67,9 +68,27 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
   const all=await kv.list<any>(SCOPE);if(all.length>5001||all.some(r=>r?.kind==='item'&&!validRow(r)))throw fail('RECOVERY_STATE_UNSUPPORTED');
   const rows=all.filter(validRow),control=all.find(r=>r?.kind==='control') as Control|undefined;
   if(control&&!validControl(control))throw fail('RECOVERY_STATE_UNSUPPORTED');
-  const counts:Record<string,number>={};for(const r of rows)if(r.phase!=='resolved'){const reason=SAFE_REASONS.has(r.reason)?r.reason:'RECOVERY_STATE_UNSUPPORTED';counts[reason]=(counts[reason]??0)+1;}
-  const verificationFailureCounts:Record<string,number>={};for(const r of rows)if(r.phase!=='resolved'&&r.lastVerificationFailure){const f=r.lastVerificationFailure,k=f.operation+':'+f.stage+':'+f.code;verificationFailureCounts[k]=(verificationFailureCounts[k]??0)+1;}
-  view={...view,verificationFailureCounts,supported:kv.durability?.completion!=='sdk'&&kv.recoveryMutationSafe&&!!kv.recoveryWrite&&kv.backend==='file'&&!!kv.durability&&options.writerOwned(),resolved:rows.filter(r=>r.phase==='resolved').length,verifying:rows.filter(r=>['checking','verifying'].includes(r.phase)).length,blocked:rows.filter(r=>r.phase==='blocked').length,reasonCounts:counts,breakerUntil:control?.openUntil??0,lastCheckedAt:new Date(now()).toISOString()};
+  let unresolved=rows.filter(row=>row.phase!=='resolved');
+  const reviewed=new Set<string>();
+  if(kv.durability?.completion==='sdk'){
+   // Bound extra SDK reads. Older checkpoints stay in storage as historical evidence.
+   for(const row of unresolved.slice(0,16)){
+    try{
+     const [history,inbox]=await Promise.all([kv.get<CaptureReviewHistory>(KV.captureReview,row.key),kv.get<Record<string,unknown>>(KV.captureInbox,row.key)]);
+     if(history?.key===row.key&&history.eventId===row.eventId&&history.sessionId===row.sessionId&&history.observationId===row.observationId&&
+        history.sdkResolution?.sourceDigest===row.sourceDigest&&inbox?.sdkRestoreState!=='pending'&&committedSdkResolution(history,inbox))reviewed.add(row.key);
+    }catch{/* Leave the item in the warning if its SDK record cannot be confirmed. */}
+   }
+   unresolved=unresolved.filter(row=>!reviewed.has(row.key));
+  }
+  const counts:Record<string,number>={};
+  const verificationFailureCounts:Record<string,number>={};
+  for(const row of unresolved){
+   const reason=SAFE_REASONS.has(row.reason)?row.reason:'RECOVERY_STATE_UNSUPPORTED';
+   counts[reason]=(counts[reason]??0)+1;
+   if(row.lastVerificationFailure){const f=row.lastVerificationFailure,key=f.operation+':'+f.stage+':'+f.code;verificationFailureCounts[key]=(verificationFailureCounts[key]??0)+1;}
+  }
+  view={...view,verificationFailureCounts,supported:kv.durability?.completion!=='sdk'&&kv.recoveryMutationSafe&&!!kv.recoveryWrite&&kv.backend==='file'&&!!kv.durability&&options.writerOwned(),resolved:rows.filter(row=>row.phase==='resolved').length,sdkReviewed:reviewed.size,verifying:unresolved.filter(row=>row.phase!=='blocked').length,blocked:unresolved.filter(row=>row.phase==='blocked').length,reasonCounts:counts,breakerUntil:control?.openUntil??0,lastCheckedAt:new Date(now()).toISOString()};
   return {rows,control:control??{version:1,kind:'control',failures:0,openUntil:0}as Control};
  }
  function keys(row:Row){return [{scope:KV.captureReview,key:row.key},{scope:KV.captureInbox,key:row.key},{scope:KV.observations(row.sessionId),key:row.observationId},{scope:'mem:embedding-retry:v1',key:row.observationId},{scope:'mem:embedding-committed:v1',key:row.observationId},{scope:captureEventScope(row.key),key:row.key}];}
@@ -139,6 +158,7 @@ export function createCaptureAutoRecovery(kv:StateKV,options:CaptureAutoRecovery
  }
  return {
   snapshot,initialize,setEnabled,
+  async refreshSdkReviews(){if(kv.durability?.completion==='sdk'){await initialize();await refresh();}},
   async tick(){
    if(busy)return;busy=true;
    try{await initialize();if(!enabled)return;await withKeyedLock('capture-auto-recovery',async()=>{

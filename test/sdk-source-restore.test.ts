@@ -65,10 +65,18 @@ it.each([-1,'2',4,1.5])('holds malformed restoration metadata without resetting 
  const f=fixture();await f.sdk.trigger('mem::capture',{payload:body,eventId:body.eventId});const rec=await f.kv.get<any>(KV.captureInbox,f.key);await f.kv.set(KV.captureInbox,f.key,{...rec,sdkRestoreAttempts:attempts});await f.kv.delete(KV.observations(body.sessionId),f.id);
  expect((await f.call()).body.completed).toBe(false);expect((await f.kv.get<any>(KV.captureInbox,f.key)).sdkRestoreAttempts).toBe(attempts);
 });
-it('shares inbox admission with ordinary capture and never bypasses capacity',async()=>{
+it('retains concurrent SDK restores outside capacity while bounding genuine ordinary pending capture',async()=>{
  vi.stubEnv('AGENTMEMORY_CAPTURE_INBOX_MAX','1');try{
- const f=fixture();const values=await Promise.all([f.call(),f.call({...body,eventId:'synthetic_restore_002'})]);expect(values.map(r=>r.status_code).sort()).toEqual([201,409]);expect(await f.kv.list(KV.captureInbox)).toHaveLength(1);
- const third=await f.sdk.trigger('mem::capture',{payload:body,eventId:'synthetic_restore_003'})as any;expect(third).toMatchObject({status:'rejected',retryable:true});expect(await f.kv.list(KV.captureInbox)).toHaveLength(1);
+ const f=fixture();const values=await Promise.all([f.call(),f.call({...body,eventId:'synthetic_restore_002'})]);
+ expect(values.map(r=>r.status_code)).toEqual([201,201]);
+ const retained=await f.kv.list<any>(KV.captureInbox);expect(retained).toHaveLength(2);
+ for(const row of retained)expect(row).toMatchObject({storageCompletion:'sdk',sdkRestoreState:'completed',payload:{data:body.data}});
+ f.sdk.fns.set('mem::observe',async()=>{throw Error('synthetic ordinary pending');});
+ const pending=await f.sdk.trigger('mem::capture',{payload:body,eventId:'synthetic_restore_003'});
+ expect(pending).toMatchObject({status:'accepted',state:'retrying'});
+ const blocked=await f.sdk.trigger('mem::capture',{payload:body,eventId:'synthetic_restore_004'});
+ expect(blocked).toMatchObject({status:'rejected',retryable:true});expect(await f.kv.list(KV.captureInbox)).toHaveLength(3);
+ for(const row of retained)expect(await f.kv.get(KV.captureInbox,row.key)).toEqual(row);
  }finally{vi.unstubAllEnvs();}
 });
 it('records a body-free attempt audit without calling it a durable completion receipt',async()=>{

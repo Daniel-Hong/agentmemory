@@ -1,3 +1,5 @@
+import { retryRetainedVectorRevisions } from '../src/state/vector-revision-release.js';
+import {stateSealDiskProof} from '../src/ops/state-seal-shutdown.mjs';
 import {isStorageWorkCompleted} from '../src/ops/storage-completion.mjs';
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -13,15 +15,17 @@ import { mockSdk } from './helpers/mocks.js';
 const dirs:string[]=[];
 afterEach(async()=>{await Promise.all(dirs.splice(0).map(dir=>rm(dir,{recursive:true,force:true})));});
 function gate(){let release!:()=>void;const promise=new Promise<void>(resolve=>{release=resolve;});return {promise,release};}
-async function fixture({configured=true,indexFailed=false,bootFailed=false,writerSafe=false,mutationUncertain=false,sdkFails=false,sdkOnly=false}={}) {
+async function fixture({configured=true,indexFailed=false,bootFailed=false,writerSafe=false,mutationUncertain=false,sdkFails=false,sdkOnly=false,stateBound=false,sealFails=false,sealMismatch=false,revisionReleaseFails=false}={}) {
  const dir=await mkdtemp(join(tmpdir(),'am-worker-stop-'));dirs.push(dir);
  const events:string[]=[];const sdk={...mockSdk(),shutdown:async()=>{events.push('sdk');if(sdkFails)throw Error('fixture disconnect failure');}};
- const kv={recoveryMutationSafe:writerSafe,mutationOutcomeUncertain:mutationUncertain,durability:configured?{completion:sdkOnly?"sdk":"disk",drain:async()=>{events.push('drain');},freeze:()=>{events.push('freeze');},wait:async()=>{events.push('disk');return sdkOnly?{completion:"sdk",completed:true,synced:false,mutationFailures:0}:{synced:true,mutationFailures:0};}}:null};
+ const kv={recoveryMutationSafe:writerSafe,mutationOutcomeUncertain:mutationUncertain,durability:configured?{completion:sdkOnly?"sdk":"disk",snapshot:()=>({mutationFailures:0}),drain:async()=>{events.push('drain');},freeze:()=>{events.push('freeze');},wait:async()=>{events.push('disk');return sdkOnly?{completion:"sdk",completed:true,synced:false,mutationFailures:0}:{synced:true,mutationFailures:0};}}:null};
  const source=readFileSync('src/index.ts','utf8');
  const start=source.indexOf('  const ingress = createShutdownIngress();');
  const end=source.indexOf('  try {\n  if (persistentBackground)',start);
  const body=source.slice(start,end);
- const deps={isStorageWorkCompleted,writerLease:writerSafe?{}:undefined,markFileWriterClean:()=>events.push('writer-clean'),createBackgroundControl:()=>({settled:async()=>{},commitCleanShutdown:async()=>{events.push("restart-guard");}}),installBackgroundControl:()=>{},operationalState:{},createShutdownIngress,createBackgroundLifecycle,verifiedShutdown,closeLongSessionInferenceAdmission:()=>events.push('close-model'),checkAuth:()=>null,kv,sdk,secret:'fixture-secret',dirname,runtimeMetadataPath:(name:string)=>join(dir,name),readFileSync,settleWithin,SHUTDOWN_FLUSH_TIMEOUT_MS,
+ const stateBinding=stateBound?{instanceId:'fixture-state',storePath:dir}:undefined;
+ const stateClient={trigger:async(request:{function_id:string})=>{expect(request.function_id).toBe('state::seal_flush');events.push('seal');if(sealFails)throw Error('fixture seal failure');return {version:1,instanceId:sealMismatch?'other-state':'fixture-state',storePath:dir,sealed:true,synced:true};}};
+ const deps={retryRetainedVectorRevisions,unreleasedSupersededRevisions:revisionReleaseFails?[{id:"fixture-vector",revision:{release:()=>{throw Error("fixture revision release failed");}}}]:[],stateBinding,stateClient,stateSealDiskProof,markFileWriterSealedClean:()=>events.push('writer-sealed-clean'),bootWarn:()=>events.push('warn'),config:{engineUrl:'ws://127.0.0.1:1000'},readEnginePid:()=>123,isStorageWorkCompleted,writerLease:writerSafe||stateBound?{}:undefined,markFileWriterClean:()=>events.push('writer-clean'),createBackgroundControl:()=>({settled:async()=>{},commitCleanShutdown:async()=>{events.push("restart-guard");}}),installBackgroundControl:()=>{},operationalState:{},createShutdownIngress,createBackgroundLifecycle,verifiedShutdown,closeLongSessionInferenceAdmission:()=>events.push('close-model'),checkAuth:()=>null,kv,sdk,secret:'fixture-secret',dirname,runtimeMetadataPath:(name:string)=>join(dir,name),readFileSync,settleWithin,SHUTDOWN_FLUSH_TIMEOUT_MS,
  clearWorkerPidfile:()=>events.push('clear-pid'),process:{on:vi.fn(),kill:()=>{},exit:(code:number)=>{events.push('exit:'+code);throw Error('exit:'+code);}}};
  const js=transpileModule(body,{compilerOptions:{target:ScriptTarget.ES2022,module:ModuleKind.ES2022}}).outputText;
  const load=new Function('deps',`const {${Object.keys(deps).join(',')}}=deps;let fatalShutdown;${js};return {shutdown,bootDone,resources,lifecycle,trackBoot,failBoot:()=>{bootFailed=true;}};`);
@@ -60,4 +64,26 @@ it('completes SDK-only shutdown without granting a clean durable writer marker',
  await expect(f.shutdown()).rejects.toThrow('exit:0');
  expect(f.events).toContain('clear-pid');expect(f.events).not.toContain('writer-clean');
  expect(JSON.parse(await readFile(join(f.dir,'shutdown-receipt.json'),'utf8'))).toMatchObject({completed:true,verified:false,durability:{synced:false,completion:'sdk'}});
+});
+
+it('seals the verified State after freeze and certifies clean before SDK disconnect',async()=>{
+ const f=await fixture({stateBound:true,sdkOnly:true,sdkFails:true});f.bootDone();
+ await expect(f.shutdown()).rejects.toThrow('exit:0');
+ expect(f.events.indexOf('seal')).toBeGreaterThan(f.events.indexOf('freeze'));
+ expect(f.events.indexOf('writer-sealed-clean')).toBeGreaterThan(f.events.indexOf('seal'));
+ expect(f.events.indexOf('writer-sealed-clean')).toBeLessThan(f.events.indexOf('sdk'));
+ expect(f.events).not.toContain('writer-clean');
+ expect(JSON.parse(await readFile(join(f.dir,'shutdown-receipt.json'),'utf8'))).toMatchObject({completed:true,verified:true,durability:{completion:'disk',synced:true,stateSeal:{instanceId:'fixture-state',sealed:true}}});
+});
+it.each([{sealFails:true},{sealMismatch:true}])('retains unclean state and PID when State seal fails or mismatches: %j',async(options)=>{
+ const f=await fixture({stateBound:true,sdkOnly:true,...options});f.bootDone();
+ await expect(f.shutdown()).rejects.toThrow('exit:1');
+ expect(f.events).not.toContain('writer-sealed-clean');expect(f.events).not.toContain('writer-clean');expect(f.events).not.toContain('clear-pid');
+ expect(JSON.parse(await readFile(join(f.dir,'shutdown-receipt.json'),'utf8'))).toMatchObject({completed:false,verified:false});
+});
+
+it('retains dirty state when a superseded vector revision cannot be released',async()=>{
+ const f=await fixture({stateBound:true,sdkOnly:true,revisionReleaseFails:true});f.bootDone();
+ await expect(f.shutdown()).rejects.toThrow('exit:1');
+ expect(f.events).not.toContain('seal');expect(f.events).not.toContain('writer-sealed-clean');expect(f.events).not.toContain('clear-pid');
 });

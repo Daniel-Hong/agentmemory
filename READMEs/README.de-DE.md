@@ -653,7 +653,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory läuft unter Windows 10/11. WSL2 folgt dem Linux-Pfad und kann die gepinnte Engine automatisch installieren. Unter nativem Windows muss das gepinnte iii-engine-Binary v0.25.0 manuell installiert werden: Laden Sie das passende Archiv von der [iii-v0.25.0-Release-Seite](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0) herunter, prüfen Sie die Prüfsumme und legen Sie `iii.exe` auf den `PATH` (zum Beispiel `%USERPROFILE%\.local\bin\iii.exe`). Die CLI entpackt das Windows-ZIP nicht automatisch.
+agentmemory läuft unter Windows 10/11. WSL2 folgt dem Linux-Pfad und kann die gepinnte Engine automatisch installieren. Unter nativem Windows muss das gepinnte iii-engine-Binary v0.25.1 manuell installiert werden: Laden Sie das passende Archiv von der [iii-v0.25.1-Release-Seite](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1) herunter, prüfen Sie die Prüfsumme und legen Sie `iii.exe` auf den `PATH` (zum Beispiel `%USERPROFILE%\.local\bin\iii.exe`). Die CLI entpackt das Windows-ZIP nicht automatisch.
 
 Die automatisierte MCP-Verdrahtung unter nativem Windows unterstützt nur `agentmemory connect copilot-cli`. Für andere native Windows-Agenten verwenden Sie den manuellen MCP-Block unter [Andere Agenten](#other-agents). Führen Sie `connect` in WSL nur aus, wenn der Ziel-Agent in derselben WSL-Umgebung installiert ist.
 
@@ -1166,7 +1166,7 @@ Die vollständige Referenz steht in [`.env.example`](../.env.example), einschlie
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 Endpunkte auf Port `3111`. Die REST API bindet sich standardmäßig an `127.0.0.1`. Geschützte Endpunkte verlangen `Authorization: Bearer <secret>`, und Mesh-Sync-Endpunkte erfordern ein explizit gesetztes `AGENTMEMORY_SECRET` auf beiden Peers.
+161 Endpunkte auf Port `3111`. Die REST API bindet sich standardmäßig an `127.0.0.1`. Geschützte Endpunkte verlangen `Authorization: Bearer <secret>`, und Mesh-Sync-Endpunkte erfordern ein explizit gesetztes `AGENTMEMORY_SECRET` auf beiden Peers.
 
 **Authentifizierung ist standardmäßig aktiv.** Wenn `AGENTMEMORY_SECRET` weder in der Shell noch in `~/.agentmemory/.env` gesetzt ist, erzeugt die CLI beim ersten Start ein zufälliges Secret unter `~/.agentmemory/secret` und spiegelt es als `secret` in das ausgewählte Datenverzeichnis, jeweils mit Dateimodus `0600`. Jeder mitgelieferte Client liest es von dort, wenn er mit einem lokalen Server spricht: die CLI, der Viewer, die Hooks unter `plugin/scripts`, der MCP-Server und das `@agentmemory/mcp`-Shim, die von `agentmemory connect` geschriebenen Konfigs sowie die mitgelieferten Integrationen für OpenCode, Pi, OpenClaw, Hermes und den Filesystem-Watcher. Das gespeicherte Secret wird nur an Loopback-URLs gesendet (`localhost`, `127.0.0.0/8`, `::1`). Ein explizites `AGENTMEMORY_SECRET` gewinnt immer, und Remote-Clients benötigen es trotzdem gesetzt. Docker und die `deploy/`-Entrypoints erzeugen und exportieren bereits ihr eigenes Secret. Um die API von Hand aufzurufen:
 

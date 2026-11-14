@@ -20,6 +20,7 @@ function fixture() {
     await intercept?.(fn, p);
     const scope = rows.get(p.scope) ?? new Map<string, unknown>();
     if (fn === "state::get") return structuredClone(scope.get(p.key) ?? null);
+    if (fn === "state::list_keys") return {keys:[...scope.keys()]};
     if (fn === "state::list") return structuredClone([...scope.values()]);
     if (fn === "state::set") { scope.set(p.key, structuredClone(p.value)); rows.set(p.scope, scope); await after?.(fn, p); return p.value; }
     if (fn === "state::delete") { scope.delete(p.key); await after?.(fn, p); return; }
@@ -33,7 +34,7 @@ function fixture() {
     const f = fixture(); f.rows.set(KV.graphNodes, new Map([["a", node("a")], ["b", node("b")]]));
     const controller = new GraphIndexMigrationController(f.kv), entered = deferred(), release = deferred();
     f.intercept(async (fn, p) => {
-      if (fn === "state::set" && p.scope === KV.graphRetrievalData) { entered.resolve(); await release.promise; }
+      if (fn === "state::set" && p.scope.startsWith(`${KV.graphRetrievalData}:build:`)) { entered.resolve(); await release.promise; }
     });
     await controller.start({ allowLegacyScan: true }); await entered.promise;
     const stopped = controller.stop(); release.resolve(); await stopped; f.intercept();

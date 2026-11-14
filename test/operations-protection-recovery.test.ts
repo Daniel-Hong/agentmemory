@@ -15,7 +15,7 @@ it('persists distinct overlapping holds and never automatically releases manual 
 });
 it('recovers only after strictly greater recovery threshold and sustained fresh samples',async()=>{
  const f=fixture();await f.control.init(f.kv);await f.guard.refresh();await f.control.settled();expect(f.control.snapshot().holds).toEqual(['memory']);
- f.memory(4*GiB);for(let i=0;i<30;i++){f.time(f.clock()+5000);await f.guard.refresh();}expect(f.control.isPaused()).toBe(true);
+ f.memory(16*GiB*.22);for(let i=0;i<30;i++){f.time(f.clock()+5000);await f.guard.refresh();}expect(f.control.isPaused()).toBe(true);
  await f.normal(115000);expect(f.control.isPaused()).toBe(true);f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();expect(f.control.isPaused()).toBe(false);
  expect(f.record()).toMatchObject({version:2,paused:false,resumePending:true,recovery:{attempts:1}});
 });
@@ -42,14 +42,90 @@ it('rechecks fresh pressure during activation and preserves memory hold if high 
 });
 it('persists storage failures as a hold and requires manual recovery',async()=>{
  const f=fixture();await f.control.init(f.kv);f.kv.durability.wait=async()=>{throw Error('synthetic');};await f.guard.refresh();await f.control.settled();expect(f.control.snapshot().holds).toContain('storage_error');
- f.kv.durability.wait=async()=>({synced:true,mutationFailures:0});await f.normal();expect(f.control.isPaused()).toBe(true);await f.control.change('resume');expect(f.control.snapshot().holds).toEqual(['memory']);
+ f.kv.durability.wait=async()=>({synced:true,mutationFailures:0});await f.normal();
+ expect(f.control.snapshot()).toMatchObject({status:'error',pausedRequested:true,holds:['storage_error']});
+ let recoveries=0;await f.control.change('resume',{beforeResume:async()=>{recoveries++;return true;}});
+ expect(recoveries).toBe(1);expect(f.control.snapshot().holds).toEqual([]);
+});
+
+it.each([false,true])('releases only recovered memory after held boot with resumePending=%s',async resumePending=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);expect(f.control.snapshot().holds).toEqual(holds);
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();
+ expect(f.control.snapshot()).toMatchObject({status:'error',pausedRequested:true,holds:['storage_error']});
+ expect(await f.control.run(async()=>42)).toMatchObject({deferred:true});
+ expect(await f.control.runVectorWrite(async()=>42)).toMatchObject({success:false});
+ // An unclean restart must recheck memory even after this worker observed recovery.
+ const restarted=fixture(f.record());await restarted.control.init(restarted.kv);
+ expect(restarted.control.snapshot()).toMatchObject({status:'error',holds});
+});
+
+it.each(['pressure','stale','pause','failed_fence'])('retains both holds on %s during compound memory recovery',async risk=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending:true,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);
+ let waits=0;
+ f.kv.durability.wait=async()=>{
+  if(++waits===1){
+   if(risk==='pressure')f.memory(GiB);
+   if(risk==='stale')f.time(f.clock()+10001);
+   if(risk==='pause')void f.control.change('pause',{source:'manual'});
+   if(risk==='failed_fence')throw Error('synthetic storage failure');
+  }
+  return {synced:true,mutationFailures:0};
+ };
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();await f.control.settled();
+ expect(waits).toBeGreaterThan(0);
+ const expected=risk==='pause'?['manual',...holds]:holds;
+ expect(f.control.snapshot()).toMatchObject({status:'error',holds:expected,pausedRequested:true});
+ expect(f.record().holds).toEqual(expected);
+});
+
+it('reports an unconfirmed rollback and keeps both holds when compound recovery loses storage',async()=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending:true,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);
+ f.kv.durability.wait=async()=>{f.fail(true);throw Error('fence unavailable');};
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();
+ expect(f.control.snapshot()).toMatchObject({holds,pausedRequested:true,diagnostics:{rollbackVerified:false}});
+ expect(f.record()).toMatchObject({holds,paused:true,resumePending:true});
+});
+
+it('requires a new manual resume after compound memory recovery completes',async()=>{
+ const holds=['memory','storage_error'];
+ const f=fixture({version:2,paused:true,resumePending:true,holds,recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);
+ let release!:()=>void;
+ const fence=new Promise<void>(r=>{release=r;});
+ f.kv.durability.wait=async()=>{await fence;return {synced:true,mutationFailures:0};};
+ const partial=f.control.change('resume',{source:'memory',canResume:async()=>true});
+ await new Promise(r=>setImmediate(r));
+ let vectorAttempts=0;
+ const queued=f.control.change('resume',{beforeResume:async()=>{vectorAttempts++;return true;}});
+ release();await partial;await queued;
+ expect(f.control.snapshot()).toMatchObject({holds:['storage_error'],pausedRequested:true});
+ expect(vectorAttempts).toBe(0);
 });
 it('bounds automatic attempts durably and honors persisted backoff',async()=>{
  const f=fixture({version:2,paused:true,resumePending:false,holds:['memory'],recovery:{attempts:3,nextAttemptAt:0}});await f.control.init(f.kv);await f.normal();expect(f.control.isPaused()).toBe(true);
  const g=fixture({version:2,paused:true,resumePending:false,holds:['memory'],recovery:{attempts:1,nextAttemptAt:999999}});await g.control.init(g.kv);await g.normal();expect(g.control.isPaused()).toBe(true);expect(g.record().recovery.attempts).toBe(1);
 });
 it('uses exact pressure boundaries and never recovers with unavailable samples',async()=>{
- const f=fixture();await f.control.init(f.kv);f.memory(16*GiB*.2);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('normal');f.memory(16*GiB*.05);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('high');await f.control.settled();f.memory(NaN);await f.normal(0);f.memory(NaN);f.time(f.clock()+120000);await f.guard.refresh();expect(f.control.isPaused()).toBe(true);
+ const f=fixture();await f.control.init(f.kv);f.memory(16*GiB*.18);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('normal');f.memory(16*GiB*.05);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('high');await f.control.settled();f.memory(NaN);await f.normal(0);f.memory(NaN);f.time(f.clock()+120000);await f.guard.refresh();expect(f.control.isPaused()).toBe(true);
+});
+
+it('uses the approved 18% reserve and recovers only above 22% for two minutes',async()=>{
+ const f=fixture();await f.control.init(f.kv);
+ f.memory(16*GiB*.18-1);await f.guard.refresh();await f.guard.drain();await f.control.settled();
+ expect(f.guard.snapshot()).toMatchObject({level:'high',reserveBytes:16*GiB*.18,recoveryBytes:16*GiB*.22,criticalBytes:16*GiB*.05});
+ f.memory(16*GiB*.18);f.time(f.clock()+5000);await f.guard.refresh();expect(f.guard.snapshot().level).toBe('normal');
+ f.memory(16*GiB*.22);for(let i=0;i<30;i++){f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();}
+ expect(f.control.isPaused()).toBe(true);
+ f.memory(16*GiB*.22+1);for(let i=0;i<24;i++){f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();}
+ expect(f.control.isPaused()).toBe(true);
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();expect(f.control.isPaused()).toBe(false);
+ await f.guard.stop();
 });
 it('retains cumulative attempts through repeated pressure and clean restart until manual acknowledgment',async()=>{
  const f=fixture();await f.control.init(f.kv);
@@ -90,6 +166,24 @@ it('rolls activation back if the final fresh memory check becomes high after act
 });
 it('honors future backoff even when stable samples survive a clean restart and accepts equality',async()=>{
  const f=fixture({version:2,paused:true,resumePending:false,holds:['memory'],recovery:{attempts:1,nextAttemptAt:130001}});await f.control.init(f.kv);await f.normal();expect(f.control.isPaused()).toBe(true);f.time(130001);await f.guard.refresh();await f.guard.drain();expect(f.control.isPaused()).toBe(false);expect(f.control.snapshot().recovery.attempts).toBe(2);
+});
+
+it.each(['manual', 'deployment'] as const)('limits SDK vector reconciliation to a manual resume (%s)', async source => {
+ const f = fixture({version:2, paused:true, resumePending:false, holds:[source], recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);
+ const calls: boolean[] = [];
+ const handlers = new Map<string, any>();
+ const sdk = {registerFunction:(id:string, fn:any) => handlers.set(id, fn), registerTrigger:() => {}};
+ registerBackgroundControlApi(sdk as any, 'fixture', f.control, async allowReconciliation => {
+  calls.push(allowReconciliation);
+  return true;
+ });
+ const result = await handlers.get('api::background-control-set')({
+  headers:{authorization:'Bearer fixture','x-agentmemory-background':'1','content-type':'application/json'},
+  body:source === 'manual' ? {action:'resume'} : {action:'resume', reason:'deployment'}
+ });
+ expect(result.status_code).toBe(202);
+ expect(calls).toEqual([source === 'manual']);
 });
 
 it('keeps action-only HTTP pauses manual and permits only an explicit deployment reason',async()=>{
@@ -157,4 +251,50 @@ it('does not replace a newer critical sample with a delayed recovery sample',asy
   f.time(f.clock()+5000);available=0;await guard.refresh();expect(guard.snapshot().level).toBe('critical');
   release();await guard.drain();await f.control.settled();expect(guard.snapshot().level).toBe('critical');expect(f.control.isPaused()).toBe(true);
  }finally{release();await guard.stop();await f.control.settled();}
+});
+
+it('releases only the recovered memory hold from an interrupted protected storage pause',async()=>{
+ const f=fixture({version:2,paused:true,resumePending:true,holds:['manual','memory','storage_error'],recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);await f.normal(115000);
+ expect(f.control.snapshot().holds).toEqual(['manual','memory','storage_error']);
+ f.time(f.clock()+5000);await f.guard.refresh();await f.guard.drain();await f.control.settled();
+ expect(f.control.snapshot()).toMatchObject({holds:['manual','storage_error'],pausedRequested:true,activeOperations:0});
+ expect(f.record()).toMatchObject({paused:true,resumePending:false,holds:['manual','storage_error']});
+ expect(await f.control.run(async()=>42)).toMatchObject({deferred:true});
+ let verified=false;await f.control.change('resume',{beforeResume:async()=>{verified=true;return true;}});
+ expect(verified).toBe(true);expect(f.control.snapshot()).toMatchObject({status:'running',holds:[],pausedRequested:false});
+});
+it('requires a fresh stable-memory check before releasing one hold from a protected storage pause',async()=>{
+ const f=fixture({version:2,paused:true,resumePending:true,holds:['manual','memory','storage_error'],recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);const before=structuredClone(f.record());let checked=false;
+ await f.control.change('resume',{source:'memory',canResume:async()=>{checked=true;return false;}});
+ expect(checked).toBe(true);expect(f.record()).toEqual(before);expect(f.control.snapshot().holds).toEqual(['manual','memory','storage_error']);
+});
+it('retains all protection holds on failed partial storage confirmation and bounds automatic retries',async()=>{
+ const f=fixture({version:2,paused:true,resumePending:true,holds:['manual','memory','storage_error'],recovery:{attempts:2,nextAttemptAt:0}});
+ await f.control.init(f.kv);const original=structuredClone(f.record());f.fail(true);
+ await expect(f.control.change('resume',{source:'memory',canResume:async()=>true})).rejects.toThrow('background_storage_unavailable');
+ expect(f.control.snapshot()).toMatchObject({holds:['manual','memory','storage_error'],pausedRequested:true,recovery:{attempts:3}});
+ expect(f.record()).toEqual(original);f.fail(false);f.time(1000000000);let retried=false;
+ await f.control.change('resume',{source:'memory',canResume:async()=>{retried=true;return true;}});
+ expect(retried).toBe(false);expect(f.control.snapshot().holds).toEqual(['manual','memory','storage_error']);
+});
+it('rechecks stable memory after the storage fence before releasing a protected memory hold',async()=>{
+ const f=fixture({version:2,paused:true,resumePending:true,holds:['manual','memory','storage_error'],recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);let entered!:()=>void,release!:()=>void,stable=true;
+ const waiting=new Promise<void>(r=>entered=r),held=new Promise<void>(r=>release=r);
+ f.kv.durability.wait=async()=>{entered();await held;return{synced:true,mutationFailures:0};};
+ const recovering=f.control.change('resume',{source:'memory',canResume:async()=>stable});await waiting;stable=false;release();await recovering;
+ expect(f.control.snapshot().holds).toEqual(['manual','memory','storage_error']);expect(f.record().holds).toEqual(['manual','memory','storage_error']);
+ expect(f.control.isPaused()).toBe(true);
+});
+it('requires a new manual resume after the protected memory release completes',async()=>{
+ const f=fixture({version:2,paused:true,resumePending:true,holds:['manual','memory','storage_error'],recovery:{attempts:0,nextAttemptAt:0}});
+ await f.control.init(f.kv);let entered!:()=>void,release!:()=>void;
+ const waiting=new Promise<void>(r=>entered=r),held=new Promise<void>(r=>release=r);
+ f.kv.durability.wait=async()=>{entered();await held;return{synced:true,mutationFailures:0};};
+ const recovering=f.control.change('resume',{source:'memory',canResume:async()=>true});await waiting;let callbacks=0;
+ const queued=f.control.change('resume',{beforeResume:async()=>{callbacks++;return true;}});release();await recovering;await queued;
+ expect(callbacks).toBe(0);expect(f.control.snapshot()).toMatchObject({holds:['manual','storage_error'],pausedRequested:true});
+ await f.control.change('resume',{beforeResume:async()=>{callbacks++;return true;}});expect(callbacks).toBe(1);expect(f.control.isPaused()).toBe(false);
 });

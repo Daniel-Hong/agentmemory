@@ -653,7 +653,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory kjører på Windows 10/11. WSL2 følger Linux-stien og kan installere den fastlåste engine-en automatisk. Native Windows krever at den fastlåste iii-engine v0.25.0-binærfilen installeres manuelt; last ned det tilsvarende arkivet fra [iii v0.25.0-utgivelsessiden](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0), kontroller kontrollsummen og legg `iii.exe` på `PATH` (for eksempel `%USERPROFILE%\.local\bin\iii.exe`). CLI-en pakker ikke ut Windows-ZIP-filen automatisk.
+agentmemory kjører på Windows 10/11. WSL2 følger Linux-stien og kan installere den fastlåste engine-en automatisk. Native Windows krever at den fastlåste iii-engine v0.25.1-binærfilen installeres manuelt; last ned det tilsvarende arkivet fra [iii v0.25.1-utgivelsessiden](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1), kontroller kontrollsummen og legg `iii.exe` på `PATH` (for eksempel `%USERPROFILE%\.local\bin\iii.exe`). CLI-en pakker ikke ut Windows-ZIP-filen automatisk.
 
 Automatisert native Windows-MCP-tilkobling støtter bare `agentmemory connect copilot-cli`. For andre native Windows-agenter bruker du den manuelle MCP-blokken fra [Andre agenter](#other-agents). Kjør `connect` i WSL bare når målagenten er installert i det samme WSL-miljøet.
 
@@ -1166,7 +1166,7 @@ Den fullstendige referansen er [`.env.example`](../.env.example), med legitimasj
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 endepunkter på port `3111`. REST-API-en bindes til `127.0.0.1` som standard. Beskyttede endepunkter krever `Authorization: Bearer <secret>`, og mesh-synkroniseringsendepunkter krever en uttrykkelig satt `AGENTMEMORY_SECRET` på begge sider.
+161 endepunkter på port `3111`. REST-API-en bindes til `127.0.0.1` som standard. Beskyttede endepunkter krever `Authorization: Bearer <secret>`, og mesh-synkroniseringsendepunkter krever en uttrykkelig satt `AGENTMEMORY_SECRET` på begge sider.
 
 **Autentisering er på som standard.** Hvis `AGENTMEMORY_SECRET` verken er satt i skallet eller i `~/.agentmemory/.env`, oppretter CLI-en en tilfeldig hemmelighet ved første start i `~/.agentmemory/secret` og en kopi kalt `secret` i den valgte datamappen, med filmodus `0600`. Alle medfølgende klienter leser den derfra når de snakker med en lokal server: CLI-en, viewer, hookene under `plugin/scripts`, MCP-serveren og `@agentmemory/mcp`-shimmen, konfigurasjonene skrevet av `agentmemory connect` og de medfølgende OpenCode-, Pi-, OpenClaw-, Hermes- og filsystemovervåker-integrasjonene. Den lagrede hemmeligheten sendes bare til loopback-URL-er (`localhost`, `127.0.0.0/8`, `::1`). En uttrykkelig `AGENTMEMORY_SECRET` vinner alltid, og eksterne klienter trenger hemmeligheten i miljøet sitt. Docker-basert selvhosting fra repoet og `deploy/`-entrypointene genererer og eksporterer sin egen hemmelighet. Slik kaller du API-et manuelt:
 

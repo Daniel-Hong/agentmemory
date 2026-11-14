@@ -7,6 +7,7 @@ export function createStateDurabilityFence(options: { storePath: string; timeout
  mutate<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T>;
  keys(): DirtyKey[];
  keysFor(keys: DirtyKey[]): DirtyKey[];
+ watchKeys(keys: DirtyKey[]): { unchanged(): boolean; release(): void };
  forgetKeys(keys: DirtyKey[]): void;
  stableKeys(options?: { minAgeMs?: number; limit?: number }): DirtyKey[];
  wait(kv: Reader): Promise<FenceResult>;
@@ -15,5 +16,5 @@ export function createStateDurabilityFence(options: { storePath: string; timeout
  flushStable(kv: Reader, options?: { minAgeMs?: number; limit?: number }): Promise<unknown>;
  freeze(): void;
  drain(): Promise<void>;
- snapshot(): { completion: 'disk'|'sdk'; sdkCompletion: unknown; frozen: boolean; activeMutations: number; touchedScopes: number; mutationFailures: number; pruning: boolean; lastVerification: unknown; measurements: unknown; readSharing: unknown };
+ snapshot(): { completion: 'disk'|'sdk'; sdkCompletion: unknown; frozen: boolean; activeMutations: number; touchedScopes: number; mutationFailures: number; firstMutationFailure: {at:number;code:string;phase:string;diagnostic:string|null}|null; latestMutationFailure: {at:number;code:string;phase:string;diagnostic:string|null}|null; pruning: boolean; lastVerification: unknown; measurements: unknown; readSharing: unknown };
 };

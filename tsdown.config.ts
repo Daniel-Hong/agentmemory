@@ -48,7 +48,7 @@ const shared = {
   // optionalDependency in package.json so users can install it only when
   // they enable local embeddings / CLIP / reranker.
   deps: {
-    alwaysBundle: [/^iii-sdk(?:\/|$)/, /^@iii-dev\/helpers(?:\/|$)/, /^yaml(?:\/|$)/, /^json5(?:\/|$)/],
+    alwaysBundle: [/^@opentelemetry\/(?:.*)/, /^iii-sdk(?:\/|$)/, /^@iii-dev\/helpers(?:\/|$)/, /^yaml(?:\/|$)/, /^json5(?:\/|$)/],
     neverBundle: [
       "@huggingface/transformers",
       "@anthropic-ai/claude-agent-sdk",
@@ -74,6 +74,20 @@ export default defineConfig([
   },
   {
     entry: ["src/cli.ts"],
+    outDir: "dist",
+    ...shared,
+    clean: false,
+    sourcemap: false,
+  },
+  {
+    entry: ["scripts/migration/native-v3-to-v4.mjs"],
+    outDir: "dist",
+    ...shared,
+    clean: false,
+    sourcemap: false,
+  },
+  {
+    entry: ["src/capture/sdk-delivery-v2.ts"],
     outDir: "dist",
     ...shared,
     clean: false,

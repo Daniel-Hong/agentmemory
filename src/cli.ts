@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {loadStateWorkerArtifact} from "./cli/state-worker-artifact.js";
 
 import { createHash } from "node:crypto";
 import {isStorageWorkCompleted} from './ops/storage-completion.mjs';
@@ -647,6 +648,7 @@ type ComposeEngineState = {
   composePid?: number;
   enginePid?: number;
   workerBinDir?: string;
+  stateExecutable?: {path:string;sha256:string};
   workerFailure?: string;
   workerVersions?: typeof COMPOSE_WORKER_VERSIONS | { local: true };
 };
@@ -1251,7 +1253,17 @@ function composeEnginePid(state: ComposeEngineState): number | undefined {
   return composeChildProcesses(state).find(({ args }) => args.includes(" --config ") && args.includes(state.namespace))?.pid;
 }
 
-async function terminateComposeChildren(state: ComposeEngineState): Promise<boolean> {
+async function terminateComposeChildren(state: ComposeEngineState, captured?: Array<{pid:number;start:string}>): Promise<boolean> {
+  if (captured) {
+    // The daemon may already be gone: never rediscover/adopt reparented PIDs.
+    for (const child of captured) {
+      if (!pidAlive(child.pid)) continue;
+      try { if (nativeProcessStart(child.pid) !== child.start) return false; }
+      catch { if (!pidAlive(child.pid)) continue; return false; }
+      if (!(await signalAndWait(child.pid, "SIGTERM", 5_000, true))) return false;
+    }
+    return true;
+  }
   if (IS_WINDOWS) return true;
   const groups = [...new Set(composeChildProcesses(state).map((child) => child.pgid).filter((pgid) => pgid !== state.composePid))];
   let stopped = true;
@@ -1274,11 +1286,14 @@ async function terminateComposeChildren(state: ComposeEngineState): Promise<bool
 }
 
 async function startIiiBin(iiiBin: string): Promise<boolean> {
+  const artifactDir=process.env["AGENTMEMORY_STATE_WORKER_ARTIFACT"]?.trim();
+  const artifact=artifactDir?loadStateWorkerArtifact(artifactDir):undefined;
   const workerBinDir = process.env["AGENTMEMORY_WORKER_BIN_DIR"]?.trim() || undefined;
   if (workerBinDir && (!existsSync(resolve(process.cwd(), workerBinDir)) ||
     !["state", "http"].every((name) => existsSync(join(resolve(process.cwd(), workerBinDir), name))))) {
     throw new Error(`AGENTMEMORY_WORKER_BIN_DIR must contain executable state and http binaries: ${workerBinDir}`);
   }
+  if(getStateBackend()==="file"&&!artifact&&!workerBinDir)throw new Error("File-backed Compose requires the patched State artifact: set AGENTMEMORY_STATE_WORKER_ARTIFACT to the verified release artifact directory (or AGENTMEMORY_WORKER_BIN_DIR for existing local workers). Official registry State lacks the required ACK/epoch/seal contract.");
   const envPath = process.env["AGENTMEMORY_ENV_FILE"] || join(homedir(), ".agentmemory", ".env");
   const namespace = composeNamespace(getRestPort());
   const projectRoot = resolve(__dirname, "..");
@@ -1286,9 +1301,12 @@ async function startIiiBin(iiiBin: string): Promise<boolean> {
   // Fast, actionable diagnosis before Compose attempts to bind its managed listeners.
   // Only reachable local TCP listeners count; failures to connect mean free/closed.
   await assertComposePortsFree([ports.restPort, ports.viewerPort, ports.enginePort]);
+  const stateExecutable = artifact ?? (workerBinDir ? {path:realpathSync(join(workerBinDir,"state")),sha256:createHash("sha256").update(readFileSync(join(workerBinDir,"state"))).digest("hex")} : undefined);
   const compose = startComposeDaemon({
+    stateWorkerExecutable: artifact?.path,
     ports,
     dataDir: dataDirResolution.dataDir,
+    runtimeDir: dirname(engineStatePath()),
     projectRoot,
     nodeBin: process.execPath,
     homeDir: homedir(),
@@ -1322,6 +1340,7 @@ async function startIiiBin(iiiBin: string): Promise<boolean> {
     logStartOffset: compose.logStartOffset,
     binPath: iiiBin,
     composePid: compose.child.pid,
+    ...(stateExecutable ? {stateExecutable} : {}),
     ...(workerBinDir ? { workerBinDir: resolve(process.cwd(), workerBinDir) } : {}),
   };
   writeComposeState(engineStatePath(), {
@@ -1389,16 +1408,20 @@ function nativeCompatPidMatches(pid: number, state: NativeEngineState): boolean 
   } catch { return false; }
 }
 
+class UnresolvedNativeLifecycleError extends Error {
+  readonly exitCode = 78;
+}
+
 function assertNativeCompatStartupOwnership(): void {
   const previous = readEngineState();
   if (previous?.kind === "native" && previous.compatVersion && previous.workerIdentity) {
     const pinned = previous.workerIdentity;
     let sameWorker = false;
     try { sameWorker = nativeCompatWorkerIdentityMatches(pinned, pinned.pid, nativeWorkerIdentity(pinned.pid)); } catch {}
-    if (sameWorker) throw new Error("Unresolved prior lifecycle has a live pinned native worker; no process was started and state was preserved.");
+    if (sameWorker) throw new UnresolvedNativeLifecycleError("Unresolved prior lifecycle has a live pinned native worker; no process was started and state was preserved.");
   }
   if (existsSync(engineStatePath()) || existsSync(enginePidfilePath()) || existsSync(workerPidfilePath())) {
-    throw new Error("Unresolved prior lifecycle evidence must be reconciled before native startup; no process was started and state was preserved.");
+    throw new UnresolvedNativeLifecycleError("Unresolved prior lifecycle evidence must be reconciled before native startup; no process was started and state was preserved.");
   }
 }
 
@@ -2877,7 +2900,16 @@ async function startServerForDemo(): Promise<() => Promise<void>> {
 
   return async () => {
     if (importedStartupWorker && readWorkerPidfile() === process.pid) clearWorkerPidfile();
-    if (startedEngine) await cleanupFailedStartup();
+    if (!startedEngine) return;
+    if (IS_WINDOWS && spawnedComposeDaemon) {
+      const state = readEngineState();
+      if (state?.kind !== "compose" || state.composePid !== spawnedComposeDaemon.pid) {
+        throw new Error("Demo Compose lifecycle state no longer matches the daemon it started. Lifecycle state was preserved.");
+      }
+      await stopComposeRuntime(state, true);
+      return;
+    }
+    await cleanupFailedStartup();
   };
 }
 
@@ -3302,6 +3334,43 @@ function findEnginePidsByPort(port: number): number[] {
   }
 }
 
+async function stopComposeRuntime(state: ComposeEngineState, running: boolean): Promise<void> {
+  const pid = state.composePid;
+  const ownedDaemonAlive = pid !== undefined && pidAlive(pid);
+  if (ownedDaemonAlive && !composePidMatches(pid, state)) {
+    throw new Error(`Recorded Compose pid ${pid} does not match the saved daemon identity; refusing to invoke Compose control or signal it. Lifecycle state was preserved.`);
+  }
+  if (running && !ownedDaemonAlive) {
+    throw new Error("The REST endpoint is responding, but the recorded Compose daemon is not alive. Refusing to stop or clear an engine that may be unrelated; restore the owning daemon or inspect the endpoint manually.");
+  }
+  if (running && ownedDaemonAlive) {
+    try {
+      await composeCall({ engineUrl: state.engineUrl, namespace: state.namespace, functionId: "compose::down", file: state.file, timeoutMs: composeDownTimeoutMs() });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("ENGINE_RESTART_REQUIRED")) {
+        throw new Error(`compose::down failed for ${state.file}: ${message}. Lifecycle state was preserved.`);
+      }
+      p.log.warn("Compose requested an engine restart while stopping; terminating its verified owning daemon to finish shutdown.");
+    }
+  }
+  if (ownedDaemonAlive) {
+    const children = platform() === "linux" ? composeChildPids(state).filter(pidAlive).map((child) => ({pid:child,start:nativeProcessStart(child)})) : undefined;
+    // Revalidate after down; let Compose itself retire its engine. Killing the
+    // engine first makes a clean stop race with Compose's ENGINE_EXITED failure.
+    if (pidAlive(pid) && !composePidMatches(pid, state)) throw new Error("Compose daemon identity changed before stop; lifecycle state was preserved.");
+    if (!(await signalAndWait(pid, "SIGTERM", 20_000, true))) {
+      throw new Error(`Worker Compose daemon pid ${pid} did not stop; lifecycle state was preserved. Inspect ${state.logFile}.`);
+    }
+    if (!(await terminateComposeChildren(state, children))) {
+      throw new Error(`One or more child workers of Compose ${pid} did not stop; lifecycle state was preserved.`);
+    }
+  }
+  clearEnginePidfile();
+  clearWorkerPidfile();
+  clearEngineState();
+}
+
 async function runStop(): Promise<void> {
   const savedState = readEngineState();
   if (savedState?.kind === "native" && Object.hasOwn(savedState, "compatVersion") && savedState.compatVersion !== NATIVE_COMPAT_VERSION) {
@@ -3329,41 +3398,7 @@ async function runStop(): Promise<void> {
   const force = args.includes("--force");
 
   if (state?.kind === "compose") {
-    const ownedDaemonAlive = Boolean(state.composePid && pidAlive(state.composePid));
-    if (ownedDaemonAlive && !composePidMatches(state.composePid!, state)) {
-      p.log.error(`Recorded Compose pid ${state.composePid} does not match the saved daemon identity; refusing to invoke Compose control or signal it. Lifecycle state was preserved.`);
-      process.exit(1);
-    }
-    if (running && !ownedDaemonAlive) {
-      p.log.error("The REST endpoint is responding, but the recorded Compose daemon is not alive. Refusing to stop or clear an engine that may be unrelated; restore the owning daemon or inspect the endpoint manually.");
-      process.exit(1);
-    }
-    if (running && ownedDaemonAlive) {
-      try {
-        await composeCall({ engineUrl: state.engineUrl, namespace: state.namespace, functionId: "compose::down", file: state.file, timeoutMs: composeDownTimeoutMs() });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (!message.includes("ENGINE_RESTART_REQUIRED")) {
-          p.log.error(`compose::down failed for ${state.file}: ${message}. Lifecycle state was preserved.`);
-          process.exit(1);
-        }
-        p.log.warn("Compose requested an engine restart while stopping; terminating its verified owning daemon to finish shutdown.");
-      }
-    }
-    if (ownedDaemonAlive) {
-      const childrenStopped = await terminateComposeChildren(state);
-      if (!childrenStopped) {
-        p.log.error(`One or more child workers of Compose ${state.composePid} did not stop; lifecycle state was preserved.`);
-        process.exit(1);
-      }
-      if (!(await signalAndWait(state.composePid!, "SIGTERM", 20_000))) {
-        p.log.error(`Worker Compose daemon pid ${state.composePid} did not stop; lifecycle state was preserved. Inspect ${state.logFile}.`);
-        process.exit(1);
-      }
-    }
-    clearEnginePidfile();
-    clearWorkerPidfile();
-    clearEngineState();
+    await stopComposeRuntime(state, running);
     p.outro("Stopped Worker Compose, engine, and agentmemory workers. Data was preserved.");
     return;
   }
@@ -3835,7 +3870,7 @@ async function runConsole(): Promise<void> {
   p.note([
     `AgentMemory viewer: ${getViewerUrl()} (start agentmemory first if it is offline).`,
     "Use agentmemory status for runtime health and worker status.",
-    "Engine console migration: https://github.com/iii-hq/iii/blob/iii/v0.25.0/docs/using-iii/console.mdx",
+    "Engine console migration: https://github.com/iii-hq/iii/blob/iii/v0.25.1/docs/using-iii/console.mdx",
   ].join("\n"), "Console migration");
 }
 
@@ -3894,7 +3929,8 @@ async function unknownCommand(): Promise<void> {
 const handler = commands[first] ?? (first && !first.startsWith("-") ? unknownCommand : main);
 handler().catch(async (err) => {
   p.log.error(err instanceof Error ? err.message : String(err));
-  const exitCode = await runStartupCleanup(1).catch(() => 1);
+  const failureCode = err instanceof UnresolvedNativeLifecycleError ? err.exitCode : 1;
+  const exitCode = await runStartupCleanup(failureCode).catch(() => 1);
   if (args.includes("--native-compat") && importedStartupWorker) {
     process.exitCode = exitCode;
     return;

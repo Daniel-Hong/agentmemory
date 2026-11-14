@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { renameSync, unlinkSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
@@ -297,10 +297,16 @@ export function writeComposeState(path: string, state: {
   binPath: string;
   enginePid?: number;
   workerBinDir?: string;
+  stateExecutable?: {path:string;sha256:string};
   workerFailure?: string;
   workerVersions: typeof COMPOSE_WORKER_VERSIONS | { local: true };
 }): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600 });
-  chmodSync(path, 0o600);
+  const temporary = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(state)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
 }

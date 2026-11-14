@@ -25,7 +25,7 @@ import { logger } from "../logger.js";
 import { scrubRecord } from "./privacy.js";
 import { registerSummaryRecoveryFunction } from "./summary-recovery.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
-import { summaryFingerprint, summaryObservations } from "./summary-state.js";
+import { getSummaryTimeoutMs, summaryFingerprint, summaryObservations } from "./summary-state.js";
 import { registerLongSessionSummarizer } from "../ops/long-session.mjs";
 
 type SummaryRequest = { sessionId: string; force?: boolean } | undefined;
@@ -86,7 +86,7 @@ function requiresLongSession(session: Session, observations: CompressedObservati
 // LLM call. Default ≈ 50k input tokens per chunk at ~110 tok/obs — fits
 // comfortably in 128k-window models. Override via SUMMARIZE_CHUNK_SIZE.
 const CHUNK_SIZE_DEFAULT = 400;
-export const SUMMARY_TIMEOUT_MS = 120_000;
+export { SUMMARY_TIMEOUT_MS } from "./summary-state.js";
 // Concurrent chunk calls share the summary deadline. Increase this for
 // large sessions only when the configured provider supports the load.
 const CHUNK_CONCURRENCY_DEFAULT = 6;
@@ -400,13 +400,14 @@ export function registerSummarizeFunction(
         };
       }
 
+      const timeoutMs = getSummaryTimeoutMs();
       const boundedProvider: MemoryProvider = {
         name: provider.name,
         compress: (system, prompt) => provider.compress(system, prompt),
         summarize: async (system, prompt) => {
           if (longSessionHandle.snapshot().stopped) throw new Error("shutting_down");
           if (prompt.length > summaryInputLimit()) throw new Error("summary_input_budget_exceeded");
-          const remaining = SUMMARY_TIMEOUT_MS - (Date.now() - startMs);
+          const remaining = timeoutMs - (Date.now() - startMs);
           if (remaining <= 0) throw new Error("summary_timeout");
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {

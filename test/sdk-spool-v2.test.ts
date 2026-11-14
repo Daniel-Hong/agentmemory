@@ -119,11 +119,12 @@ describe('SdkSpoolV2 durable originals and references',()=>{
   expect(results.filter(value=>value.status==='error').every(value=>value.code==='ORIGINALS_FULL')).toBe(true);
   expect((await store().usage()).originalBytes).toBeLessThanOrEqual(20480);
  });
- it('enforces queue quota on sending-state atomic replacement',async()=>{
+ it('reserves bounded sending-state workspace beyond the queue admission quota',async()=>{
   const s=store();const r=await s.retain(target,'event-1',body());await s.enqueue(target,r.sourceId);
   const before=(await s.usage()).queueBytes;const constrained=store({maxQueueBytes:before});
-  await expect(constrained.markSending(target,r.sourceId)).rejects.toMatchObject({code:'QUEUE_FULL'});
-  expect((await s.pending(target))[0].state).toBe('pending');
+  await expect(constrained.markSending(target,r.sourceId)).resolves.toBeUndefined();
+  expect((await s.pending(target))[0].state).toBe('sending');
+  expect((await s.usage()).queueBytes).toBeLessThanOrEqual(before+8192);
  });
  it('fails explicitly when a conflict original cannot fit',async()=>{
   const s=store();const r=await s.retain(target,'event-1',body());const before=(await s.usage()).originalBytes;
@@ -147,7 +148,7 @@ describe('SdkSpoolV2 durable originals and references',()=>{
 
  it('uses one bounded lease file and no growing ticket bookkeeping',async()=>{
   const s=store();for(let index=0;index<10;index++)await s.usage();
-  expect(readdirSync(join(dir,'queue'))).toEqual(['lease.lock']);
+  expect(readdirSync(join(dir,'queue'))).toEqual(['.transitions','lease.lock']);
   expect(statSync(join(dir,'queue','lease.lock')).size).toBe(0);
  });
  it('kernel releases crashed writer lease while preserving its partial original',async()=>{
@@ -157,7 +158,7 @@ describe('SdkSpoolV2 durable originals and references',()=>{
   expect(output.trim()).toBe('synthetic-crash');
   const s=store();const r=await s.retain(target,'event-1',body());expect(await s.load(target,r.sourceId)).toEqual(body());
   expect(readdirSync(join(dir,'originals')).some(name=>name.startsWith('.stage-'))).toBe(true);
-  expect(readdirSync(join(dir,'queue'))).toEqual(['lease.lock']);
+  expect(readdirSync(join(dir,'queue'))).toEqual(['.transitions','lease.lock']);
  });
 
  it('rejects impossible fixture budgets below fixed directory and lease charges',()=>{

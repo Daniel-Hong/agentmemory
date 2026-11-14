@@ -28,6 +28,9 @@ describe.skipIf(process.platform === "win32")("CLI Compose environment", () => {
         `if [ "$1" = "--version" ]; then printf '%s\\n' 'iii ${III_PINNED_VERSION}'; exit 0; fi`,
         "exit 1", "",
       ].join("\n"), { mode: 0o755 });
+      // This fixture stops at the fake engine; select local worker placeholders
+      // so the file-mode artifact preflight does not hide env-file generation.
+      for (const worker of ["state", "http"]) writeFileSync(join(binDir, worker), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
       writeFileSync(join(home, ".agentmemory", ".env"), "CUSTOM_SETTING=wrong-profile\n");
       writeFileSync(customEnv, "CUSTOM_SETTING=selected-profile\nIII_NAMESPACE=wrong-namespace\n");
       const result = await promisify(execFile)(process.execPath, ["--import", "tsx", "src/cli.ts"], {
@@ -37,6 +40,7 @@ describe.skipIf(process.platform === "win32")("CLI Compose environment", () => {
           PATH: [binDir, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
           CI: "1", NO_COLOR: "1",
           AGENTMEMORY_DATA_DIR: dataDir,
+          AGENTMEMORY_WORKER_BIN_DIR: binDir,
           AGENTMEMORY_ENV_FILE: customEnv,
           AGENTMEMORY_ENGINE_READY_TIMEOUT_MS: "1000",
           AGENTMEMORY_READY_TIMEOUT_MS: "1000",

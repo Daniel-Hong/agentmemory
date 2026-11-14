@@ -6,7 +6,7 @@
 
 **Architecture:** Each queued/running/reentrant record use owns a reference. At zero references, require the inner gate to have no reader/writer/queue, disable its ALS, then remove that entry. Keep the record-wide exclusive ALS and unrelated gate contexts alive.
 
-**Tech stack:** existing TypeScript/Node22.23.3, iii-sdk0.25.0/engine0.22.1.
+**Tech stack:** existing TypeScript/Node22.23.3, iii-sdk0.25.1/engine0.22.1.
 
 **Spec:** delegated 2026-11-01 ALS minimal-fix request and ../observation-work-selection-development/performance50-isolated/ROOT-CAUSE.md.
 

@@ -5,7 +5,9 @@ import {readFileSync,appendFileSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 it('keeps real SDK transport alive for active projections over a namespace above its message cap',async()=>{
  const available=()=>Number(/^MemAvailable:\s+(\d+)/m.exec(readFileSync('/proc/meminfo','utf8'))?.[1]??0)*1024;
- expect(available(),'isolated fixture requires12GiB available before starting').toBeGreaterThanOrEqual(12*1024**3);
+ // The child has a 512 MiB V8 heap and an independent 1 GiB RSS cap.
+ // Reserve its full RSS budget plus 2 GiB host headroom, not a fixed 12 GiB.
+ expect(available(),'isolated fixture requires 3 GiB available before starting').toBeGreaterThanOrEqual(3*1024**3);
  const root=await mkdtemp('/tmp/am-summary-sdk-');for(const d of ['tmp','config','data','cache'])await mkdir(join(root,d));
  await writeFile(join(root,'stdout.log'),'');await writeFile(join(root,'stderr.log'),'');
  const env={PATH:'/usr/local/bin:/usr/bin:/bin',HOME:root,TMPDIR:join(root,'tmp'),XDG_CONFIG_HOME:join(root,'config'),XDG_DATA_HOME:join(root,'data'),XDG_CACHE_HOME:join(root,'cache'),LANG:'C.UTF-8',TZ:'UTC',OTEL_ENABLED:'false',CONSOLIDATION_ENABLED:'true',AGENTMEMORY_STATE_STORE_PATH:join(root,'state'),AM_SYNTHETIC_ROOT:root};
@@ -13,7 +15,7 @@ it('keeps real SDK transport alive for active projections over a namespace above
  const child=spawn(process.execPath,['--max-old-space-size=512','--import',resolve('node_modules/tsx/dist/loader.mjs'),resolve('test/fixtures/summary-sdk-boundary.mts')],{cwd:root,env,stdio:['pipe','pipe','pipe']});child.stdin.on('error',()=>{});
  const stop=()=>{if(!stopRequested){stopRequested=true;child.stdin.write('stop\n');}};
  child.stdout.on('data',b=>{if(stdout.length+b.length>2*1024*1024)stop();else{stdout+=b.toString();appendFileSync(join(root,'stdout.log'),b);}});child.stderr.on('data',b=>{if(stderr.length+b.length>2*1024*1024)stop();else{stderr+=b.toString();appendFileSync(join(root,'stderr.log'),b);}});
- const monitor=setInterval(()=>{if(available()<8*1024**3)stop();},250);
+ const monitor=setInterval(()=>{if(available()<1024**3)stop();},250);
  const deadline=setTimeout(stop,120000);
  try{
   const code=await new Promise<number|null>((resolve,reject)=>{child.once('close',resolve);child.once('error',reject);});

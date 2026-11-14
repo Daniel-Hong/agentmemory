@@ -10,7 +10,7 @@ import config from '../tsdown.config.js';
 it('ships the changed server SDK/parsers without resolving them from an old operating dependency tree',async()=>{
  const root=await mkdtemp(join(tmpdir(),'am-sdk-closure-'));
  try{
-  await writeFile(join(root,'package.json'),JSON.stringify({type:'module',dependencies:{'iii-sdk':'0.25.0','@iii-dev/helpers':'0.25.0',yaml:'^2.8.1',json5:'^2.2.3'}}));
+  await writeFile(join(root,'package.json'),JSON.stringify({type:'module',dependencies:{'iii-sdk':'0.25.1','@iii-dev/helpers':'0.25.1',yaml:'^2.8.1',json5:'^2.2.3'}}));
   await symlink(await realpath(resolve('node_modules')),join(root,'node_modules'),'dir');
   await writeFile(join(root,'entry.ts'),`import {registerWorker} from 'iii-sdk';import {http} from '@iii-dev/helpers/http';import {parse} from 'yaml';import JSON5 from 'json5';export const factory=registerWorker;export const helper=http;export const value=JSON5.parse('{ok:true}').ok&&parse('ok: true').ok;`);
   const settings=Array.isArray(config)?config[0]:config;

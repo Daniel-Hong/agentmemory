@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { AuditEntry, AuditMigrationState, AuditQueryResult } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import {collectAll} from "../state/kv.js";
 import { logger } from "../logger.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { getEnvVar, getAuditMigrateMaxBytes } from "../config.js";
@@ -75,7 +76,7 @@ export async function probeLegacyAuditFile(): Promise<LegacyAuditProbe> {
 export async function probeLegacyAuditScope(kv: StateKV): Promise<LegacyAuditProbe> {
   let rows: AuditEntry[];
   try {
-    rows = await kv.list<AuditEntry>(KV.audit);
+    rows = await collectAll<AuditEntry>(kv, KV.audit);
   } catch {
     return { safe: false, reason: "unreadable" };
   }
@@ -285,7 +286,7 @@ export async function queryAudit(
     if (collected.length >= limit) break;
     if (toMs !== undefined && monthStartMs(month) > toMs) continue;
     if (fromMs !== undefined && monthEndMs(month) < fromMs) break;
-    const rows = await kv.list<AuditEntry>(KV.auditMonth(month));
+    const rows = await collectAll<AuditEntry>(kv, KV.auditMonth(month));
     for (const row of rows) addIfNew(row);
   }
 
@@ -295,7 +296,7 @@ export async function queryAudit(
 
   if (collected.length < limit) {
     if (migrationState?.safeToListLegacy) {
-      const legacyRows = await kv.list<AuditEntry>(KV.audit);
+      const legacyRows = await collectAll<AuditEntry>(kv, KV.audit);
       for (const row of legacyRows) addIfNew(row);
     }
   }
@@ -387,7 +388,7 @@ export async function startAuditMigration(
   if (marker?.status !== "copied") {
     let legacy: AuditEntry[];
     try {
-      legacy = await kv.list<AuditEntry>(KV.audit);
+      legacy = await collectAll<AuditEntry>(kv, KV.audit);
     } catch (err) {
       logger.warn("audit migration could not read the legacy audit log", {
         error: err instanceof Error ? err.message : String(err),
@@ -448,7 +449,7 @@ export async function startAuditMigration(
 
   let remaining: AuditEntry[];
   try {
-    remaining = await kv.list<AuditEntry>(KV.audit);
+    remaining = await collectAll<AuditEntry>(kv, KV.audit);
   } catch (err) {
     logger.warn(
       "audit migration could not re-read the legacy audit log before deleting; it resumes on the next boot",
@@ -539,7 +540,7 @@ export async function runAuditRetentionSweep(
 
   let droppedRows = 0;
   for (const month of toDrop) {
-    const rows = await kv.list<AuditEntry>(KV.auditMonth(month));
+    const rows = await collectAll<AuditEntry>(kv, KV.auditMonth(month));
     for (const row of rows.slice().reverse()) {
       await kv.delete(KV.auditMonth(month), row.id);
       droppedRows++;

@@ -1,6 +1,68 @@
+## 0.9.32-daniel.68 — Sharded graph retrieval index
+
+- Store new graph retrieval builds in per-build hash shards to stay below the native file namespace size limit.
+- Explicit graph-index migration rebuilds a ready legacy index from canonical graph records and verifies inventory before publishing readiness. The old index data and canonical nodes, edges, and history are preserved.
+- Continue to read legacy indexes and resume their existing journals. Newly rebuilt indexes use schema 3 and require the sharding-aware server.
+
+## 0.9.32-daniel.67 — Health current-state display
+
+- Count recorded matching SDK resolutions separately from unresolved recovery checkpoints.
+- Reflect exact current-source legacy summary coverage in Health through read-only metadata.
+- Preserve original recovery records and stored session progress.
+
+## Unreleased — compact summary acknowledgement
+
+- Preserve summary bodies and cursors while avoiding old+new response amplification: file-backed server summary writes use the engine state::set_ack success-only response, with a pinned JSON request snapshot. Ordinary state::set/Redis and compatibility-mode StateKV remain unchanged.
+- Require read-only acknowledgement capability discovery before writer acquisition and capture admission. Missing/malformed acknowledgement or actual storage failure remains an uncertain mutation; no fallback, timeout extension, message-cap increase or data migration.
+- Cause: identical installed COW engine cc4ff876 + SDK0.25 synthetic overwrite of33556506-byte JSON emits67113039-byte old/new result, exceeds SDK64MiB, reconnects and TIMEOUT despite applied value. Current failure session's stored summary33555971 bytes crosses the same boundary. Operational content is not used as a fixture.
+- Preserve manual/storage holds when a recovered memory hold would otherwise deadlock three-way recovery. Only a fresh stable-memory check and successful storage fence may remove the memory hold; admission stays closed until explicit vector-verified resume, and automatic retries remain bounded.
+- Validation and deployment state: see workspace work/storage-timeout63/REPORT.md. Source implementation is not operating activation. Historical failures and old unknown writes remain preserved. Durable memory recording is pending manual review.
+
 # Changelog
 
 ## [Unreleased]
+
+## [0.9.33-daniel.73] — 2026-11-14
+- Stage existing SDK capture queue reference replacements in a private, quota-counted queue workspace, avoiding permanent ext4 directory growth from random temporary names in large queues. Preserve the existing 5 MiB admission and 8 KiB transition budgets, crash files, source originals, and conservative refusal when legacy bootstrap cannot fit. Source fix only; installed services are unchanged. See `docs/customizations/SDK-SPOOL-TRANSITION-WORKSPACE.md`.
+- Make Ubuntu CI subprocess fixtures use the active Node executable. Validate finite capture deadlines under contention without weakening exact-once ACK/original preservation checks, and wait for real browser fixture completion instead of a fixed virtual-time DOM dump. Test-only changes; no operating service changes.
+
+## [0.9.33-daniel.72] — 2026-11-13
+- Reobserve transient State/engine socket ownership snapshot gaps at most three times without replaying RPCs or accepting a changed epoch/foreign owner. Classify remaining proven local pre-dispatch admission failures without latching uncertain writes, and retain bounded first/latest failure diagnostics without payloads. Preserve previous uncertainty and source data; see the operating follow-up in the integration note.
+
+## [0.9.33-daniel.71] — 2026-11-13
+- Separate pending capture admission capacity from retained SDK source evidence. Preserve SDK originals, unresolved proof/review history and non-SDK admission limits; maintain an admission-only idempotent key Set to avoid double-counting and per-event metadata rescans. Source-only validation: 57 focused tests pass; not deployed by this change.
+
+## [0.9.33-daniel.70] — 2026-11-13
+## [0.9.33-daniel.69] — 2026-11-13
+### v0.9.33 integration reconciled with .68
+
+- Integrate upstream paging/60 MiB payload budget, consolidation provenance/version-head recovery/recurrence, bounded reflection, orphan-facet repair, eviction index cleanup and partial-vector recovery while preserving source/cursor/hold/history contracts.
+- Integrate session time filters, scoped native hook output and Cursor metadata, configurable summary deadline, machine-relative CPU metrics, pinned worker versions/provider forwarding, guarded Windows demo stop, and verified .25.1 installer hashes/retries. No operating deployment or hook installation.
+
+
+- Complete the official structured-object redaction call site in the failure hook, retain raw private capture paths, and regenerate shipped hooks. Synthetic regressions reproduce the missing behavior before the port.
+- Package the pinned patched State worker and migration tool; verify an explicit byte-preserving native-v3-to-State-v4 migration and a State-sealed, file/directory-synced clean shutdown in isolated data. No production deployment or automatic historical-marker conversion.
+
+- Bind isolated Compose file writers to selected State executable, immutable boot instance, process/socket and effective store identity; pin storage RPCs to instance-specific handlers and reject epoch changes before/after replies. Preserve native v3 leases; State-bound v4 does not silently promote prior v3 evidence.
+- Wait for verified engine metadata before creating a lease, fail without poisoning markers on timeout, and publish Compose metadata atomically. Native shutdown and metadata compatibility remain guarded. These are source-only candidates; registry/Docker deployment and v3-to-v4 operating migration are not approved or verified.
+
+- Upgrade the isolated candidate SDK/helpers to 0.25.1, retain strict bundled-dependency audits, and pin the verified OpenTelemetry/YAML/JSON5 dependencies for reproducible builds.
+- Size the synthetic SDK fixture memory preflight to its independent 1 GiB RSS budget plus 2 GiB host headroom rather than an unrelated 12 GiB reserve. Preserve the 512 MiB child heap, RSS/time/CPU caps and low-memory abort; the final SDK 0.25.1 boundary regression passes. No production memory or persistence guard changes.
+
+- Preserve the verified .68 and personal source lineage while preparing the existing selective v0.9.33 review. Regenerate hook/skills/docs assets and retain both histories.
+- Complete the missing official SessionEnd manifest timeout and add the upstream placeholder-key/plain-http doctor regression without overwriting custom tests. Engine compact ACK, source retention, Graph schema 3 and recovery contracts remain unchanged.
+- Source-only preparation; no customization removal, operating activation or durable memory update. See `docs/customizations/UPSTREAM-0.9.33-INTEGRATION.md` and the workspace validation report.
+
+### .68 and personal integration
+
+- Preserve the .68 operating behavior and the personal capture proof pages and deployment checks. This source integration does not change the active deployment.
+- Integration verification (2026-11-13): build, Codex compatibility, docs and skills checks passed. The regression run passed 6,597 tests with 13 skips. The large SDK fixture stopped at its 12 GiB host-memory precondition on both the integration and .68 baseline, so the regression gate remains pending. Long-term memory review remains pending.
+### Official v0.9.33 source-only integration review (unverified)
+
+- Import 25 upstream implementation/regression file blobs only where personal is unchanged from official v0.9.32; preserve all modified personal files and the modified iii engine/SDK pin.
+- Candidate provider, retrieval, CLIP, MCP, Claude connector, core hook redaction and SessionEnd fixes require full tests, generated-client verification and manual parity review before merging or deploying.
+- No private customization has been removed, no service/host/data has been touched. See `docs/customizations/UPSTREAM-0.9.33-INTEGRATION.md`.
+
 
 ### Bounded capture proof pages
 
@@ -20,6 +82,61 @@
 - Refresh an existing server SDK inventory after Codex compatibility generation; reject audit failures instead of leaving an apparently complete stale manifest. Regression reproduces the missing generated runtime entries. This is source-only packaging tooling; the operating .55 package was already audited after generation.
 - Preserve the exact modified iii0.22.1 KV/save-loop patch and synthetic successor examples for writer exclusion, immutable epoch binding, bounded admission observation and enrollment-added review evidence. Host selectors and operational records are excluded.
 - Document representative native HTTP/SDK/storage verification and the remaining full capture-status scan/timeout limitation without claiming disk flush or historical unknown resolution.
+
+## [0.9.32-daniel.67]
+
+- Health counts matching committed SDK recovery records as reviewed history and recognizes verified legacy summary coverage without rewriting session progress.
+ — 2026-11-11
+## [0.9.32-daniel.66] — 2026-11-10
+- Add one bounded, in-memory final retained-vector proof diagnostic to the existing persistence status. Report only a known retained ID, an enumerated result, fresh/loaded exact-byte and session matches, admission/queue/revision state, and an allowlisted physical-proof error code. Do not retain provider vector bytes, original text, arbitrary error messages or unknown requested IDs.
+- Preserve retained publication/capture verification decisions, exact Float32 byte comparison (including negative zero), physical checkpoint and receipt proof, mutation guards, SDK-only completion and existing retry/backoff. This change explains later attempts; it cannot reconstruct the fresh vector or physical race from earlier .65 failures.
+- Prepared separately from source `87a3d10026b5a727e059c12d6ed9416cfacf84a5`, with the parent-authorized .66 version metadata synchronized. Commit, packaging and deployment remain pending parent review. Validation and limits: `docs/customizations/RETAINED-PROOF-DIAGNOSTICS.md`. Long-term memory recording remains pending manual review.
+
+## [0.9.32-daniel.65] — 2026-11-10
+- Complete a retained embedding retry only when a fresh embedding of the current canonical source exactly matches the retained WAL and loaded vector bytes and session, with current native checkpoint/receipt evidence revalidated during publication. Preserve the original WAL and vector mutation guard; changed or missing evidence remains pending. Retain bounded prior retry and commit metadata with the SDK-only completion marker.
+- Apply the operator's 2026-11-10 memory tuning: pause below18% available, recover above22% available continuously for120seconds. Keep the2GiB pause floor,3GiB recovery floor,5%/512MiB critical boundary and existing storage/manual holds.
+- Implementation and focused regression evidence are recorded in `docs/customizations/RETAINED-EMBEDDING-65.md`. Operating application, selected capture recovery and long-term memory review remain separate acceptance steps.
+
+## [0.9.32-daniel.64] — 2026-11-08
+## [0.9.32-daniel.63] — 2026-11-07
+- Keep fresh SDK-v2 source retention and reference admission under one lease. Share the native hook's original deadline across lock acquisition and transport, reserving 750ms for final state recording. Preserve retained-source acknowledgement if reference admission fails, retain the default 150ms lock contract without an explicit deadline, and leave exhausted pending work queued before any send. Unknown transport outcomes remain held; existing held/sending records never become a successful pending result merely because time ran out.
+- Claim and read the selected body under the same lease, preserving source hashing and owner fencing. No spool schema, quota, original-retention, automatic unknown-send retry or host trust changes. The source/reference publication gap under an OS crash and unbounded kernel filesystem latency are not eliminated.
+- Continue successful embedding batches after a one-second yield, only after that batch's publication has settled and other due work remains. Keep batch size five, shared model serialization, existing retry/backoff and 15-second idle/error cadence; rotate attempts so failing head items cannot starve later intents. The publication bound applies to this pump, not to the existing independent add API.
+- Reproduced the client lock/deadline failures and scheduler idle/starvation before changes. Client focused95 and independent22 tests, scheduler focused51 and independent13 tests passed in isolated homes. All39 sequential build configurations and SDK/skills/docs checks passed; TypeScript matches the30 existing .62 diagnostics. The ordinary suite passed6,515 with13 conditional skips; its unchanged12GiB SDK boundary fixture refused to start with8.77GB available. This environment limitation and operational rollout are recorded separately in `docs/customizations/CAPTURE-THROUGHPUT-63.md`; production remains on .62b and manual long-term-memory review is pending.
+
+## [0.9.32-daniel.62] — 2026-11-07
+- Fix deferred observation embedding certification rejecting an unchanged source when another observation in the same session is written. Reuse the existing durability fence's per-key revision observers, including already pending mutations, and release each selected watch after certification, failure or worker stop. Preserve source replacement/deletion/ABA, intent-generation, missing-fence and uncertain SDK outcome refusals.
+- Base the .62 server preparation on .61 commit `f8246e56eb666ef0f9cefa9135ccbe4df5b9deb6`. Keep the .61 client queue repair, server mutation fencing and batch/publication scheduling unchanged. Acquire the new-capture watch after viewer/logging side effects so failed display handling preserves the source/inbox without leaking an unstarted watch. The false rejection and lifecycle failure were reproduced before their fixes; focused mutation/fence/capture regression, all39 sequential build configurations, SDK audit, skills/docs checks and independent review passed. The30 TypeScript diagnostics exactly match .61. See `docs/customizations/EMBEDDING-SOURCE-GUARD-62.md`; operational application and manual long-term-memory review remain separate.
+
+## [0.9.32-daniel.61] — 2026-11-07
+- Fix native SDK-v2 backlog progress at full admission quotas. Existing reference transitions have a bounded additional 8 KiB workspace and completion-manifest replacement 68 KiB; new originals/references cannot consume this workspace. Preserve all originals, crash files and unknown-send holds.
+- Measure only the namespace being charged. Direct delivery claims its selected reference without reading the whole pending inbox; pending listings read manifests, and selected source bytes still receive complete hash verification before transmission. Keep owner fencing, known-not-sent backoff and matching SDK acknowledgement.
+- Prepare a client-only .61 follow-up to the .60 server. Scoped validation passed 126 distinct tests, including 1,201 actual synthetic deliveries, a saturated 1,240-reference/3,568-original fixture, retained-original hashes, compiled native hooks and concurrent/unknown-send safety. All 39 sequential build configurations, SDK dependency audit, compatibility artifacts, skills and docs checks passed. The 30 TypeScript diagnostics exactly match a fresh .60 baseline. Actual activation remains separate; see `docs/customizations/SDK-QUEUE-PROGRESS-61.md`. Long-term memory recording remains pending manual review.
+
+## [0.9.32-daniel.60] — 2026-11-07
+- Read retained capture inboxes through the existing local streaming reader with SDK-acknowledged changes overlaid. Project status and bounded previews before retaining rows, so capture admission, review and retry no longer request an oversized shared SDK frame. Read keyed review metadata once for status instead of making one SDK call per retained original. Keep original payloads and existing per-source completion proofs.
+- Add an explicitly invoked selected-source recovery entry for held SDK-v2 sources. Revalidate the retained original, claim it atomically, verify the restore reply, and preserve the original after SDK acknowledgement. Ordinary hooks do not invoke restoration; SDK acknowledgement is not a disk durability claim.
+- Preserve the installed compatibility hooks in the server-only release. Source validation, package/native acceptance and operational application are recorded separately in `docs/customizations/CAPTURE-INBOX-60.md` and the November 7 incident dossier.
+
+## [0.9.32-daniel.59] — 2026-11-07 (held recovery candidate)
+
+- Support explicit authenticated recovery of a bounded set of vector upserts whose pending and checkpoint records agree in the native store. Preserve the original upserts and record their verified coverage separately. Revalidate coverage on restart and distinguish retained records from pending publication in the index status.
+- Require the current cooperative writer, stable checkpoint, matching physical keys and vector bytes. Conflicting updates, clears or incomplete evidence leave recovery blocked. Automatic recovery and deployment resume cannot authorize new coverage.
+- Preserve standalone disk-mode indexing when the approved file store has no retention records. During capture reconciliation, a lagging checkpoint timestamp can converge for up to 1.5 seconds before the full evidence check. A failed check leaves the capture and original log intact.
+- Record the deployment and operational acceptance separately from this source candidate in the November 7 incident report.
+
+## [0.9.32-daniel.58] — 2026-11-06 (recovery review candidate)
+
+- Based on the installed .55 Git commit `4605974f337a50ed7e0ef74e3bb635b6e5d5a805` and the scoped .57 held-start changes from `3148e1d0a3df0241b69b2166085b10ed5979b99f`. This is a separate review candidate for the November 6 outage.
+- Limit SDK vector checkpoint reads to one bucket at a time and stop on the first read error. Preserve concurrent reads for disk completion. Keep the .57 guard on vector work during an unresolved storage hold and skip full inbox scans by automatic Viewer updates.
+- Give unresolved native worker ownership its own exit status (78). The managed native unit stops retrying that refusal and continues to retry transient failures.
+- When memory and storage are both held, release only the memory hold after sustained recovery and a fresh post-wait memory sample. Keep the storage hold and require explicit storage recovery.
+- Before an explicit SDK storage recovery, require an empty, readable vector pending log. Retain existing intent and refuse activation when there are entries, unconfirmed reads, or in-flight local log writes.
+- The candidate passed 335 focused tests across 15 files, including Chromium, CLI startup, memory recovery and vector intent. All 38 build configurations, asset copying and the server SDK audit passed in sequential batches. The parallel build exceeded the configured V8 heap limits of 700 and 1280 MiB. TypeScript reported the same 30 pre-existing diagnostics as .55.
+- Production remains on .55. The incident report records operational evidence and outstanding non-clean recovery admission.
+
+## [0.9.32-daniel.57] — 2026-11-06
+- Prepare scoped storage-hold protection and viewer status load mitigation; SDK completion remains distinct from disk persistence. Not deployed; compound-hold automatic release is not implemented. See docs/customizations/SCOPED-HOLD-RECOVERY-57.md.
 
 ## [0.9.32-daniel.55] — 2026-11-04
 ### Prepared integration (not deployed)
@@ -573,6 +690,20 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.33-daniel.73]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.72...v0.9.33-daniel.73
+[0.9.33-daniel.72]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.71...v0.9.33-daniel.72
+[0.9.33-daniel.71]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.70...v0.9.33-daniel.71
+[0.9.33-daniel.70]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.69...v0.9.33-daniel.70
+[0.9.33-daniel.69]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.68...v0.9.33-daniel.69
+[0.9.32-daniel.67]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.66...v0.9.32-daniel.67
+[0.9.32-daniel.66]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.65...v0.9.32-daniel.66
+[0.9.32-daniel.65]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.64...v0.9.32-daniel.65
+[0.9.32-daniel.64]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.63...v0.9.32-daniel.64
+[0.9.32-daniel.63]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.62...v0.9.32-daniel.63
+[0.9.32-daniel.62]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.61...v0.9.32-daniel.62
+[0.9.32-daniel.61]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.60...v0.9.32-daniel.61
+[0.9.32-daniel.60]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.59...v0.9.32-daniel.60
+[0.9.32-daniel.57]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.55...v0.9.32-daniel.57
 [0.9.32-daniel.55]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.54...v0.9.32-daniel.55
 [0.9.31-daniel.54]: https://github.com/rohitg00/agentmemory/compare/v0.9.31-daniel.51...v0.9.31-daniel.54
 

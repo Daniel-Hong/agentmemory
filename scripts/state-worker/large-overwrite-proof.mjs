@@ -1,0 +1,25 @@
+// Isolated release smoke. Explicit binaries/modules only; never contacts production.
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,resolve} from 'node:path';import {pathToFileURL} from 'node:url';import {spawn} from 'node:child_process';import {createServer} from 'node:net';import {createHash} from 'node:crypto';import assert from 'node:assert/strict';
+const [engineBinary,stateBinary,sdkModule,outputDirectory]=process.argv.slice(2);if(!engineBinary||!stateBinary||!sdkModule)throw Error('Usage: node --max-old-space-size=1536 large-overwrite-proof.mjs ENGINE STATE SDK_MODULE [OUTPUT]');
+const {registerWorker}=await import(pathToFileURL(resolve(sdkModule)).href);
+const dir=outputDirectory?resolve(outputDirectory):mkdtempSync(join(tmpdir(),'state-large-proof-'));mkdirSync(dir,{recursive:true});mkdirSync(join(dir,'home'),{recursive:true});
+const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));
+writeFileSync(join(dir,'engine.yaml'),`workers:\n  - name: configuration\n    config:\n      adapter:\n        name: fs\n        config:\n          directory: ${JSON.stringify(join(dir,'config'))}\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: ${port}\n`);
+writeFileSync(join(dir,'state.yaml'),`adapter:\n  name: kv\n  config:\n    store_method: file_based\n    file_path: ${JSON.stringify(join(dir,'store'))}\n    save_interval_ms: 3600000\n`);
+let engine,state,sdk,workerPeakKiB=0,enginePeakKiB=0;const processes=[];
+const env={...process.env,HOME:join(dir,'home'),III_TELEMETRY_ENABLED:'false',OTEL_ENABLED:'false'};
+const start=(binary,args,log)=>{const child=spawn(resolve(binary),args,{env,stdio:['ignore','pipe','pipe']});processes.push(child);for(const stream of [child.stdout,child.stderr])stream.on('data',data=>{import('node:fs').then(fs=>fs.appendFileSync(join(dir,log),data));});return child;};
+const stop=async child=>{if(child&&child.exitCode===null&&child.signalCode===null){const ended=new Promise(r=>child.once('exit',r));child.kill('SIGTERM');const timer=setTimeout(()=>child.kill('SIGKILL'),10000);await ended;clearTimeout(timer);}};
+const sample=setInterval(()=>{for(const [child,kind]of [[state,'state'],[engine,'engine']]){try{const match=/^VmHWM:\s+(\d+)/m.exec(readFileSync(`/proc/${child.pid}/status`,'utf8'));const n=Number(match?.[1]??0);if(kind==='state')workerPeakKiB=Math.max(workerPeakKiB,n);else enginePeakKiB=Math.max(enginePeakKiB,n);}catch{}}},100);
+const connect=async()=>{engine=start(engineBinary,['--no-update-check','-c',join(dir,'engine.yaml')],'engine.log');await new Promise(r=>setTimeout(r,1000));state=start(stateBinary,['--url',`ws://127.0.0.1:${port}`,'--config',join(dir,'state.yaml')],'state.log');sdk=registerWorker(`ws://127.0.0.1:${port}`,{workerName:'large-release-proof',invocationTimeoutMs:60000,enableMetricsReporting:false,otel:{enabled:false}});for(let i=0;i<60;i++){try{return await sdk.trigger({function_id:'state::boot_identity',payload:{}});}catch{await new Promise(r=>setTimeout(r,100));}}throw Error('isolated State did not become ready');};
+const key={scope:'synthetic:large-overwrite',key:'record'},size=34*1024*1024;
+const value=c=>({sourceRaw:c.repeat(size),offsets:{offset:size},retry:{attempts:2},holds:['storage_error'],unknown:true});const hash=v=>createHash('sha256').update(v.sourceRaw).digest('hex');
+try{
+ const identity=await connect();const call=(name,payload)=>sdk.trigger({function_id:`state::${identity.instanceId}::${name}`,payload});
+ let expected;
+ for(const char of ['A','B']){const data=value(char);assert(Buffer.byteLength(JSON.stringify(data))>=33556506);expected=hash(data);assert.equal(await call('set_ack',{...key,value:data}),true);const got=await call('get',key);assert.equal(got.sourceRaw.length,size);assert.equal(hash(got),expected);assert.deepEqual(got.offsets,data.offsets);console.log(JSON.stringify({stage:'overwrite',character:char,jsonBytes:Buffer.byteLength(JSON.stringify(data)),ack:true,digest:expected}));}
+ const receipt=await call('seal_flush',{});assert.deepEqual(receipt,{version:1,instanceId:identity.instanceId,storePath:identity.storePath,sealed:true,synced:true});
+ await sdk.shutdown();sdk=null;await stop(state);await stop(engine);
+ const next=await connect();assert.notEqual(next.instanceId,identity.instanceId);const got=await sdk.trigger({function_id:`state::${next.instanceId}::get`,payload:key});assert.equal(got.sourceRaw.length,size);assert.equal(hash(got),expected);assert.equal(got.retry.attempts,2);assert.deepEqual(got.holds,['storage_error']);assert.equal(got.unknown,true);
+ console.log(JSON.stringify({stage:'restart',digest:expected,preserved:true,sealedFsync:true,workerPeakKiB,enginePeakKiB,nodePeakKiB:process.resourceUsage().maxRSS,output:dir}));
+}finally{clearInterval(sample);if(sdk)await sdk.shutdown();for(const child of processes.reverse())await stop(child);}

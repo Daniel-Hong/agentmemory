@@ -1,6 +1,12 @@
-import {createRecordRecoveryGate} from './recovery-write-gate.js'
+import {isStateDispatchRejected,localMutationRejected} from '../ops/state-dispatch-error.mjs'
+import { lstatSync, realpathSync } from 'node:fs'
+import { join } from 'node:path'
+import {bucketScope, reconcileCheckpoint, readRetention, receiptFor, RETAINED_SCOPE, type RetentionReceipt, type RecoverySelection} from './vector-checkpoint-reconciliation.js'
+import {KV} from './schema.js'
+import {createRecordRecoveryGate, createRecoveryWriteGate} from './recovery-write-gate.js'
 import {ownsFileWriterLease,fileWriterReadCurrent,fileWriterRecoveryAdmitted,fileWriterRecoveryReason,type FileWriterLease} from '../ops/file-writer-lease.mjs'
 import { createCaptureReceiptPage } from '../capture/receipt-page.js'
+import {decodeCursor,encodeCursor} from './list-query.js'
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
 import { getEnvVar } from '../config.js'
@@ -20,6 +26,7 @@ export interface StateKVOptions {
   writerLease?: FileWriterLease
   backend?: StateBackend
   durability?: ReturnType<typeof createStateDurabilityFence>
+  compactSummaryWrites?: boolean
 }
 
 type UpdateOp = { type: string; path: string; value?: unknown }
@@ -117,10 +124,22 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
     .map((entry) => entry.value)
 }
 
+export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promise<T[]> {
+  if (typeof kv.iterate !== 'function') return kv.list<T>(scope)
+  const out: T[] = []
+  for await (const page of kv.iterate<T>(scope)) out.push(...page)
+  if (kv.backend === 'redis') return orderLikeInsertion(out)
+  return out
+}
+
 export class StateKV {
   private readonly summaryNamespaceLock = `summary-namespace:${++summaryLockSequence}`
   private writerLease?:FileWriterLease
   private writerStorePath?:string
+  private checkpointStorePath?:string
+  private readonly vectorWrites = createRecoveryWriteGate()
+  private vectorRevision = 0
+  get vectorCheckpointRevision() { return this.vectorRevision }
   private uncertainMutation=false
   get recoveryBlockReason(){return this.uncertainMutation?'WRITER_MUTATION_UNCERTAIN':this.writerLease?fileWriterRecoveryReason(this.writerLease):'FILE_WRITER_UNSUPPORTED'}
   get mutationOutcomeUncertain(){return this.uncertainMutation}
@@ -133,13 +152,16 @@ export class StateKV {
   readonly captureReceiptPage: ReturnType<typeof createCaptureReceiptPage> | null
   readonly auditReader: ReturnType<typeof createAuditReader> | null
   private readonly summaryCount: ReturnType<typeof createSummaryCount> | null
+  private readonly compactSummaryWrites: boolean
 
   constructor(
     private sdk: IIIClient,
     options: StateKVOptions = {},
   ) {
+    this.compactSummaryWrites = options.compactSummaryWrites === true
     this.backend = options.backend ?? 'file'
     const storePath = this.backend === 'file' ? getEnvVar('AGENTMEMORY_STATE_STORE_PATH') : undefined
+    this.checkpointStorePath = storePath
     if (this.backend === 'file' && storePath && ownsFileWriterLease(options.writerLease,storePath)) {this.recoveryWrite=createRecordRecoveryGate();this.writerLease=options.writerLease;this.writerStorePath=storePath;}
     this.durability = this.backend === 'file'
       ? options.durability ?? (storePath ? createStateDurabilityFence({ storePath, completion: 'sdk' }) : null)
@@ -152,12 +174,57 @@ export class StateKV {
   }
 
   private guardedMutation<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-    const operation=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(Error('WRITER_EPOCH_UNVERIFIED'));return fn()}
-    const serialized=async()=>{try{return await operation()}catch(error){this.markMutationUncertain(scope);throw error}}
+    const operation=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(localMutationRejected('FILE_WRITER_LOST'));if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(localMutationRejected('WRITER_EPOCH_UNVERIFIED'));return fn()}
+    const serialized=async()=>{try{return await operation()}catch(error){if(!isStateDispatchRejected(error))this.markMutationUncertain(scope);throw error}}
     // Keep queued mutations visible to the durability/shutdown fence. The gate
     // belongs inside the tracked operation, rather than before performMutation.
-    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>scope==='mem:summaries'?withKeyedLock(this.summaryNamespaceLock,serialized):operation())}
-    return this.recoveryWrite ? this.recoveryWrite.read(scope,key,perform) : perform()
+    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(localMutationRejected('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>scope==='mem:summaries'?withKeyedLock(this.summaryNamespaceLock,serialized):operation())}
+    if (!this.recoveryWrite) return perform()
+    const vectorNamespace = scope===KV.vectorPendingLog || scope===RETAINED_SCOPE || scope.startsWith(KV.bm25Index+':vec:') ||
+      (scope===KV.bm25Index && key==='vectors:meta')
+    if (!vectorNamespace) return this.recoveryWrite.read(scope,key,perform)
+    return this.recoveryWrite.read(scope,key,()=>this.vectorWrites.read(async()=>{
+      try { return await perform() } finally { this.vectorRevision++ }
+    }))
+  }
+
+  canUseUnloadedDiskIndex(): boolean {
+    // Standalone disk-fenced callers may start with an empty index. Once a receipt
+    // exists, only the normal load/revalidation path can admit its retained WAL.
+    const store = this.checkpointStorePath
+    if (this.durability?.completion !== 'disk' || !store) return false
+    try {
+      return realpathSync(store) === store && lstatSync(store).isDirectory() &&
+        lstatSync(join(store, encodeURIComponent(RETAINED_SCOPE) + '.bin'), {throwIfNoEntry: false}) === undefined
+    } catch { return false }
+  }
+
+  async readVectorRetention():Promise<RetentionReceipt[]> {
+    if (this.backend !== 'file') return []
+    if (!this.checkpointStorePath) throw Error('vector_retention_store_unverified')
+    return readRetention(this,this.checkpointStorePath,()=>!this.uncertainMutation &&
+      (!this.writerLease || ownsFileWriterLease(this.writerLease,this.checkpointStorePath!)))
+  }
+
+  async reconcileVectorCheckpoint(selection:RecoverySelection,current:()=>boolean,expectedRevision:number,authorize:boolean,waitForCaptureMeta=false):Promise<RetentionReceipt[]>{
+    const gate=this.recoveryWrite, storePath=this.writerStorePath
+    if (waitForCaptureMeta && authorize) throw Error('vector_retention_capture_is_read_only')
+    if(!gate || !storePath || !this.recoveryMutationSafe || (authorize && this.durability?.completion!=='sdk'))throw Error('vector_recovery_writer_unverified')
+    const keys:Array<{scope:string;key:string}>=[{scope:KV.vectorPendingLog,key:'~clear'},{scope:KV.bm25Index,key:'vectors:meta'},
+      ...selection.pendingRows.map(({id})=>({scope:KV.vectorPendingLog,key:id}))]
+    for(const {bucket,ids} of selection.buckets)for(const id of ids){
+      const row=selection.pendingRows.find(item=>item.id===id)
+      if(!row)throw Error('vector_recovery_selection_invalid')
+      keys.push({scope:bucketScope(bucket),key:id},{scope:RETAINED_SCOPE,key:receiptFor(row,bucket).digest})
+    }
+    const verify=()=>this.vectorWrites.exclusive(async()=>{
+      if (this.vectorRevision!==expectedRevision) throw Error('vector_recovery_checkpoint_changed')
+      const admitted=()=>current() && (!authorize || gate.inExclusive()) && this.recoveryMutationSafe
+      const existing=await readRetention(this,storePath,admitted)
+      return reconcileCheckpoint(this,storePath,selection,existing,authorize,admitted,waitForCaptureMeta)
+    })
+    // Read-only rechecks can run within capture's existing record gate. They never acquire another record lock.
+    return authorize ? gate.exclusive(keys,verify) : verify()
   }
 
   private markMutationUncertain(scope:string):void {
@@ -170,11 +237,11 @@ export class StateKV {
     const finish = this.observationReader?.beginMutation?.(scope)
     try {
       return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
-        this.markMutationUncertain(scope)
+        if(!isStateDispatchRejected(error))this.markMutationUncertain(scope)
         throw error
       }).finally(() => finish?.())
     } catch (error) {
-      this.markMutationUncertain(scope)
+      if(!isStateDispatchRejected(error))this.markMutationUncertain(scope)
       finish?.()
       throw error
     }
@@ -211,7 +278,7 @@ export class StateKV {
           if(scope==='mem:summaries'&&this.summaryCount)return withKeyedLock(`summary-state:${key}`,async()=>{
             const projection=knownValue&&!knownValue.deleted?this.summaryCount!.prepare(knownValue.value,{wire:false}):undefined
             const result=await operation(scope)
-            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection,result&&typeof result==='object'&&Object.hasOwn(result,'old_value')&&Object.hasOwn(result,'new_value')?Reflect.get(result,'new_value'):undefined)
+            if(knownValue)this.summaryCount!.record(key,knownValue.deleted!==true,projection,this.compactSummaryWrites?knownValue.value:result&&typeof result==='object'&&Object.hasOwn(result,'old_value')&&Object.hasOwn(result,'new_value')?Reflect.get(result,'new_value'):undefined)
             else if(result&&typeof result==='object'&&Object.hasOwn(result,'new_value'))this.summaryCount!.record(key,true,this.summaryCount!.prepare(Reflect.get(result,'new_value')))
             else this.summaryCount!.invalidate()
             return result
@@ -237,6 +304,18 @@ export class StateKV {
   }
 
   async set<T = unknown>(scope: string, key: string, value: T): Promise<T> {
+    if (scope === KV.summaries && this.compactSummaryWrites) {
+      const sent = JSON.parse(JSON.stringify(value)) as T
+      await this.mutate(scope, key, async (resolvedScope) => {
+        const acknowledged = await this.sdk.trigger<unknown, boolean>({
+          function_id: 'state::set_ack',
+          payload: { scope: resolvedScope, key, value: sent },
+        })
+        if (acknowledged !== true) throw Object.assign(Error('state_set_ack_unverified'), { code: 'STATE_SET_ACK_UNVERIFIED' })
+        return { new_value: sent }
+      }, { value: sent })
+      return sent
+    }
     return this.mutate(scope, key, (resolvedScope) =>
       this.sdk.trigger<{ scope: string; key: string; value: T }, T>({
         function_id: 'state::set',
@@ -316,11 +395,14 @@ export class StateKV {
     })
   }
 
-  async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation' }): Promise<T[]> {
+  async list<T = unknown>(scope: string, options?: { observationConsistency?: 'opened-generation'; project?: (value: unknown, key?: string) => T }): Promise<T[]> {
     scope = await resolveGraphScope(this, scope)
     await ensureGraphConsistency(this, scope)
-    if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope)
-    if (scope.startsWith('mem:obs:') && this.observationReader) return this.observationReader.list(scope, { consistency: options?.observationConsistency })
+    if (this.graphFileList?.accepts(scope)) return this.graphFileList.list<T>(scope, options)
+    if (scope.startsWith('mem:obs:') && this.observationReader) {
+      const rows = await this.observationReader.list<T>(scope, { consistency: options?.observationConsistency })
+      return options?.project ? rows.map(value => options.project!(value)) : rows
+    }
     const read = () => this.sdk.trigger<{ scope: string }, T[]>({
       function_id: 'state::list',
       payload: { scope },
@@ -338,8 +420,147 @@ export class StateKV {
         return rows
       })
       : await read()
-    if (this.backend !== 'redis' || !Array.isArray(values)) return values
-    return orderLikeInsertion(values)
+    const ordered = this.backend === 'redis' && Array.isArray(values) ? orderLikeInsertion(values) : values
+    return options?.project && Array.isArray(ordered) ? ordered.map(value => options.project!(value)) : ordered
+  }
+
+  async listKeys(scope: string): Promise<string[]> {
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    return this.rawListKeys(scope)
+  }
+
+  private async rawListKeys(scope: string): Promise<string[]> {
+    const result = await this.sdk.trigger<{ scope: string }, unknown>({
+      function_id: 'state::list_keys',
+      payload: { scope },
+    })
+    const keys = Array.isArray(result) ? result : (result as {keys?:unknown})?.keys
+    if(!Array.isArray(keys)||!keys.every(key=>typeof key==='string'))throw Error('state::list_keys returned an unexpected shape')
+    return keys
+  }
+
+  async getMany<T = unknown>(
+    scope: string,
+    keys: string[],
+    opts: { concurrency?: number } = {},
+  ): Promise<Array<T | null>> {
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    const concurrency = Math.min(64, Math.max(1, Math.floor(opts.concurrency ?? 16)))
+    return this.rawGetMany<T>(scope, keys, concurrency)
+  }
+
+  private async rawGetMany<T = unknown>(
+    scope: string,
+    keys: string[],
+    concurrency: number,
+  ): Promise<Array<T | null>> {
+    const out: Array<T | null> = new Array(keys.length).fill(null)
+    for (let start = 0; start < keys.length; start += concurrency) {
+      const slice = keys.slice(start, start + concurrency)
+      const values = await Promise.all(
+        slice.map((key) =>
+          this.sdk.trigger<{ scope: string; key: string }, T | null>({
+            function_id: 'state::get',
+            payload: { scope, key },
+          }),
+        ),
+      )
+      for (let i = 0; i < slice.length; i++) out[start + i] = values[i] ?? null
+    }
+    return out
+  }
+
+  private async withSummaryRead<T>(scope: string, read: () => Promise<T>): Promise<T> {
+    if (scope !== KV.summaries || !this.summaryCount) return read()
+    return withKeyedLock(this.summaryNamespaceLock, async () => {
+      const check = () => {
+        if (this.uncertainMutation) throw Error('summary_list_mutation_uncertain')
+        if (this.writerLease && !fileWriterReadCurrent(this.writerLease)) throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+      }
+      check()
+      const result = await read()
+      check()
+      return result
+    })
+  }
+
+  async *iterate<T = unknown>(
+    scope: string,
+    opts: { pageSize?: number } = {},
+  ): AsyncGenerator<T[]> {
+    const pageSize = Math.min(1000, Math.max(1, Math.floor(opts.pageSize ?? 200)))
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    // Keep custom opened-generation readers.
+    if(this.graphFileList?.accepts(scope)||(scope.startsWith('mem:obs:')&&this.observationReader)){
+      const rows=await this.list<T>(scope);
+      for(let start=0;start<rows.length;start+=pageSize)yield rows.slice(start,start+pageSize);
+      return;
+    }
+    if (scope === KV.summaries && this.summaryCount) {
+      // Preserve the whole-read namespace lock, but never request a full-list
+      // transport frame. Materialize before yielding so consumer code cannot
+      // retain the lock or deadlock by writing during an async iteration.
+      const rows = await this.withSummaryRead(scope, async () => {
+        const keys = await this.rawListKeys(scope)
+        const rows: T[] = []
+        for (let start = 0; start < keys.length; start += pageSize) {
+          const page = await this.rawGetMany<T>(scope, keys.slice(start, start + pageSize), 16)
+          rows.push(...page.filter((value): value is T => value !== null && value !== undefined))
+        }
+        return rows
+      })
+      for (let start = 0; start < rows.length; start += pageSize) yield rows.slice(start, start + pageSize)
+      return
+    }
+    const keys = await this.rawListKeys(scope)
+    for (let start = 0; start < keys.length; start += pageSize) {
+      const values = await this.rawGetMany<T>(scope, keys.slice(start, start + pageSize), 16)
+      let page = values.filter((value): value is T => value !== null && value !== undefined)
+      if (this.backend === 'redis') page = orderLikeInsertion(page)
+      if (page.length) yield page
+    }
+  }
+
+  async listPage<T = unknown>(
+    scope: string,
+    opts: { limit: number; cursor?: string; order?: 'desc' | 'asc' },
+  ): Promise<{ items: T[]; nextCursor?: string; total: number }> {
+    const limit = Math.max(1, Math.floor(opts.limit))
+    const direction = opts.order === 'asc' ? 1 : -1
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    return this.withSummaryRead(scope, async () => {
+    const keys = await this.rawListKeys(scope)
+    const ranked = keys.map((key) => ({ key, at: generatedIdTime(key) }))
+    const rank = (entry: { key: string; at: number | null }) =>
+      entry.at === null ? Number.NEGATIVE_INFINITY : entry.at
+    const compare = (a: { key: string; at: number | null }, b: { key: string; at: number | null }) => {
+      if (rank(a) !== rank(b)) return (rank(a) - rank(b)) * direction
+      return (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) * direction
+    }
+    ranked.sort(compare)
+    const position = decodeCursor(opts.cursor)
+    let start = 0
+    if (position?.key) {
+      const at = generatedIdTime(position.key)
+      start = ranked.findIndex((entry) => compare(entry, { key: position.key!, at }) > 0)
+      if (start < 0) start = ranked.length
+    }
+    const pageKeys = ranked.slice(start, start + limit).map((entry) => entry.key)
+    const values = await this.rawGetMany<T>(scope, pageKeys, 16)
+    const items = values.filter((value): value is T => value !== null && value !== undefined)
+    const hasMore = start + pageKeys.length < ranked.length
+    return {
+      items,
+      total: ranked.length,
+      ...(hasMore && pageKeys.length
+        ? { nextCursor: encodeCursor({ key: pageKeys[pageKeys.length - 1]! }) }
+        : {}),
+    }
+    })
   }
 
   async listGroups(): Promise<string[]> {

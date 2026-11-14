@@ -484,8 +484,8 @@ export function evaluateStatus(input: StatusInputs): StatusReport {
     problems.push({
       level: "info",
       code: "capture-check-unavailable",
-      message: "The capture inbox did not answer in time, so capture was not checked.",
-      fix: "The check runs again on the next status request. If it keeps timing out, the state store is overloaded: check the server log.",
+      message: "The capture inbox was not checked or did not answer in time.",
+      fix: "Use the explicit capture status request to inspect the inbox. If that request times out, check the server log.",
     });
   }
   problems.push(...captureProblems(input.capture ?? null, input.now, input.ports.rest));
@@ -721,10 +721,10 @@ function indexPersistenceRows(report: StatusReport): string {
       "Vector storage",
       escapeHtml(`${plural(persistence.buckets, "bucket")}, ${plural(persistence.pendingChanges, "unsaved change")}`),
     );
-    if (persistence.pendingLog !== undefined) {
+    if (persistence.pendingLog !== undefined || persistence.pendingLogKnown === false) {
       rows += row(
         "Pending vector log",
-        escapeHtml(plural(persistence.pendingLog, "vector change")) +
+        (persistence.pendingLogKnown === false || persistence.pendingLog === undefined ? "not checked" : escapeHtml(plural(persistence.pendingLog, "vector change"))) +
           `<p class="note">${escapeHtml(PENDING_LOG_EXPLAINER)}</p>`,
       );
     }

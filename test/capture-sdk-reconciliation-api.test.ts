@@ -21,6 +21,44 @@ it('reads explicit recorded outcome without claiming disk proof or current sourc
 it('exposes current index membership in one body-free readonly function',async()=>{const f=await fixture();const result=await f.sdk.fns.get('api::capture-index-membership')!({headers:f.headers,query_params:{ids:id}})as any;expect(result).toMatchObject({status_code:200,body:{sourceVerified:false,diskVerified:false,items:[{id,keywordPresent:true,vectorPresent:true}]}});expect(JSON.stringify(result)).not.toContain('private synthetic original');expect(f.writes).not.toHaveBeenCalled()});
 it('stops admission after capture shutdown and drains existing tracked work',async()=>{const f=await fixture();f.control.stop();expect((await f.call()).body.completed).toBe(false);await f.control.drain();expect(f.writes).not.toHaveBeenCalled()});
 
+it('does not read inbox for automatic viewer status and keeps result unknown',async()=>{
+ const f=await fixture();const list=vi.spyOn(f.kv,'list');
+ const {createStatusReporter}=await import('../src/triggers/api.js');
+ const report=createStatusReporter(f.sdk as never,f.kv as never,{});
+ const result=await report({health:null,scanUnindexed:false,scanCaptureInbox:false} as never);
+ expect(list.mock.calls.filter(([scope])=>scope===KV.captureInbox)).toHaveLength(0);
+ expect(result.capture?.inbox).toBeNull();
+ expect(result.problems.some(p=>p.code==='capture-check-unavailable')).toBe(true);
+});
+it('retains the explicit authenticated capture inbox check',async()=>{
+ const f=await fixture();const list=vi.spyOn(f.kv,'list');
+ const status=await f.control.status();expect(status.inbox).not.toBeNull();
+ expect(list.mock.calls.filter(([scope])=>scope===KV.captureInbox)).toHaveLength(1);
+});
+it('skips inbox reads in viewer snapshot and health events',async()=>{
+ const f=await fixture();Object.assign(f.kv,{countSummaries:async()=>0});
+ const {registerViewerStreamTriggers}=await import('../src/triggers/viewer-streams.js');
+ registerViewerStreamTriggers(f.sdk as never,f.kv as never,{});
+ const list=vi.spyOn(f.kv,'list');
+ const snapshot=await f.sdk.fns.get('api::viewer-snapshot')!({headers:{}}) as any;
+ expect(snapshot.status_code).toBe(200);expect(snapshot.body.report.capture.inbox).toBeNull();
+ list.mockClear();
+ const healthEvent=await f.sdk.fns.get('event::viewer::health-changed')!({key:'latest',event_type:'state:updated',new_value:{status:'healthy',alerts:[]}}) as any;
+ expect(healthEvent).toMatchObject({emitted:true});
+ expect(list.mock.calls.filter(([scope])=>scope===KV.captureInbox)).toHaveLength(0);
+});
+it('does not report healthy when capture pending work is unknown',async()=>{
+ const f=await fixture();const {operationalState}=await import('../src/ops/context.js');
+ const prior=operationalState.captureProgress;
+ try{
+  operationalState.captureProgress={snapshot:()=>({pending:null,stalled:false})} as never;
+  await f.kv.set(KV.health,'latest',{status:'healthy',alerts:[]});
+  const response=await f.sdk.fns.get('api::health')!({}) as any;
+  expect(response.body.status).toBe('degraded');
+  expect(response.body.captureProgress.pending).toBeNull();
+ }finally{operationalState.captureProgress=prior}
+});
+
 it('holds drain until an in-flight reconciliation exits and stops before further writes after shutdown',async()=>{
  const f=await fixture();let entered!:()=>void,release!:()=>void;const reached=new Promise<void>(r=>entered=r),blocked=new Promise<void>(r=>release=r);const get=f.kv.get.bind(f.kv);let intercepted=false;
  f.kv.get=async(s,k)=>{if(!intercepted&&s===KV.captureInbox&&k===key){intercepted=true;entered();await blocked;}return get(s,k)};
@@ -52,6 +90,18 @@ it('bounds SDK archive status history reads to four while preserving validated c
  expect(active).toBe(0);
  expect(peak).toBeLessThanOrEqual(4);
 });
+
+it('real viewer health update omits the inbox scan',async()=>{const f=await fixture();Object.assign(f.kv,{countSummaries:async()=>0});const {registerViewerStreamTriggers}=await import('../src/triggers/viewer-streams.js');registerViewerStreamTriggers(f.sdk as never,f.kv as never,{});const list=vi.spyOn(f.kv,'list');const event=await f.sdk.fns.get('event::viewer::health-changed')!({key:'latest',event_type:'state:updated',new_value:{status:'healthy',alerts:[]}}) as any;expect(event).toMatchObject({emitted:true});expect(list.mock.calls.filter(([scope])=>scope===KV.captureInbox)).toHaveLength(0)});
+it('returns a retryable service error when remember is refused by the vector hold',async()=>{const f=await fixture();f.sdk.fns.set('mem::remember',async()=>({success:false,error:'vector_recovery_paused',retryable:true}));const out=await f.sdk.fns.get('api::remember')!({headers:{authorization:'Bearer synthetic-secret'},body:{content:'synthetic'}}) as any;expect(out).toMatchObject({status_code:503,body:{success:false,error:'vector_recovery_paused',retryable:true}})});
+it.each([['forget','mem::forget',{memoryId:'synthetic'}],['evict','mem::evict',{}],['evolve','mem::evolve',{memoryId:'synthetic',newContent:'synthetic'}],['governance-delete','mem::governance-delete',{memoryIds:['synthetic']}],['governance-bulk','mem::governance-bulk',{}]])('returns a retryable 503 for held %s',async(api,fn,body)=>{const f=await fixture();f.sdk.fns.set(fn,async()=>({success:false,error:'vector_recovery_paused',retryable:true}));const out=await f.sdk.fns.get('api::'+api)!({headers:{authorization:'Bearer synthetic-secret'},body,query_params:{}}) as any;expect(out).toMatchObject({status_code:503,body:{success:false,error:'vector_recovery_paused',retryable:true}})});
+it.each([['auto-forget','mem::auto-forget',{}],['snapshot-restore','mem::snapshot-restore',{commitHash:'synthetic'}]])('returns retryable 503 for held %s',async(api,fn,body)=>{const f=await fixture();f.sdk.fns.set(fn,async()=>({success:false,error:'vector_recovery_paused',retryable:true}));const out=await f.sdk.fns.get('api::'+api)!({headers:{authorization:'Bearer synthetic-secret'},body,query_params:{}}) as any;expect(out).toMatchObject({status_code:503,body:{success:false,error:'vector_recovery_paused',retryable:true}})});
+it.each([['import','mem::import',{exportData:{}}],['replay::import','mem::replay::import-jsonl',{}]])('returns retryable 503 for held %s',async(api,fn,body)=>{const f=await fixture();f.sdk.fns.set(fn,async()=>({success:false,error:'vector_recovery_paused',retryable:true}));const out=await f.sdk.fns.get('api::'+api)!({headers:{authorization:'Bearer synthetic-secret'},body,query_params:{}}) as any;expect(out).toMatchObject({status_code:503,body:{success:false,error:'vector_recovery_paused',retryable:true}})});
+it('inspects an uncertain item by original identifiers and content without writes or replay',async()=>{const f=await fixture();const inspect=f.sdk.fns.get('api::capture-inspect-uncertain');expect(inspect).toBeTypeOf('function');const out=await inspect!({headers:f.headers,body:{key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp}}) as any;expect(out).toMatchObject({status_code:200,body:{outcome:'observation_matches',readOnly:true,diskVerified:false,originalReplay:false,retryAuthorized:false}});expect(f.writes).not.toHaveBeenCalled()});
+it('does not infer retry is safe when an uncertain observation is absent or source differs',async()=>{const f=await fixture();await f.kv.delete(KV.observations(payload.sessionId),id);const inspect=f.sdk.fns.get('api::capture-inspect-uncertain');expect(inspect).toBeTypeOf('function');const absent=await inspect!({headers:f.headers,body:{key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp}}) as any;expect(absent).toMatchObject({status_code:200,body:{outcome:'observation_not_found',retryAuthorized:false,diskVerified:false}});const mismatch=await inspect!({headers:f.headers,body:{key,eventId,sourceDigest:'0'.repeat(64),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp}}) as any;expect(mismatch.status_code).toBe(409);expect(f.writes).not.toHaveBeenCalled()});
+it('allows the SDK caller metadata without accepting extra inspection fields',async()=>{const f=await fixture();const direct=f.sdk.fns.get('mem::capture-inspect-uncertain')!;expect(await direct({key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp,_caller_worker_id:'synthetic-worker'})).toMatchObject({outcome:'observation_matches',readOnly:true});await expect(direct({key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp,extra:true})).rejects.toThrow();expect(f.writes).not.toHaveBeenCalled()});
+
+it('requires a configured secret and exact original metadata for uncertain inspection',async()=>{const f=await fixture(),body={key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp};const handler=f.sdk.fns.get('api::capture-inspect-uncertain')!;expect((await handler({headers:{},body}) as any).status_code).toBe(401);expect((await handler({headers:f.headers,body:{...body,cwd:'/different'}}) as any).status_code).toBe(409);registerApiTriggers(f.sdk as never,f.kv as never,'');const unconfigured=await f.sdk.fns.get('api::capture-inspect-uncertain')!({headers:{},body}) as any;expect(unconfigured.status_code).toBe(503);expect(f.writes).not.toHaveBeenCalled()});
+it('refuses changing observations and reports read failures without mutation',async()=>{const f=await fixture(),body={key,eventId,sourceDigest:capturePayloadDigest(payload),project:payload.project,sessionId:payload.sessionId,cwd:payload.cwd,hookType:payload.hookType,timestamp:payload.timestamp},handler=f.sdk.fns.get('api::capture-inspect-uncertain')!,get=f.kv.get;let reads=0;f.kv.get=async<T>(scope:string,k:string)=>{const v=await get<T>(scope,k);if(scope===KV.observations(payload.sessionId)&&++reads===2)return {...v as object,title:'changed'} as T;return v};expect((await handler({headers:f.headers,body}) as any)).toMatchObject({status_code:409,body:{outcome:'changed_during_inspection',retryAuthorized:false}});f.kv.get=async()=>{throw Error('synthetic read unavailable')};expect((await handler({headers:f.headers,body}) as any)).toMatchObject({status_code:503,body:{error:'UNCERTAIN_INSPECTION_UNAVAILABLE'}});expect(f.writes).not.toHaveBeenCalled()});
 
 it('keeps timed-out or overlapping inbox calculations single while returning unavailable rather than stale counts',async()=>{
  const f=await fixture();await f.call();
@@ -125,9 +175,32 @@ it('uses the bounded proof page in the authenticated capture HTTP path and rejec
 it('keeps next offsets usable after more than ten thousand retained SDK originals',async()=>{
  const f=await fixture();await f.call();const rec=await f.kv.get<any>(KV.captureInbox,key),{sdkResolutionId,sdkResolutionState,...ordinary}=rec;
  const records=Array.from({length:10033},(_,i)=>({...ordinary,key:'cap_'+i.toString(16).padStart(40,'0')})),list=f.kv.list.bind(f.kv);
- f.kv.list=async scope=>scope===KV.captureInbox?records:list(scope);
+ f.kv.list=async (scope,options)=>scope===KV.captureInbox?options?.project?records.map(row=>options.project!(row,row.key)):records:list(scope,options);
  const first=await f.control.status({sdkProofPage:{offset:0,limit:32}} as never),generation=first.inbox!.sdkProofPage!.generation;
  const near=await f.control.status({sdkProofPage:{offset:9984,limit:32,generation}} as never);expect(near.inbox?.sdkProofPage?.nextOffset).toBe(10016);
  const last=await f.control.status({sdkProofPage:{offset:10016,limit:32,generation}} as never);expect(last.inbox?.sdkProofPage).toMatchObject({checked:17,nextOffset:null});
  const response=await f.sdk.fns.get('api::capture')!({headers:f.headers,query_params:{proofOffset:'10016',proofGeneration:generation}}) as any;expect(response.status_code).toBe(200);expect(response.body.capture.inbox.sdkProofPage.checked).toBe(17);
+});
+it('reconciliation releases only its own pending membership without rescanning preserved sources',async()=>{
+ vi.stubEnv('AGENTMEMORY_CAPTURE_INBOX_MAX','1');
+ try{
+  const f=await fixture(),list=vi.spyOn(f.kv,'list');
+  const capture=()=>f.sdk.trigger('mem::capture',{payload:{...payload,data:{tool_output:'new synthetic'}},eventId:'synthetic_capacity_after_review'});
+  expect(await capture()).toMatchObject({status:'rejected'});
+  expect((await f.call()).body).toMatchObject({completed:true,verified:false});
+  f.sdk.fns.set('mem::observe',async(p:any)=>({observationId:p.observationId}));
+  expect(await capture()).toMatchObject({status:'accepted',state:'sdk_completed'});
+  expect(list.mock.calls.filter(([scope])=>scope===KV.captureInbox)).toHaveLength(1);
+  expect(await f.kv.get(KV.captureInbox,key)).toMatchObject({storageCompletion:'sdk',payload});
+  expect(await f.kv.get(KV.captureReview,key)).toMatchObject({failures:[{code:'CAPTURE_STORE_TIMEOUT'}]});
+ }finally{vi.unstubAllEnvs();}
+});
+it('reconciliation waiting for a capture key never holds the admission lock in reverse order',async()=>{
+ const {withKeyedLock}=await import('../src/state/keyed-mutex.js');const f=await fixture();
+ let release!:()=>void,entered!:()=>void;const held=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r);
+ const owner=withKeyedLock('capture:'+key,async()=>{entered();await gate;});await held;
+ const reconciliation=f.call();await new Promise(r=>setTimeout(r,20));
+ const admission=withKeyedLock('capture:inbox-admission',async()=>true);
+ try{expect(await Promise.race([admission,new Promise(r=>setTimeout(()=>r(false),100))])).toBe(true);}
+ finally{release();await owner;await reconciliation;await admission;}
 });

@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { statSync, openSync, closeSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const temp = mkdtempSync(join(tmpdir(), "compose-state-error-"));
 afterEach(() => rmSync(temp, { recursive: true, force: true }));
-import { composeCall, composeEnvironment, composeRegistryFailureMessage, composeStateRegistryFailure, composeWorkerFailureSummary, ownedComposeProject, readComposeLogFromOffset, startComposeDaemon, withQuietSdkDebug, type ComposeStatus } from "../src/cli/compose-control.js";
+import { writeComposeState, composeCall, composeEnvironment, composeRegistryFailureMessage, composeStateRegistryFailure, composeWorkerFailureSummary, ownedComposeProject, readComposeLogFromOffset, startComposeDaemon, withQuietSdkDebug, type ComposeStatus } from "../src/cli/compose-control.js";
 
 describe("Compose control plane", () => {
   it("does not leak arbitrary machine credentials to the Compose daemon", () => {
@@ -163,4 +163,15 @@ describe("Compose control client output", () => {
     })).rejects.toThrow("boom");
     expect(console.debug).toBe(original);
   });
+});
+
+it("atomically replaces Compose metadata without truncating existing readers", () => {
+ mkdirSync(temp,{recursive:true});const path=join(temp,'engine-state.json');
+ const state:any={kind:'compose',enginePid:123,engineUrl:'ws://127.0.0.1:1',workerVersions:{local:true}};
+ writeComposeState(path,state);const fd=openSync(path,'r');
+ try {writeComposeState(path,{...state,enginePid:456});
+ expect(JSON.parse(readFileSync(fd,'utf8')).enginePid).toBe(123);
+ expect(JSON.parse(readFileSync(path,'utf8')).enginePid).toBe(456);
+ expect(statSync(path).mode & 0o777).toBe(0o600);
+ } finally {closeSync(fd);}
 });

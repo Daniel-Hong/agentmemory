@@ -7,7 +7,8 @@ import {
   GraphIndexMigrationController, getGraphIndexMigrationStatus, graphIndexManifestKey,
   type GraphIndexManifestPage, type GraphIndexMigration,
 } from "../src/state/graph-index-migration.js";
-import { createGraphIndexReader, getGraphIndexStatus } from "../src/state/graph-retrieval-index.js";
+import { createGraphIndexReader, getGraphIndexStatus, initializeGraphIndex } from "../src/state/graph-retrieval-index.js";
+import { queryGraphIndex } from "../src/functions/graph-index-query.js";
 import type { GraphNode } from "../src/types.js";
 
 const now = "2026-10-14T00:00:00.000Z";
@@ -27,7 +28,7 @@ function setup() {
     await intercept?.(fn, payload);
     const scope = rows.get(payload.scope) ?? new Map<string, unknown>();
     if (fn === "state::get") return structuredClone(scope.get(payload.key) ?? null);
-    if (fn === "state::list") return structuredClone([...scope.values()]);
+    if (fn === "state::list_keys") return {keys: [...scope.keys()]};
     if (fn === "state::set") { scope.set(payload.key, structuredClone(payload.value)); rows.set(payload.scope, scope); return payload.value; }
     if (fn === "state::delete") { scope.delete(payload.key); return; }
     throw new Error(`Unexpected ${fn}`);
@@ -37,14 +38,51 @@ function setup() {
 }
 
 describe("explicit graph index migration", () => {
+  it("replaces a ready legacy index with isolated shards without changing its data or canonical rows", async () => {
+    const { kv, controller, rows, intercept } = setup();
+    const old = await initializeGraphIndex(kv, { status: "ready" });
+    for (const id of ["a", "b", "c", "d"]) await kv.set(KV.graphNodes, id, node(id));
+    await kv.set(KV.graphEdges, "ab", {
+      id: "ab", sourceNodeId: "a", targetNodeId: "b", type: "related_to", weight: 1,
+      sourceObservationIds: ["observation"], createdAt: now,
+    });
+    const protectedScopes = [KV.graphNodes, KV.graphEdges, KV.graphRetrievalData];
+    const before = protectedScopes.map(scope => structuredClone(rows.get(scope)));
+    expect((await controller.start()).buildId).toBe(old.buildId);
+    let shardWrites = 0;
+    intercept((fn, payload) => {
+      if (fn === "state::set" && payload.scope.startsWith(`${KV.graphRetrievalData}:build:`) && ++shardWrites === 3) {
+        throw new Error("interrupted shard publication");
+      }
+    });
+    await controller.start({ allowLegacyScan: true });
+    await controller.waitForIdle();
+    expect(await controller.status()).toMatchObject({ state: "paused", ready: false });
+    const interrupted = await getGraphIndexStatus(kv);
+    expect(interrupted).toMatchObject({ schema: 3, pending: { kind: "node" } });
+    intercept();
+    await controller.start({ resume: true });
+    await controller.waitForIdle();
+    const index = await getGraphIndexStatus(kv);
+    expect(index).toMatchObject({ schema: 3, status: "ready", nodes: 4, edges: 1 });
+    expect(index!.buildId).toBe(interrupted!.buildId);
+    expect(index!.buildId).not.toBe(old.buildId);
+    expect(protectedScopes.map(scope => rows.get(scope))).toEqual(before);
+    expect([...rows.keys()].filter(scope => scope.startsWith(`${KV.graphRetrievalData}:build:${index!.buildId}:`)).length).toBeGreaterThan(1);
+    const result = await queryGraphIndex(kv, { limit: 500 });
+    expect(result.nodes.map(row => row.id).sort()).toEqual(["a", "b", "c", "d"]);
+    expect(result.edges.map(row => row.id)).toEqual(["ab"]);
+    expect((await controller.start({ allowLegacyScan: true })).buildId).toBe(index!.buildId);
+  });
+
   it("keeps legacy status and boot read-only without a snapshot or graph listing", async () => {
     const { kv, controller, calls, rows } = setup();
     rows.set(KV.graphNodes, new Map([["old", node("old")]]));
     expect(await controller.status()).toMatchObject({ state: "needs-migration", ready: false, coverage: "unknown" });
     await controller.resumeOnBoot();
-    expect(calls.some((call) => call.fn === "state::list" || call.fn === "state::set" || call.scope === KV.graphSnapshot)).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn) || call.fn === "state::set" || call.scope === KV.graphSnapshot)).toBe(false);
     await expect(controller.start()).rejects.toThrow("allowLegacyScan");
-    expect(calls.some((call) => call.fn === "state::list" || call.fn === "state::set")).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn) || call.fn === "state::set")).toBe(false);
     expect(await getGraphIndexMigrationStatus(kv)).toHaveProperty("ready", false);
   });
 
@@ -53,7 +91,7 @@ describe("explicit graph index migration", () => {
     rows.set(KV.graphNodes, new Map([["old", node("old")]]));
     const entered = deferred(); const release = deferred();
     intercept(async (fn, payload) => {
-      if (fn === "state::list" && payload.scope === KV.graphNodes) { entered.resolve(); await release.promise; }
+      if (fn === "state::list_keys" && payload.scope === KV.graphNodes) { entered.resolve(); await release.promise; }
     });
     const first = await controller.start({ allowLegacyScan: true });
     await entered.promise;
@@ -61,11 +99,11 @@ describe("explicit graph index migration", () => {
     expect((await controller.start({ allowLegacyScan: true })).jobId).toBe(first.jobId);
     expect((await controller.start({ resume: true })).jobId).toBe(first.jobId);
     const intent = calls.findIndex((call) => call.fn === "state::set" && call.scope === KV.graphIndexMigration);
-    const scan = calls.findIndex((call) => call.fn === "state::list" && call.scope === KV.graphNodes);
+    const scan = calls.findIndex((call) => call.fn === "state::list_keys" && call.scope === KV.graphNodes);
     expect(intent).toBeGreaterThanOrEqual(0); expect(intent).toBeLessThan(scan);
     release.resolve(); await controller.waitForIdle();
     expect(await controller.status()).toMatchObject({ ready: true, processed: 1, total: 1, coverage: "complete" });
-    expect(calls.filter((call) => call.fn === "state::list").map((call) => call.scope)).toEqual([KV.graphNodes, KV.graphEdges, KV.graphEdgeHistory]);
+    expect(calls.filter((call) => call.fn === "state::list_keys").map((call) => call.scope)).toEqual([KV.graphNodes, KV.graphEdges, KV.graphEdgeHistory]);
   });
 
   it("indexes empty scopes and history without changing the canonical generation or rows", async () => {
@@ -154,14 +192,14 @@ describe("explicit graph index migration", () => {
   it("requires renewed consent after an interrupted discovery and never scans at boot", async () => {
     const { controller, kv, calls, rows, intercept, sdk } = setup();
     rows.set(KV.graphNodes, new Map([["old", node("old")]]));
-    intercept((fn, payload) => { if (fn === "state::list" && payload.scope === KV.graphEdges) throw new Error("offline"); });
+    intercept((fn, payload) => { if (fn === "state::list_keys" && payload.scope === KV.graphEdges) throw new Error("offline"); });
     await controller.start({ allowLegacyScan: true }); await controller.waitForIdle();
     expect(await controller.status()).toMatchObject({ state: "paused", sealed: false });
     intercept(); calls.length = 0;
     const restarted = new GraphIndexMigrationController(new StateKV(sdk as never));
     await restarted.resumeOnBoot();
     await expect(restarted.start({ resume: true })).rejects.toThrow("authorize another complete legacy scan");
-    expect(calls.some((call) => call.fn === "state::list")).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn))).toBe(false);
     await restarted.start({ resume: true, allowLegacyScan: true }); await restarted.waitForIdle();
     expect(await restarted.status()).toHaveProperty("ready", true);
     expect(await kv.get(KV.graphControl, "generation")).toBeNull();
@@ -179,7 +217,7 @@ describe("explicit graph index migration", () => {
     const restarted = new GraphIndexMigrationController(new StateKV(sdk as never));
     await restarted.resumeOnBoot(); await restarted.waitForIdle();
     expect(await restarted.status()).toMatchObject({ ready: true, nodes: 1, processed: 2 });
-    expect(calls.some((call) => call.fn === "state::list" || call.scope === KV.graphSnapshot)).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn) || call.scope === KV.graphSnapshot)).toBe(false);
   });
 
   it("keeps current writer updates, deletes and late inserts while discovery is running", async () => {
@@ -187,7 +225,7 @@ describe("explicit graph index migration", () => {
     rows.set(KV.graphNodes, new Map([["a", node("a")], ["b", node("b")]]));
     const entered = deferred(); const release = deferred();
     intercept(async (fn, payload) => {
-      if (fn === "state::list" && payload.scope === KV.graphEdgeHistory) { entered.resolve(); await release.promise; }
+      if (fn === "state::list_keys" && payload.scope === KV.graphEdgeHistory) { entered.resolve(); await release.promise; }
     });
     await controller.start({ allowLegacyScan: true }); await entered.promise;
     await kv.set(KV.graphNodes, "a", { ...node("a"), name: "current" });
@@ -211,7 +249,7 @@ describe("explicit graph index migration", () => {
     const restarted = new GraphIndexMigrationController(new StateKV(sdk as never));
     await restarted.resumeOnBoot();
     await expect(restarted.start({ resume: true })).rejects.toThrow("authorize another complete legacy scan");
-    expect(calls.some((call) => call.fn === "state::list")).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn))).toBe(false);
     await restarted.start({ resume: true, allowLegacyScan: true }); await restarted.waitForIdle();
     expect(await restarted.status()).toMatchObject({ ready: true, nodes: 1 });
   });
@@ -253,7 +291,7 @@ describe("explicit graph index migration", () => {
     const { controller, kv, rows, intercept } = setup();
     rows.set(KV.graphNodes, new Map([["old", node("old")]]));
     const entered = deferred(); const release = deferred();
-    intercept(async (fn, payload) => { if (fn === "state::list" && payload.scope === KV.graphNodes) { entered.resolve(); await release.promise; } });
+    intercept(async (fn, payload) => { if (fn === "state::list_keys" && payload.scope === KV.graphNodes) { entered.resolve(); await release.promise; } });
     await controller.start({ allowLegacyScan: true }); await entered.promise;
     await resetGraphGeneration(kv, { version: 1, topNodes: [], topEdges: [], topDegrees: {}, stats: { totalNodes: 0, totalEdges: 0, nodesByType: {}, edgesByType: {} }, updatedAt: now, dirty: false });
     release.resolve(); await controller.waitForIdle();
@@ -276,7 +314,7 @@ describe("explicit graph index migration", () => {
     const restarted = new GraphIndexMigrationController(new StateKV(sdk as never));
     await restarted.resumeOnBoot(); await restarted.waitForIdle();
     expect(await restarted.status()).toMatchObject({ state: "paused", ready: false, error: expect.stringContaining("explicit") });
-    expect(calls.some((call) => call.fn === "state::list" || call.scope === KV.graphSnapshot)).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn) || call.scope === KV.graphSnapshot)).toBe(false);
     await restarted.start({ resume: true }); await restarted.waitForIdle();
     expect(await restarted.status()).toMatchObject({ ready: false, action: expect.stringContaining("migrate --allow-legacy-scan"), error: expect.stringContaining("new build") });
     await restarted.start({ allowLegacyScan: true }); await restarted.waitForIdle();
@@ -288,7 +326,7 @@ describe("explicit graph index migration", () => {
     const { controller, calls, intercept } = setup();
     intercept((fn, payload) => { if (fn === "state::set" && payload.scope === KV.graphIndexMigration) throw new Error("disk failure"); });
     await expect(controller.start({ allowLegacyScan: true })).rejects.toThrow("disk failure");
-    expect(calls.some((call) => call.fn === "state::list")).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn))).toBe(false);
   });
 
   it("never reuses orphaned journals when a sealed build loses its control", async () => {
@@ -304,7 +342,7 @@ describe("explicit graph index migration", () => {
     await expect(restarted.resumeOnBoot()).rejects.toThrow("sealed build control is missing");
     await expect(restarted.start({ resume: true, allowLegacyScan: true })).rejects.toThrow("sealed build control is missing");
     await expect(restarted.start()).rejects.toThrow("allowLegacyScan");
-    expect(calls.some((call) => call.fn === "state::set" || call.fn === "state::list")).toBe(false);
+    expect(calls.some((call) => call.fn === "state::set" || ["state::list", "state::list_keys"].includes(call.fn))).toBe(false);
     await restarted.start({ allowLegacyScan: true }); await restarted.waitForIdle();
     const ready = await restarted.status();
     expect(ready).toMatchObject({ ready: true, nodes: 2, processed: 2, coverage: "complete" });
@@ -336,7 +374,7 @@ describe("explicit graph index migration", () => {
       error: "Graph index migration stopped after a storage failure. Check the server and resume when storage is available.",
     });
     await expect(controller.start({ allowLegacyScan: true })).rejects.toThrow("storage offline");
-    expect(calls.some((call) => call.fn === "state::set" || call.fn === "state::list")).toBe(false);
+    expect(calls.some((call) => call.fn === "state::set" || ["state::list", "state::list_keys"].includes(call.fn))).toBe(false);
     intercept();
     await controller.start({ allowLegacyScan: true }); await controller.waitForIdle();
     expect(await controller.status()).toMatchObject({ ready: true, nodes: 1 });
@@ -348,7 +386,7 @@ describe("explicit graph index migration", () => {
     rows.set(KV.graphIndexMigration, new Map([[GRAPH_INDEX_MIGRATION_KEY, { schema: 999 }]]));
     expect(await controller.status()).toMatchObject({ state: "unavailable", ready: false });
     await expect(controller.start({ allowLegacyScan: true })).rejects.toThrow("state is invalid");
-    expect(calls.some((call) => call.fn === "state::list")).toBe(false);
+    expect(calls.some((call) => ["state::list", "state::list_keys"].includes(call.fn))).toBe(false);
     rows.delete(KV.graphIndexMigration);
     const id = "x".repeat(1025); rows.set(KV.graphNodes, new Map([[id, node(id)]]));
     await controller.start({ allowLegacyScan: true }); await controller.waitForIdle();

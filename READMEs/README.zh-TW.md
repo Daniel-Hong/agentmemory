@@ -654,7 +654,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory 可在 Windows 10/11 執行；WSL2 可依 Linux 流程自動安裝 engine。原生 Windows 需手動安裝 iii-engine v0.25.0：從 [iii v0.25.0 發行頁面](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0) 下載相符封存檔、驗證 checksum，並將 `iii.exe` 放入 `PATH`。CLI 不會自動解壓 ZIP
+agentmemory 可在 Windows 10/11 執行；WSL2 可依 Linux 流程自動安裝 engine。原生 Windows 需手動安裝 iii-engine v0.25.1：從 [iii v0.25.1 發行頁面](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1) 下載相符封存檔、驗證 checksum，並將 `iii.exe` 放入 `PATH`。CLI 不會自動解壓 ZIP
 
 原生 Windows 僅支援 `agentmemory connect copilot-cli` 自動設定 MCP；其他 agent 請使用 [Other agents](#other-agents) 的手動設定。只有目標 agent 也安裝在相同 WSL 環境時，才在 WSL 執行 `connect`
 
@@ -1163,7 +1163,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-連接埠 `3111` 上有 160 個端點。REST API 預設綁定 `127.0.0.1`。受保護的端點需要 `Authorization: Bearer <secret>`,而網狀同步端點要求兩端都明確設定 `AGENTMEMORY_SECRET`。
+連接埠 `3111` 上有 161 個端點。REST API 預設綁定 `127.0.0.1`。受保護的端點需要 `Authorization: Bearer <secret>`,而網狀同步端點要求兩端都明確設定 `AGENTMEMORY_SECRET`。
 
 驗證預設開啟。未設定 `AGENTMEMORY_SECRET` 時，CLI 首次啟動會將隨機密鑰儲存到 `~/.agentmemory/secret`，並鏡像到所選資料目錄的 `secret`，權限為 `0600`。內建客戶端連接本機伺服器時優先讀取此共用檔案，只向回環 URL 傳送儲存的密鑰。明確設定的 `AGENTMEMORY_SECRET` 優先；遠端客戶端需透過環境變數設定密鑰。Docker 部署會產生自己的密鑰。
 

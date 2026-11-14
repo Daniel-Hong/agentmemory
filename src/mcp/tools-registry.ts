@@ -517,6 +517,7 @@ export const V050_TOOLS: McpToolDef[] = [
           description:
             "Comma-separated action IDs that must complete before this",
         },
+        agentId: { type: "string", description: "Agent creating the action" },
       },
       required: ["title"],
     },

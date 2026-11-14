@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import { getCpuCapacityCores } from "../ops/metrics-cpu-capacity.mjs";
 import { getHeapStatistics } from "node:v8";
 import type { IIIClient } from "iii-sdk";
@@ -6,6 +7,15 @@ import type { StateKV } from "../state/kv.js";
 import { KV } from "../state/schema.js";
 import { evaluateHealth } from "./thresholds.js";
 import { getLiveEventsStats } from "../viewer/live-events.js";
+
+export function cpuCoreCount(): number {
+  const count = availableParallelism();
+  return count > 0 ? count : 1;
+}
+
+export function normalizeCpuPercent(singleCorePercent: number, coreCount = cpuCoreCount()): number {
+  return singleCorePercent / (coreCount > 0 ? coreCount : 1);
+}
 
 export function registerHealthMonitor(
   sdk: IIIClient,
@@ -31,8 +41,10 @@ export function registerHealthMonitor(
     const elapsedMs = now - prevCpuTime;
     const userDelta = currentCpu.user - prevCpuUsage.user;
     const systemDelta = currentCpu.system - prevCpuUsage.system;
-    const cpuPercent =
+    const singleCoreCpuPercent =
       elapsedMs > 0 ? ((userDelta + systemDelta) / 1000 / elapsedMs) * 100 : 0;
+    const coreCount = cpuCoreCount();
+    const cpuPercent = normalizeCpuPercent(singleCoreCpuPercent, coreCount);
     prevCpuUsage = currentCpu;
     prevCpuTime = now;
 
@@ -84,8 +96,9 @@ export function registerHealthMonitor(
         userMicros: currentCpu.user,
         systemMicros: currentCpu.system,
         percent: Math.round(cpuPercent * 100) / 100,
+        cores: coreCount,
         capacityCores,
-        capacityPercent: capacityCores ? Math.round(cpuPercent / capacityCores * 100) / 100 : null,
+        capacityPercent: capacityCores ? Math.round(singleCoreCpuPercent / capacityCores * 100) / 100 : null,
       },
       eventLoopLagMs,
       uptimeSeconds: uptime,

@@ -663,7 +663,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory Windows 10/11’de çalışır. WSL2 Linux yolunu izleyerek engine’i otomatik kurabilir. Yerel Windows’ta iii-engine v0.25.0 elle kurulmalıdır: arşivi [iii v0.25.0 sürüm sayfasından](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0) indirin, checksum’u doğrulayın ve `iii.exe` dosyasını `PATH` üzerine koyun. CLI Windows ZIP’ini otomatik açmaz
+agentmemory Windows 10/11’de çalışır. WSL2 Linux yolunu izleyerek engine’i otomatik kurabilir. Yerel Windows’ta iii-engine v0.25.1 elle kurulmalıdır: arşivi [iii v0.25.1 sürüm sayfasından](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1) indirin, checksum’u doğrulayın ve `iii.exe` dosyasını `PATH` üzerine koyun. CLI Windows ZIP’ini otomatik açmaz
 
 Yerel Windows’ta otomatik MCP yapılandırması yalnızca `agentmemory connect copilot-cli` için vardır; diğerleri için [Other agents](#other-agents) bölümünü kullanın. WSL’de `connect` yalnızca hedef agent aynı WSL ortamındaysa çalıştırılmalıdır
 
@@ -1159,7 +1159,7 @@ Tam [`.env.example`](../.env.example) sağlayıcıları, kayıt filtrelerini, sa
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-`3111` portunda 160 endpoint. REST API, varsayılan olarak `127.0.0.1`'e bağlanır. Korumalı endpoint'ler `Authorization: Bearer <secret>` gerektirir ve mesh sync endpoint'leri her iki peer'da da açıkça ayarlanmış bir `AGENTMEMORY_SECRET` gerektirir.
+`3111` portunda 161 endpoint. REST API, varsayılan olarak `127.0.0.1`'e bağlanır. Korumalı endpoint'ler `Authorization: Bearer <secret>` gerektirir ve mesh sync endpoint'leri her iki peer'da da açıkça ayarlanmış bir `AGENTMEMORY_SECRET` gerektirir.
 
 **Kimlik doğrulama varsayılan olarak açıktır.** `AGENTMEMORY_SECRET` ayarlanmamışsa CLI ilk başlatmada `~/.agentmemory/secret` dosyasında `0600` izinleriyle rastgele bir sır oluşturur ve seçilen veri dizinine de kopyalar. Paketli istemciler yerel sunucuya bağlanırken buradan okur; secret yalnız loopback URL’lerine (`localhost`, `127.0.0.0/8`, `::1`) gönderilir. Uzak istemciler secret’ı kendi ortamında sağlamalıdır. Docker self-host ve `deploy/` kendi secret’larını üretir. API’yi elle çağırmak için:
 

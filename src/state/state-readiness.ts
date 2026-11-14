@@ -16,6 +16,7 @@ export type StateReadiness = {
 type TriggerClient = Pick<IIIClient, "trigger">;
 
 type WaitOptions = {
+  requireSetAck?: boolean;
   scope?: string;
   timeoutMs?: number;
   intervalMs?: number;
@@ -37,7 +38,7 @@ function isRetryableProbeError(error: unknown): boolean {
   ) {
     return true;
   }
-  return /Function state::(?:get|list) not found|timed out|timeout|ETIMEDOUT/i.test(
+  return /Function state::(?:get|list|list_keys) not found|timed out|timeout|ETIMEDOUT/i.test(
     errorMessage(error),
   );
 }
@@ -72,6 +73,15 @@ export async function waitForStateReady(
         payload: { scope, key: READINESS_PROBE_KEY },
         timeoutMs: probeTimeoutMs(),
       });
+      await sdk.trigger({function_id:"state::list_keys",payload:{scope},timeoutMs:probeTimeoutMs()});
+      if (options.requireSetAck) {
+        const info = await sdk.trigger<{ function_id: string }, { function_id?: string } | null>({
+          function_id: "engine::functions::info",
+          payload: { function_id: "state::set_ack" },
+          timeoutMs: probeTimeoutMs(),
+        });
+        if (info?.function_id !== "state::set_ack") throw new Error("STATE_SET_ACK_REQUIRED");
+      }
       return { ready: true, waitedMs: Math.round(now() - startedAt), attempts };
     } catch (error) {
       lastError = errorMessage(error);

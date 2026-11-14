@@ -531,7 +531,7 @@ describe("status wiring", () => {
 
   it("streams reports with cached-only health ticks and explicit snapshot scans", () => {
     const streams = readFileSync("src/triggers/viewer-streams.ts", "utf-8");
-    expect(streams).toMatch(/statusReport\(\{ health: snapshot, scanMaxAgeMs, scanUnindexed, functionMetrics:metricsRead \}\)/);
+    expect(streams).toMatch(/statusReport\(\{ health: snapshot, scanMaxAgeMs, scanUnindexed, scanCaptureInbox:false, functionMetrics:metricsRead \}\)/);
     expect(streams).toContain("healthPayload(payload.new_value ?? null, HEALTH_TICK_SCAN_MAX_AGE_MS, false)");
     expect(streams).toContain("healthPayload(health ?? null, UNINDEXED_SCAN_REUSE_MS)");
   });
@@ -548,7 +548,7 @@ describe("status wiring", () => {
 
   it("reports the active state backend from config, not a hardcoded value", () => {
     expect(api).toMatch(/stateBackend: kv.backend === "redis" \? "redis" : "file"/);
-    expect(index).toMatch(/new StateKV\(sdk, \{ backend: stateBackend,writerLease \}\)/);
+    expect(index).toMatch(/new StateKV\(stateClient,\s*\{\s*backend:\s*stateBackend,/);
   });
 
   it("the viewer has a Health tab that reads the status report", () => {

@@ -1,7 +1,10 @@
 import{it,expect}from'vitest';import{createHash}from'node:crypto';
-import{mockKV}from'./helpers/mocks.js';import{KV}from'../src/state/schema.js';import{createRecordRecoveryGate}from'../src/state/recovery-write-gate.js';import{captureEventScope}from'../src/capture/event-record.js';import{createSdkCaptureReconciliation}from'../src/capture/sdk-reconciliation.js';
+import{mockKV,mockSdk}from'./helpers/mocks.js';import{KV}from'../src/state/schema.js';import{createRecordRecoveryGate}from'../src/state/recovery-write-gate.js';import{captureEventScope}from'../src/capture/event-record.js';import{createSdkCaptureReconciliation}from'../src/capture/sdk-reconciliation.js';
 import{capturePayloadDigest}from'../src/capture/receipt-digest.js';
 import{assertSdkSourceLegacyProtection}from'../src/capture/sdk-source-restore.js';
+import{committedInboxMetadata,projectCaptureInbox}from'../src/capture/inbox-metadata.js';
+import{captureReviewPage}from'../src/capture/review.js';
+import{registerCaptureFunctions}from'../src/functions/capture.js';
 const req='00000000-0000-4000-8000-000000000001',otherReq='00000000-0000-4000-8000-000000000002';
 const payload={sessionId:'synthetic',project:'synthetic',cwd:'/synthetic',hookType:'post_tool_use',timestamp:'2026-10-29T00:00:00Z',data:{tool_output:'original synthetic source'}};
 const eventId='synthetic_reconcile_001',key='cap_'+createHash('sha256').update(payload.project+'\0'+payload.sessionId+'\0'+eventId).digest('hex').slice(0,40),id='obs_synthetic_reconcile';
@@ -23,7 +26,7 @@ async function fixture(saved?:Map<string,Map<string,unknown>>){
  }
  writes=0;
  const auditEntries:any[]=[];
- const make=()=>createSdkCaptureReconciliation(kv as never,{admitted:()=>admitted,indexEvidence:(obs:any)=>({keyword:{present:indexed,sessionId:indexed?owner:undefined},vectorSessionId:vectorOwner}),audit:async e=>{auditEntries.push(e)},now:()=>Date.parse('2026-10-29T01:00:00Z')});
+ const make=(verifyCaptureVectorPending?:(id:string,sessionId:string,pending:unknown)=>Promise<boolean>)=>createSdkCaptureReconciliation(kv as never,{admitted:()=>admitted,verifyCaptureVectorPending,indexEvidence:(obs:any)=>({keyword:{present:indexed,sessionId:indexed?owner:undefined},vectorSessionId:vectorOwner}),audit:async e=>{auditEntries.push(e)},now:()=>Date.parse('2026-10-29T01:00:00Z')});
  return{kv,gate,get,set,helper:make(),make,writeCount:()=>writes,pause:()=>admitted=false,unindex:()=>indexed=false,keywordOwner:(v:string|undefined)=>owner=v,vectorOwner:(v:string|undefined)=>vectorOwner=v,fail:(n:number,stored=false)=>{failAt=n;after=stored},resetWrites:()=>writes=0,call(){return this.helper.reconcile({key,requestId:req,sourceDigest})}};
 }
 it('reconciles an actually stored capture with SDK completion and preserves every original and failure/budget field',async()=>{
@@ -35,6 +38,26 @@ it('reconciles an actually stored capture with SDK completion and preserves ever
  expect(await f.kv.get(KV.observations(payload.sessionId),id)).toEqual(obs);expect(await f.kv.get(KV.captureRecovery,'control')).toEqual(control);expect(await f.kv.get(captureEventScope(key),key)).toBeNull();expect(f.writeCount()).toBe(4);
 });
 it('same or later request on an already reconciled key verifies without replay or new writes',async()=>{const f=await fixture();await f.call();const writes=f.writeCount();expect(await f.call()).toMatchObject({status:'already_reconciled',completed:true});expect(await f.helper.reconcile({key,requestId:otherReq,sourceDigest})).toMatchObject({status:'already_reconciled',requestId:req});expect(f.writeCount()).toBe(writes)});
+it.each([1,2])('preserves v%s completion through projected metadata while checking the current original',async version=>{
+ const f=await fixture();await f.call();const h=await f.kv.get<any>(KV.captureReview,key);
+ if(version===1){h.sdkResolution.version=1;delete h.sdkResolution.indexEvidence;delete h.sdkResolution.priorInboxDigest;delete h.sdkResolution.priorReviewState;await f.kv.set(KV.captureReview,key,h)}
+ const rec=await f.kv.get<any>(KV.captureInbox,key),metadata=projectCaptureInbox(rec);
+ const controller=registerCaptureFunctions(mockSdk() as never,f.kv as never);
+ try{
+ expect(metadata).not.toHaveProperty('payload');
+ expect(await committedInboxMetadata(f.kv as never,h,metadata)).toBe(true);
+ expect((await controller.status()).inbox?.sdkCompleted).toBe(1);
+ expect((await captureReviewPage(f.kv as never,{})).items[0].status).toBe('completed');
+ const changed=structuredClone(rec);changed.payload.data.tool_output='changed original';await f.kv.set(KV.captureInbox,key,changed);
+ expect(await committedInboxMetadata(f.kv as never,h,metadata)).toBe(false);
+ expect((await controller.status()).inbox?.sdkCompleted).toBe(0);
+ expect((await captureReviewPage(f.kv as never,{})).items[0].status).toBe('pending');
+ await f.kv.set(KV.captureInbox,key,{...rec,updatedAt:'2026-11-07T00:00:00Z'});
+ expect(await committedInboxMetadata(f.kv as never,h,metadata)).toBe(false);
+ await f.kv.delete(KV.captureInbox,key);
+ expect(await committedInboxMetadata(f.kv as never,h,metadata)).toBe(false);
+ }finally{controller.stop()}
+});
 it.each(['source','identity','index','deleted','queued','writer','paused','manual'])('refuses unsafe %s before any write',async mode=>{
  const f=await fixture();if(mode==='source'){const obs=await f.kv.get<any>(KV.observations(payload.sessionId),id);obs.sourceRaw.raw={tool_output:'different'};await f.kv.set(KV.observations(payload.sessionId),id,obs)}
  if(mode==='identity'){const obs=await f.kv.get<any>(KV.observations(payload.sessionId),id);obs.captureKey='cap_'+'b'.repeat(40);await f.kv.set(KV.observations(payload.sessionId),id,obs)}
@@ -90,4 +113,15 @@ it('whole-review source restore mutation retains completed v2 protection',async(
  const rec=await f.kv.get<any>(KV.captureInbox,key);
  await f.kv.set(KV.captureInbox,key,{...rec,sdkRestoreRequestId:otherReq,sdkRestoreState:'pending',sdkRestoreAttempts:0});
  await expect(assertSdkSourceLegacyProtection(f.kv as never,payload as never,key,id,eventId)).resolves.toBeUndefined();
+});
+
+it('requires current physical proof on each phase for a retained capture and keeps the original WAL',async()=>{
+ const f=await fixture(),row={id,s:payload.sessionId,q:3,e:'AACAPw=='};
+ await f.set(KV.vectorPendingLog,id,row);
+ await expect(f.call()).rejects.toThrow('SDK_RECONCILIATION_INDEX_PENDING');
+ let checks=0;
+ const repaired=f.make(async(obs,session,actual)=>{checks++;return obs===id && session===payload.sessionId && JSON.stringify(actual)===JSON.stringify(row);});
+ expect(await repaired.reconcile({key,requestId:req,sourceDigest})).toMatchObject({status:'reconciled',verified:false,synced:false,originalReplay:false});
+ expect(checks).toBeGreaterThanOrEqual(5);expect(await f.kv.get(KV.vectorPendingLog,id)).toEqual(row);
+ const stale=f.make(async()=>false);await expect(stale.reconcile({key,requestId:req,sourceDigest})).rejects.toThrow('SDK_RECONCILIATION_INDEX_PENDING');
 });

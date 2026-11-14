@@ -663,7 +663,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory běží na Windows 10/11. WSL2 používá cestu pro Linux a může pinned engine nainstalovat automaticky. Nativní Windows vyžaduje ručně nainstalovanou binárku iii-engine v0.25.0; stáhněte odpovídající archiv ze [stránky vydání iii v0.25.0](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0), ověřte kontrolní součet a umístěte `iii.exe` do `PATH` (například `%USERPROFILE%\.local\bin\iii.exe`). CLI ZIP pro Windows automaticky nerozbaluje.
+agentmemory běží na Windows 10/11. WSL2 používá cestu pro Linux a může pinned engine nainstalovat automaticky. Nativní Windows vyžaduje ručně nainstalovanou binárku iii-engine v0.25.1; stáhněte odpovídající archiv ze [stránky vydání iii v0.25.1](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1), ověřte kontrolní součet a umístěte `iii.exe` do `PATH` (například `%USERPROFILE%\.local\bin\iii.exe`). CLI ZIP pro Windows automaticky nerozbaluje.
 
 Automatizované zapojení MCP na nativním Windows podporuje pouze `agentmemory connect copilot-cli`. U ostatních nativních agentů použijte manuální blok MCP ze sekce [Další agenti](#other-agents). `connect` ve WSL spouštějte pouze tehdy, pokud je cílový agent nainstalován ve stejném prostředí WSL.
 
@@ -1160,7 +1160,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 endpointů na portu `3111`. REST API se ve výchozím stavu váže na `127.0.0.1`. Chráněné endpointy vyžadují `Authorization: Bearer <secret>`, a endpointy pro mesh sync vyžadují explicitně nastavené `AGENTMEMORY_SECRET` na obou stranách.
+161 endpointů na portu `3111`. REST API se ve výchozím stavu váže na `127.0.0.1`. Chráněné endpointy vyžadují `Authorization: Bearer <secret>`, a endpointy pro mesh sync vyžadují explicitně nastavené `AGENTMEMORY_SECRET` na obou stranách.
 
 **Autentizace je ve výchozím stavu zapnutá.** Pokud `AGENTMEMORY_SECRET` není nastaveno, CLI při prvním spuštění vygeneruje náhodný secret v `~/.agentmemory/secret` s oprávněním `0600` a zkopíruje jej také do vybraného datového adresáře. Všichni zabalení klienti jej načítají odtud při komunikaci s lokálním serverem: CLI, viewer, hooks v `plugin/scripts`, server MCP a shim `@agentmemory/mcp`, konfigurace zapsané pomocí `agentmemory connect` a zabalené integrace OpenCode, Pi, OpenClaw, Hermes a filesystem-watcher. Uložený secret se odesílá pouze na loopback URL (`localhost`, `127.0.0.0/8`, `::1`). Výslovně nastavená `AGENTMEMORY_SECRET` má vždy přednost a vzdálení klienti ji musí mít ve svém prostředí. Self-host nasazení Dockeru z repozitáře a entrypointy `deploy/` generují a exportují vlastní secret. Pro ruční volání API:
 

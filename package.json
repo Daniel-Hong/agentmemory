@@ -1,6 +1,6 @@
 {
   "name": "@agentmemory/agentmemory",
-  "version": "0.9.32-daniel.55",
+  "version": "0.9.33-daniel.73",
   "description": "Persistent memory for AI coding agents, powered by iii-engine's three primitives",
   "type": "module",
   "main": "dist/index.mjs",
@@ -92,12 +92,12 @@
     "@anthropic-ai/sdk": "^0.100.1",
     "@clack/prompts": "^1.2.0",
     "dotenv": "^18.0.3",
-    "@iii-dev/helpers": "0.25.0",
-    "iii-sdk": "0.25.0",
+    "@iii-dev/helpers": "0.25.1",
+    "iii-sdk": "0.25.1",
     "picocolors": "^1.1.1",
     "zod": "^4.0.0",
-    "yaml": "^2.8.1",
-    "json5": "^2.2.3"
+    "yaml": "2.8.1",
+    "json5": "2.2.3"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -112,12 +112,28 @@
     "typebox": "^1.4.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "@opentelemetry/api": "1.9.1"
   },
   "overrides": {
     "qs": "^6.15.2",
     "ws": "^8.21.0",
-    "protobufjs": "^7.5.8"
+    "protobufjs": "^7.5.8",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.222.0",
+    "@opentelemetry/context-async-hooks": "2.12.0",
+    "@opentelemetry/core": "2.12.0",
+    "@opentelemetry/instrumentation": "0.222.0",
+    "@opentelemetry/otlp-transformer": "0.222.0",
+    "@opentelemetry/propagator-b3": "1.30.1",
+    "@opentelemetry/propagator-jaeger": "1.30.1",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-logs": "0.222.0",
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-trace": "2.11.0",
+    "@opentelemetry/sdk-trace-base": "2.12.0",
+    "@opentelemetry/sdk-trace-node": "2.12.0",
+    "@opentelemetry/semantic-conventions": "1.43.0"
   },
   "engines": {
     "node": ">=20.0.0"

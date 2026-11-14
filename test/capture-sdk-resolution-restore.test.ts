@@ -45,3 +45,17 @@ for(const missing of [false,true])it(`whole-review actual v2 restore consumer mi
  expect(await f.kv.list(KV.observations(body.sessionId))).toEqual(observationsBeforeRepeat);
  expect(observationsBeforeRepeat).toHaveLength(1);
 });
+
+it('SDK source restore preserves originals without consuming pending capacity or bypassing pending admission',async()=>{
+ vi.stubEnv('AGENTMEMORY_CAPTURE_INBOX_MAX','1');
+ try{
+  const f=fixture();const pending={key:'synthetic-pending-capacity',status:'dead',acceptedAt:body.timestamp,updatedAt:body.timestamp,payload:{original:true}};
+  await f.kv.set(KV.captureInbox,pending.key,pending);
+  expect((await f.call()).body).toMatchObject({completed:true});
+  const source=await f.kv.get<any>(KV.captureInbox,f.key);expect(source).toMatchObject({storageCompletion:'sdk',sdkRestoreState:'completed'});
+  expect((await f.call()).body).toMatchObject({completed:true,status:'duplicate'});
+  const capture=await f.sdk.trigger('mem::capture',{payload:{...body,eventId:'synthetic_new_capacity'},eventId:'synthetic_new_capacity'});
+  expect(capture).toMatchObject({status:'rejected',retryable:true});expect(await f.kv.get(KV.captureInbox,pending.key)).toEqual(pending);
+  expect(await f.kv.list(KV.captureInbox)).toHaveLength(2);
+ }finally{vi.unstubAllEnvs();}
+});

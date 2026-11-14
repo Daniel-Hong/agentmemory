@@ -150,10 +150,12 @@ export interface Memory {
   sessionIds: string[];
   strength: number;
   version: number;
+  recurrence?: number;
   parentId?: string;
   supersedes?: string[];
   relatedIds?: string[];
   sourceObservationIds?: string[];
+  consolidationKeys?: Record<string, string>;
   isLatest: boolean;
   forgetAfter?: string;
   imageRef?: string;
@@ -305,7 +307,7 @@ export interface HealthSnapshot {
     rss: number;
     external: number;
   };
-  cpu: { userMicros: number; systemMicros: number; percent: number; capacityCores?: number|null; capacityPercent?: number|null };
+  cpu: { userMicros: number; systemMicros: number; percent: number; cores?: number; capacityCores?: number|null; capacityPercent?: number|null };
   eventLoopLagMs: number;
   uptimeSeconds: number;
   kvConnectivity?: { status: string; latencyMs?: number; error?: string };
@@ -419,7 +421,7 @@ export interface ExportCollectionPagination {
 }
 
 export interface ExportData {
-  version: "0.3.0" | "0.4.0" | "0.5.0" | "0.6.0" | "0.6.1" | "0.7.0" | "0.7.2" | "0.7.3" | "0.7.4" | "0.7.5" | "0.7.6" | "0.7.7" | "0.7.9" | "0.8.0" | "0.8.1" | "0.8.2" | "0.8.3" | "0.8.4" | "0.8.5" | "0.8.6" | "0.8.7" | "0.8.8" | "0.8.9" | "0.8.10" | "0.8.11" | "0.8.12" | "0.8.13" | "0.9.0" | "0.9.1" | "0.9.2" | "0.9.3" | "0.9.4" | "0.9.5" | "0.9.6" | "0.9.7" | "0.9.8" | "0.9.9" | "0.9.10" | "0.9.11" | "0.9.12" | "0.9.13" | "0.9.14" | "0.9.15" | "0.9.16" | "0.9.17" | "0.9.18" | "0.9.19" | "0.9.20" | "0.9.21" | "0.9.22" | "0.9.23" | "0.9.24" | "0.9.25" | "0.9.26" | "0.9.27" | "0.9.28" | "0.9.29" | "0.9.30" | "0.9.30-daniel.1" | "0.9.30-daniel.2" | "0.9.30-daniel.3" | "0.9.30-daniel.4" | "0.9.30-daniel.5" | "0.9.30-daniel.6" | "0.9.30-daniel.7" | "0.9.30-daniel.8" | "0.9.30-daniel.9" | "0.9.30-daniel.10" | "0.9.30-daniel.11" | "0.9.30-daniel.15" | "0.9.30-daniel.16" | "0.9.30-daniel.18" | "0.9.30-daniel.19" | "0.9.30-daniel.20" | "0.9.30-daniel.21" | "0.9.30-daniel.22" | "0.9.30-daniel.23" | "0.9.30-daniel.24" | "0.9.30-daniel.25" | "0.9.30-daniel.26" | "0.9.30-daniel.27" | "0.9.30-daniel.28" | "0.9.31" | "0.9.31-daniel.1" | "0.9.31-daniel.33" | "0.9.31-daniel.34" | "0.9.31-daniel.35" | "0.9.31-daniel.36" | "0.9.31-daniel.37" | "0.9.31-daniel.38" | "0.9.31-daniel.39" | "0.9.31-daniel.40" | "0.9.31-daniel.41" | "0.9.31-daniel.42" | "0.9.31-daniel.43" | "0.9.31-daniel.44" | "0.9.31-daniel.45" | "0.9.31-daniel.46" | "0.9.31-daniel.47" | "0.9.31-daniel.48" | "0.9.31-daniel.49" | "0.9.31-daniel.50" | "0.9.31-daniel.51" | "0.9.31-daniel.52" | "0.9.31-daniel.53" | "0.9.31-daniel.54" | "0.9.32-daniel.55" | "0.9.30-daniel.29" | "0.9.30-daniel.30" | "0.9.30-daniel.31" | "0.9.30-daniel.32";
+  version: "0.3.0" | "0.4.0" | "0.5.0" | "0.6.0" | "0.6.1" | "0.7.0" | "0.7.2" | "0.7.3" | "0.7.4" | "0.7.5" | "0.7.6" | "0.7.7" | "0.7.9" | "0.8.0" | "0.8.1" | "0.8.2" | "0.8.3" | "0.8.4" | "0.8.5" | "0.8.6" | "0.8.7" | "0.8.8" | "0.8.9" | "0.8.10" | "0.8.11" | "0.8.12" | "0.8.13" | "0.9.0" | "0.9.1" | "0.9.2" | "0.9.3" | "0.9.4" | "0.9.5" | "0.9.6" | "0.9.7" | "0.9.8" | "0.9.9" | "0.9.10" | "0.9.11" | "0.9.12" | "0.9.13" | "0.9.14" | "0.9.15" | "0.9.16" | "0.9.17" | "0.9.18" | "0.9.19" | "0.9.20" | "0.9.21" | "0.9.22" | "0.9.23" | "0.9.24" | "0.9.25" | "0.9.26" | "0.9.27" | "0.9.28" | "0.9.29" | "0.9.30" | "0.9.30-daniel.1" | "0.9.30-daniel.2" | "0.9.30-daniel.3" | "0.9.30-daniel.4" | "0.9.30-daniel.5" | "0.9.30-daniel.6" | "0.9.30-daniel.7" | "0.9.30-daniel.8" | "0.9.30-daniel.9" | "0.9.30-daniel.10" | "0.9.30-daniel.11" | "0.9.30-daniel.15" | "0.9.30-daniel.16" | "0.9.30-daniel.18" | "0.9.30-daniel.19" | "0.9.30-daniel.20" | "0.9.30-daniel.21" | "0.9.30-daniel.22" | "0.9.30-daniel.23" | "0.9.30-daniel.24" | "0.9.30-daniel.25" | "0.9.30-daniel.26" | "0.9.30-daniel.27" | "0.9.30-daniel.28" | "0.9.31" | "0.9.31-daniel.1" | "0.9.31-daniel.33" | "0.9.31-daniel.34" | "0.9.31-daniel.35" | "0.9.31-daniel.36" | "0.9.31-daniel.37" | "0.9.31-daniel.38" | "0.9.31-daniel.39" | "0.9.31-daniel.40" | "0.9.31-daniel.41" | "0.9.31-daniel.42" | "0.9.31-daniel.43" | "0.9.31-daniel.44" | "0.9.31-daniel.45" | "0.9.31-daniel.46" | "0.9.31-daniel.47" | "0.9.31-daniel.48" | "0.9.31-daniel.49" | "0.9.31-daniel.50" | "0.9.31-daniel.51" | "0.9.31-daniel.52" | "0.9.31-daniel.53" | "0.9.31-daniel.54" | "0.9.32-daniel.55" | "0.9.32-daniel.57" | "0.9.32-daniel.58" | "0.9.32-daniel.59" | "0.9.32-daniel.60" | "0.9.32-daniel.61" | "0.9.32-daniel.62" | "0.9.32-daniel.63" | "0.9.32-daniel.64" | "0.9.32-daniel.65" | "0.9.32-daniel.66" | "0.9.32-daniel.67" | "0.9.32-daniel.68" | "0.9.33-daniel.69" | "0.9.33-daniel.70" | "0.9.33-daniel.71" | "0.9.33-daniel.72" | "0.9.33-daniel.73" | "0.9.30-daniel.29" | "0.9.30-daniel.30" | "0.9.30-daniel.31" | "0.9.30-daniel.32";
   exportedAt: string;
   sessions: Session[];
   observations: Record<string, CompressedObservation[]>;
@@ -568,7 +570,7 @@ export interface GraphIndexMembership {
 }
 
 export interface GraphRetrievalIndexControl {
-  schema: 2;
+  schema: 2 | 3;
   buildId: string;
   status: "building" | "ready" | "paused";
   revision: number;
@@ -665,6 +667,7 @@ export interface ProceduralMemory {
   frequency: number;
   sourceSessionIds: string[];
   sourceObservationIds?: string[];
+  consolidationKeys?: Record<string, string>;
   tags?: string[];
   concepts?: string[];
   strength: number;
@@ -1132,6 +1135,7 @@ export interface EmbeddingIntent {
   fingerprint?: string;
   phase?: "queued" | "embedded";
   errorCode?: string;
+  retainedRecovery?: EmbeddingCommit['retainedRecovery'];
 }
 export interface EmbeddingCommit {
   id: string;
@@ -1139,6 +1143,11 @@ export interface EmbeddingCommit {
   kind: EmbeddingIntent["kind"];
   fingerprint: string;
   committedAt: string;
+  retainedRecovery?: {
+    version: 1; completion: 'sdk'; verified: false; synced: false;
+    previousIntent: Omit<EmbeddingIntent, 'retainedRecovery'> | null;
+    previousCommit: Omit<EmbeddingCommit, 'retainedRecovery'> | null;
+  };
 }
 
 export interface CaptureSdkIndexEvidence {
@@ -1170,3 +1179,6 @@ export type CaptureRetryJob = { id: string; all: boolean; eventId?: string; key?
 
 export interface CaptureRecoveryFailure {operation:string;stage:string;code:string;elapsedMs?:number;reader?:{readerPhase:string;readerFailurePhase?:string;readerTimings:Record<string,number>;bytesRead?:number;processCpuMs?:number;eventLoopActiveMs?:number;eventLoopIdleMs?:number;complete?:boolean}}
 export interface CaptureRecoveryCheckpoint {version:1;kind:"item";key:string;id:string;sessionId:string;observationId:string;eventId:string;sourceDigest:string;projection:string;phase:"checking"|"verifying"|"resolved"|"blocked";reason:string;createdAt:string;updatedAt:string;verificationAttempts:number;nextAttemptAt:number;lastVerificationFailure?:CaptureRecoveryFailure}
+
+/** An immutable record of a disk-verified upsert whose WAL entry is retained. */
+export interface VectorRetentionReceipt { v:1; id:string; q:number; bucket:number; digest:string }

@@ -1,3 +1,5 @@
+import { insightHttpResponse } from "../state/insight-response.js";
+import {validUncertainInspection} from "../capture/uncertain-inspection.js";
 import {liveResourceSample} from '../health/live-resource.js';
 import {createSessionEndDiagnostics} from "../ops/session-end-diagnostics.js";
 import {finishLongSession} from "../ops/long-session.mjs";
@@ -6,20 +8,21 @@ import { InvocationError, TriggerAction, type IIIClient } from "iii-sdk";
 import { DEDUP_WINDOW_MS, getDedupSkippedCount } from "../functions/dedup.js";
 import type { HttpRequest } from "@iii-dev/helpers/http";
 import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Session, CompressedObservation, HookPayload, CommitLink, SessionSummary, HealthSnapshot, AuditQueryResult, AuditMigrationState, Lesson } from "../types.js";
 import { AUDIT_MIGRATION_STATE_KEY } from "../functions/audit.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
 import { KV } from "../state/schema.js";
 import { isSearchLayer, type SearchLayer } from "../state/search-layer.js";
-import { checkPayloadFrameSize } from "../state/frame-guard.js";
-import { StateKV } from "../state/kv.js";
+import { checkPayloadFrameSize, oversizedPayloadError, payloadByteLength, SAFE_PAYLOAD_BYTES } from "../state/frame-guard.js";
+import { StateKV, collectAll } from "../state/kv.js";
 import { pinGraphState } from "../state/graph-generation.js";
 import { addSessionToProjectIndex } from "../state/session-index.js";
 import { getLatestHealth } from "../health/monitor.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
 import type { ResilientProvider } from "../providers/resilient.js";
 import { III_PINNED_VERSION, VERSION } from "../version.js";
-import { CONSOLIDATION_COUNTS_REUSE_MS, CONSOLIDATION_LAST_RUN_KEY, PROCEDURAL_MIN_SESSIONS_PER_PATTERN, describeConsolidation, type ConsolidationRunRecord, type ConsolidationStatus } from "../functions/consolidation-status.js";
+import { CONSOLIDATION_COUNTS_REUSE_MS, CONSOLIDATION_LAST_RUN_KEY, PROCEDURAL_MIN_SESSIONS_PER_PATTERN, describeConsolidation, patternFrequency, type ConsolidationRunRecord, type ConsolidationStatus } from "../functions/consolidation-status.js";
 import { UNINDEXED_SCAN_REUSE_MS, evaluateStatus, prefersHtml, renderStatusHtml, singleFlight, type GraphStatsInput, type StatusReport } from "../functions/status.js";
 import {
   countUnindexedObservations,
@@ -41,6 +44,8 @@ import {
   pageAfterCursor,
   pageByOffset,
   parseListQuery,
+  parseTimeBounds,
+  inTimeRange,
   sortByKeyDesc,
 } from "../state/list-query.js";
 import { checkRequestGuard, configuredAllowedOrigins, timingSafeCompare } from "../auth.js";
@@ -67,7 +72,7 @@ import { isValidEventId } from "../capture/event-id.js";
 import { getCaptureController, type CaptureResult } from "../functions/capture.js";
 import { withoutObservationSource } from "../functions/observation-source.js";
 import { clearSessionFinalize, scheduleSessionFinalize } from "../functions/session-finalize.js";
-import { requestSummaryRefresh } from "../functions/summary-state.js";
+import { requestSummaryRefresh, summaryCovers, summaryObservations } from "../functions/summary-state.js";
 import { registerCompressionApi } from "./compression.js";
 import {
   getFinalizeIdleMs,
@@ -97,6 +102,85 @@ function parseOptionalInt(raw: unknown): number | undefined {
   if (raw === undefined || raw === null || raw === "") return undefined;
   const n = typeof raw === "number" ? raw : parseInt(String(raw), 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function createSessionSummaryCoverage(kv: StateKV) {
+  let busy = false;
+  return async (sessions: Session[]): Promise<Map<string, number>> => {
+    const reader = kv.observationReader;
+    const durability = kv.durability;
+    if (!reader || !durability || busy) return new Map();
+    const candidates = sessions.filter(session => !("summaryProgress" in session) &&
+      Number.isSafeInteger(session.observationCount) && session.observationCount > 0 &&
+      session.observationCount <= 16).slice(0, 8);
+    if (!candidates.length) return new Map();
+
+    const controller = new AbortController();
+    const { signal } = controller;
+    const expiresAt = performance.now() + 1250;
+    const releases: Array<() => void> = [];
+    busy = true;
+    const work = (async () => {
+      const verified: Array<{ session: Session; fresh: () => boolean }> = [];
+      for (const session of candidates) {
+        if (signal.aborted) break;
+        try {
+          const guard = durability.watchKeys([
+            { scope: KV.sessions, key: session.id }, { scope: KV.summaries, key: session.id },
+          ]);
+          releases.push(() => guard.release());
+          if (!guard.unchanged()) continue;
+          const current = await kv.get<Session>(KV.sessions, session.id);
+          signal.throwIfAborted();
+          if (!isDeepStrictEqual(current, session)) continue;
+          const summary = await kv.get<SessionSummary>(KV.summaries, session.id);
+          signal.throwIfAborted();
+          if (summary?.sessionId !== session.id || !summary.coveredFingerprint ||
+              summary.observationCount !== session.observationCount) continue;
+
+          const scope = KV.observations(session.id);
+          const mutation = reader.mutationRevision(scope);
+          const fresh = () => !signal.aborted && performance.now() < expiresAt && guard.unchanged() &&
+            mutation === reader.mutationRevision(scope) && !reader.pendingMutations(scope);
+          if (!fresh()) continue;
+          const revision = await reader.revision(scope);
+          signal.throwIfAborted();
+          const view = await reader.work(scope, { kind: "summary", signal });
+          if (view.rows.length !== session.observationCount) continue;
+          const rows: CompressedObservation[] = [];
+          let bytes = 0;
+          for (const descriptor of view.rows) {
+            signal.throwIfAborted();
+            const row = await view.load(descriptor);
+            if (!row || row.sessionId !== session.id || typeof row.title !== "string") break;
+            bytes += Buffer.byteLength(JSON.stringify(row));
+            if (bytes > 2 * 1024 * 1024) break;
+            rows.push(row);
+          }
+          if (rows.length !== view.rows.length) continue;
+          const observations = summaryObservations(rows);
+          if (observations.length !== rows.length || !summaryCovers(session, observations, summary)) continue;
+          if (revision !== await reader.revision(scope) || !fresh()) continue;
+          view.validate();
+          verified.push({ session, fresh: () => { view.validate(); return fresh(); } });
+        } catch { /* A missing or unstable source leaves coverage unknown. */ }
+      }
+      const coverage = new Map<string, number>();
+      for (const { session, fresh } of verified) {
+        try { if (fresh()) coverage.set(session.id, session.observationCount); } catch { /* Writer changed. */ }
+      }
+      return coverage;
+    })().finally(() => { busy = false; });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<Map<string, number>>(resolve => {
+      timer = setTimeout(() => { controller.abort(); resolve(new Map()); }, 1250);
+    });
+    try { return await Promise.race([work, deadline]); }
+    finally {
+      clearTimeout(timer);
+      for (const release of releases) release();
+    }
+  };
 }
 
 let restOriginPorts: () => Array<number | null | undefined> = () => [];
@@ -399,8 +483,12 @@ export interface StatusReporterDeps {
   provider?: ResilientProvider | { circuitState?: unknown };
 }
 
+function isVectorRecoveryPaused(result: unknown): boolean {
+  return typeof result === "object" && result !== null && "error" in result && (result.error === "vector_recovery_paused" || result.error === "vector_recovery_interrupted");
+}
+
 export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusReporterDeps) {
-  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; scanUnindexed?: boolean; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
+  return async function statusReport(options: { health?: HealthSnapshot | null; scanMaxAgeMs?: number; scanUnindexed?: boolean; scanCaptureInbox?: boolean; functionMetrics?:ReturnType<MetricsStore['getAll']> } = {}): Promise<StatusReport> {
     const idx = getSearchIndex();
     const keywordRebuildRunning = isKeywordRebuildInProgress();
     const scan = unindexedScanFor(kv);
@@ -420,7 +508,7 @@ export function createStatusReporter(sdk: IIIClient, kv: StateKV, deps: StatusRe
         STATUS_CHECK_TIMEOUT_MS,
       ),
       probeStateStore(kv),
-      valueWithin(getCaptureController()?.status({sdkProofPage:{offset:0,limit:32}}) ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
+      valueWithin(getCaptureController()?.status({scanInbox:options.scanCaptureInbox,sdkProofPage:{offset:0,limit:32}}) ?? Promise.resolve(null), STATUS_CHECK_TIMEOUT_MS),
       valueWithin(getGraphIndexMigrationStatus(kv), STATUS_CHECK_TIMEOUT_MS),
     ]);
     const observationsIndexed = [...idx.observationCountsBySession().values()].reduce((a, n) => a + n, 0);
@@ -491,10 +579,10 @@ export function createConsolidationStatusReader(kv: StateKV) {
   const counts = singleFlight(async () => {
     const [summaries, memories, semantic, procedural, relations] = await Promise.all([
       kv.countSummaries(),
-      kv.list<import("../types.js").Memory>(KV.memories).catch(() => []),
-      kv.list(KV.semantic).catch(() => []),
-      kv.list(KV.procedural).catch(() => []),
-      kv.list(KV.relations).catch(() => []),
+      collectAll<import("../types.js").Memory>(kv, KV.memories).catch(() => []),
+      collectAll(kv, KV.semantic).catch(() => []),
+      collectAll(kv, KV.procedural).catch(() => []),
+      collectAll(kv, KV.relations).catch(() => []),
     ]);
     return {
       summaries,
@@ -502,7 +590,7 @@ export function createConsolidationStatusReader(kv: StateKV) {
         (m) =>
           m.isLatest &&
           m.type === "pattern" &&
-          (m.sessionIds?.length ?? 0) >= PROCEDURAL_MIN_SESSIONS_PER_PATTERN,
+          patternFrequency(m) >= PROCEDURAL_MIN_SESSIONS_PER_PATTERN,
       ).length,
       semanticFacts: semantic.length,
       procedures: procedural.length,
@@ -538,6 +626,47 @@ function statusViewerUrl(req: HttpRequest, viewerPort: number | null): string {
   const host = typeof hostHeader === "string" ? hostHeader.replace(/:\d+$/, "") : "";
   if (viewerPort && host && /^[A-Za-z0-9.\-[\]:]+$/.test(host)) return `http://${host}:${viewerPort}/#health`;
   return "/agentmemory/viewer#health";
+}
+
+const RECORD_PAGE_BYTES = SAFE_PAYLOAD_BYTES - 1024 * 1024;
+
+async function listRecordPage<T extends { id: string }>(
+  kv: StateKV,
+  scope: string,
+  params: HttpRequest["query_params"],
+): Promise<{ items: T[]; nextCursor?: string }> {
+  const query = parseListQuery(params);
+  const limit = query.limit ?? LIST_PAGE_MAX;
+  let items: T[];
+  let more: boolean;
+  let storageCursor: string | undefined;
+  if (typeof kv.listPage === "function") {
+    const page = await kv.listPage<T>(scope, { limit, cursor: query.cursor });
+    items = page.items;
+    more = page.nextCursor !== undefined;
+    storageCursor = page.nextCursor;
+  } else {
+    const sorted = sortByKeyDesc(await collectAll<T>(kv, scope), (item) => item.id, (item) => item.id);
+    const page = pageAfterCursor(sorted, (item) => item.id, (item) => item.id, query.cursor, limit);
+    items = page.page;
+    more = page.nextCursor !== null;
+  }
+  let bytes = 0;
+  let kept = 0;
+  while (kept < items.length) {
+    const size = payloadByteLength(items[kept]) + 1;
+    if (kept > 0 && bytes + size > RECORD_PAGE_BYTES) break;
+    bytes += size;
+    kept++;
+  }
+  if (kept < items.length) {
+    items = items.slice(0, kept);
+    more = true;
+    storageCursor = undefined;
+  }
+  const last = items[items.length - 1];
+  const nextCursor = storageCursor ?? (more && last ? encodeCursor({ key: last.id, id: last.id }) : undefined);
+  return { items, ...(nextCursor ? { nextCursor } : {}) };
 }
 
 export function registerApiTriggers(
@@ -635,7 +764,8 @@ export function registerApiTriggers(
       const ops = await operationalHealth();
       const hostLevel=ops.memoryPressure?.level;
       const backgroundStatus=ops.backgroundControl?.status;
-      const status = hostLevel==="critical"?"critical":hostLevel==="high"&&health?.status!=="critical"?"degraded":(backgroundStatus==="error"||ops.captureProgress?.stalled)&&health?.status!=="critical"?"degraded":health?.status||"healthy";
+      const captureUnknown=ops.captureProgress?.pending===null;
+      const status = hostLevel==="critical"?"critical":hostLevel==="high"&&health?.status!=="critical"?"degraded":(backgroundStatus==="error"||ops.captureProgress?.stalled||captureUnknown)&&health?.status!=="critical"?"degraded":health?.status||"healthy";
       const statusCode = status === "critical" ? 503 : 200;
 
       return {
@@ -823,6 +953,14 @@ export function registerApiTriggers(
     catch{return{status_code:503,headers,body:{completed:false,code:'SDK_RECONCILIATION_UNAVAILABLE'}};}
   });
   sdk.registerTrigger({type:'http',function_id:'api::capture-reconcile-sdk',config:{api_path:'/agentmemory/capture/reconcile-sdk',http_method:'POST'}});
+  sdk.registerFunction('api::capture-inspect-uncertain',async(req:HttpRequest):Promise<Response>=>{
+    const headers={'Cache-Control':'no-store'};if(!secret)return{status_code:503,headers,body:{error:'UNCERTAIN_INSPECTION_AUTH_REQUIRED'}};const denied=checkAuth(req,secret);if(denied)return{...denied,headers};
+    const q=req.body;if(!validUncertainInspection(q))return{status_code:400,headers,body:{error:'INVALID_UNCERTAIN_INSPECTION'}};
+    try{const value:any=await sdk.trigger({function_id:'mem::capture-inspect-uncertain',payload:q});return{status_code:['source_conflict','observation_conflict','changed_during_inspection'].includes(value?.outcome)?409:200,headers,body:value};}
+    catch{return{status_code:503,headers,body:{error:'UNCERTAIN_INSPECTION_UNAVAILABLE'}};}
+  });
+  sdk.registerTrigger({type:'http',function_id:'api::capture-inspect-uncertain',config:{api_path:'/agentmemory/capture/inspect-uncertain',http_method:'POST'}});
+
   sdk.registerFunction('api::capture-reconcile-sdk-status',async(req:HttpRequest):Promise<Response>=>{
     const headers={'Cache-Control':'no-store'},denied=checkAuth(req,secret);if(denied)return{...denied,headers};
     const q=req.query_params??{};
@@ -1226,7 +1364,7 @@ export function registerApiTriggers(
         function_id: "mem::replay::import-jsonl",
         payload,
       });
-      return { status_code: 202, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 202, body: result };
     },
   );
   sdk.registerTrigger({
@@ -1571,6 +1709,7 @@ export function registerApiTriggers(
     },
   });
 
+  const sessionSummaryCoverage = createSessionSummaryCoverage(kv);
   sdk.registerFunction("api::sessions",
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
@@ -1595,6 +1734,9 @@ export function registerApiTriggers(
         : explicitAgentId ??
           (isAgentScopeIsolated() ? getAgentId() : undefined);
       const listQuery = parseListQuery(req.query_params);
+      const time = parseTimeBounds(req.query_params);
+      if ("error" in time) return { status_code: 400, body: { error: time.error } };
+      const { startedAfter, startedBefore, endedAfter, endedBefore } = time.bounds;
       let filtered = filterAgentId
         ? validSessions.filter((s) => s.agentId === filterAgentId)
         : validSessions;
@@ -1608,6 +1750,11 @@ export function registerApiTriggers(
           : undefined;
       if (listQuery.project) filtered = filtered.filter((s) => s.project === listQuery.project);
       if (listQuery.status) filtered = filtered.filter((s) => s.status === listQuery.status);
+      filtered = filtered.filter(
+        (s) =>
+          inTimeRange(s.startedAt, startedAfter, startedBefore) &&
+          inTimeRange(s.endedAt, endedAfter, endedBefore),
+      );
       if (listQuery.q) {
         filtered = filtered.filter((s) =>
           matchesText(listQuery.q, s.id, s.project, s.cwd, s.firstPrompt, s.agentId),
@@ -1640,9 +1787,17 @@ export function registerApiTriggers(
         );
         summaries.push(...results);
       }
+      const metadataOnly = req.query_params?.["includeSummary"] === "false";
+      const coverage = metadataOnly && req.query_params?.["includeSummaryCoverage"] === "true"
+        ? await sessionSummaryCoverage(filtered) : undefined;
       const withSummary = filtered.map((s, i) => {
-        if(req.query_params?.["includeSummary"]==="false") {const {summary:_,...metadata}=s;return metadata;}
-        return summaries[i] ? { ...s, summary: summaries[i] } : s;
+        const { summaryCoveredCount: _storedCount, ...session } = s as Session & { summaryCoveredCount?: unknown };
+        if (metadataOnly) {
+          const { summary: _, ...metadata } = session;
+          const count = coverage?.get(s.id);
+          return count === undefined ? metadata : { ...metadata, summaryCoveredCount: count };
+        }
+        return summaries[i] ? { ...session, summary: summaries[i] } : session;
       });
       return {
         status_code: 200,
@@ -1867,7 +2022,7 @@ export function registerApiTriggers(
             : {}),
         },
       });
-      return { status_code: 201, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 201, body: result };
     },
   );
   sdk.registerTrigger({
@@ -1893,7 +2048,7 @@ export function registerApiTriggers(
         };
       }
       const result = await sdk.trigger({ function_id: "mem::forget", payload: req.body });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -1989,7 +2144,7 @@ export function registerApiTriggers(
       const dryRun =
         req.query_params?.["dryRun"] === "true" || req.body?.dryRun === true;
       const result = await sdk.trigger({ function_id: "mem::evict", payload: { dryRun } });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2220,7 +2375,7 @@ export function registerApiTriggers(
         return { status_code: 400, body: { error: "exportData is required" } };
       }
       const result = await sdk.trigger({ function_id: "mem::import", payload: req.body });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2272,6 +2427,7 @@ export function registerApiTriggers(
         function_id: "mem::evolve",
         payload: req.body,
       });
+      if (isVectorRecoveryPaused(result)) return { status_code: 503, body: result };
       if (result && result.success === false) {
         const status =
           result.code === "not_found" ? 404 : result.code === "not_latest" ? 409 : 400;
@@ -2293,7 +2449,7 @@ export function registerApiTriggers(
       const dryRun =
         req.query_params?.["dryRun"] === "true" || req.body?.dryRun === true;
       const result = await sdk.trigger({ function_id: "mem::auto-forget", payload: { dryRun } });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2775,7 +2931,7 @@ export function registerApiTriggers(
         };
       }
       const result = await sdk.trigger({ function_id: "mem::governance-delete", payload: req.body });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2801,7 +2957,7 @@ export function registerApiTriggers(
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
       const result = await sdk.trigger({ function_id: "mem::governance-bulk", payload: req.body || {} });
-      return { status_code: 200, body: result };
+      return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
     },
   );
   sdk.registerTrigger({
@@ -2867,7 +3023,7 @@ export function registerApiTriggers(
       }
       try {
         const result = await sdk.trigger({ function_id: "mem::snapshot-restore", payload: req.body });
-        return { status_code: 200, body: result };
+        return { status_code: isVectorRecoveryPaused(result) ? 503 : 200, body: result };
       } catch {
         return { status_code: 404, body: { error: "Snapshots not enabled" } };
       }
@@ -2883,7 +3039,7 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const memories = await kv.list<import("../types.js").Memory>(KV.memories);
+      const memories = await collectAll<import("../types.js").Memory>(kv, KV.memories);
       const latest = req.query_params?.["latest"] === "true";
       // agentId filter. Request param wins, env AGENT_ID (when
       // scope=isolated) is the fallback. Shared mode keeps the tag but
@@ -3008,18 +3164,18 @@ export function registerApiTriggers(
         }
       }
 
-      return {
-        status_code: 200,
-        body: {
-          memories: sliced,
-          total: filtered.length,
-          offset,
-          limit: limit ?? null,
-          nextCursor,
-          ...(searchMode ? { search: { query: listQuery.q, mode: searchMode } } : {}),
-          ...(facets ? { facets } : {}),
-        },
+      const body = {
+        memories: sliced,
+        total: filtered.length,
+        offset,
+        limit: limit ?? null,
+        nextCursor,
+        ...(searchMode ? { search: { query: listQuery.q, mode: searchMode } } : {}),
+        ...(facets ? { facets } : {}),
       };
+      const oversized = checkPayloadFrameSize(body, "use ?limit and ?cursor to page");
+      if (oversized) return { status_code: 413, body: oversized };
+      return { status_code: 200, body };
     },
   );
   sdk.registerTrigger({
@@ -3053,8 +3209,11 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const semantic = await kv.list<import("../types.js").SemanticMemory>(KV.semantic);
-      return { status_code: 200, body: { semantic } };
+      const page = await listRecordPage<import("../types.js").SemanticMemory>(kv, KV.semantic, req.query_params);
+      const body = { semantic: page.items, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+      const oversized = checkPayloadFrameSize(body, "use ?limit and ?cursor to page");
+      if (oversized) return { status_code: 413, body: oversized };
+      return { status_code: 200, body };
     },
   );
   sdk.registerTrigger({
@@ -3067,8 +3226,11 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const procedural = await kv.list<import("../types.js").ProceduralMemory>(KV.procedural);
-      return { status_code: 200, body: { procedural } };
+      const page = await listRecordPage<import("../types.js").ProceduralMemory>(kv, KV.procedural, req.query_params);
+      const body = { procedural: page.items, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+      const oversized = checkPayloadFrameSize(body, "use ?limit and ?cursor to page");
+      if (oversized) return { status_code: 413, body: oversized };
+      return { status_code: 200, body };
     },
   );
   sdk.registerTrigger({
@@ -3096,8 +3258,11 @@ export function registerApiTriggers(
     async (req: HttpRequest): Promise<Response> => {
       const authErr = checkAuth(req, secret);
       if (authErr) return authErr;
-      const relations = await kv.list<import("../types.js").MemoryRelation>(KV.relations);
-      return { status_code: 200, body: { relations } };
+      const relations = await collectAll<import("../types.js").MemoryRelation>(kv, KV.relations);
+      const body = { relations };
+      const oversized = checkPayloadFrameSize(body, "export relations with /mesh/export, which pages");
+      if (oversized) return { status_code: 413, body: oversized };
+      return { status_code: 200, body };
     },
   );
   sdk.registerTrigger({
@@ -3837,42 +4002,122 @@ export function registerApiTriggers(
         }
       }
       const project = req.query_params?.["project"] as string | undefined;
+      const rawLimit = Number(req.query_params?.["limit"]);
+      const pageLimit = Number.isFinite(rawLimit) && rawLimit >= 1 ? Math.min(Math.floor(rawLimit), 5000) : 500;
+      const cursorRaw = req.query_params?.["cursor"] as string | undefined;
+      const paged = req.query_params?.["limit"] !== undefined || cursorRaw !== undefined;
       const sinceTime = since ? new Date(since).getTime() : 0;
       const df = <T>(items: T[], field: "updatedAt" | "createdAt") =>
         items.filter((i) => new Date((i as Record<string, unknown>)[field] as string).getTime() > sinceTime);
-      let memories = await kv.list<import("../types.js").Memory>(KV.memories);
+      let memories = await collectAll<import("../types.js").Memory>(kv, KV.memories);
       let actions = await kv.list<import("../types.js").Action>(KV.actions);
       if (project) {
         memories = memories.filter((m) => m.project === project);
         actions = actions.filter((a) => a.project === project);
       }
-      const body: Record<string, unknown> = {
-        memories: df(memories, "updatedAt"),
-        actions: df(actions, "updatedAt"),
-      };
+      const collections: Array<[string, unknown[]]> = [
+        ["memories", df(memories, "updatedAt")],
+        ["actions", df(actions, "updatedAt")],
+      ];
       if (!project) {
         const graphState = await pinGraphState(kv);
-        const semantic = await kv.list<import("../types.js").SemanticMemory>(KV.semantic);
-        const procedural = await kv.list<import("../types.js").ProceduralMemory>(KV.procedural);
-        const relations = await kv.list<import("../types.js").MemoryRelation>(KV.relations);
-        const graphNodes = await graphState.list<import("../types.js").GraphNode>(KV.graphNodes);
-        const graphEdges = await graphState.list<import("../types.js").GraphEdge>(KV.graphEdges);
-        body.semantic = df(semantic, "updatedAt");
-        body.procedural = df(procedural, "updatedAt");
-        body.relations = df(relations, "createdAt");
-        body.graphNodes = graphNodes.filter(
-          (n) => new Date(n.updatedAt || n.createdAt).getTime() > sinceTime,
+        const semantic = await collectAll<import("../types.js").SemanticMemory>(kv, KV.semantic);
+        const procedural = await collectAll<import("../types.js").ProceduralMemory>(kv, KV.procedural);
+        const relations = await collectAll<import("../types.js").MemoryRelation>(kv, KV.relations);
+        const graphNodes = await collectAll<import("../types.js").GraphNode>(graphState, KV.graphNodes);
+        const graphEdges = await collectAll<import("../types.js").GraphEdge>(graphState, KV.graphEdges);
+        collections.push(
+          ["semantic", df(semantic, "updatedAt")],
+          ["procedural", df(procedural, "updatedAt")],
+          ["relations", df(relations, "createdAt")],
+          ["graphNodes", graphNodes.filter(
+            (n) => new Date(n.updatedAt || n.createdAt).getTime() > sinceTime,
+          )],
+          ["graphEdges", df(graphEdges, "createdAt")],
         );
-        body.graphEdges = df(graphEdges, "createdAt");
       }
-      // Fail an over-frame export with 413 instead of dropping the worker.
-      const oversized = checkPayloadFrameSize(
-        body,
-        "use ?since to fetch only changes after a timestamp, or ?project to scope the export",
-      );
-      if (oversized) {
-        return { status_code: 413, body: oversized };
+      const rowId = (row: unknown) => {
+        const r = row as { id?: unknown; sourceId?: unknown; targetId?: unknown; type?: unknown };
+        if (r.id !== undefined && r.id !== null) return String(r.id);
+        if (r.sourceId !== undefined) return `${String(r.sourceId)}:${String(r.targetId)}:${String(r.type)}`;
+        return "";
+      };
+      for (const [, rows] of collections) {
+        rows.sort((a, b) => (rowId(a) < rowId(b) ? -1 : rowId(a) > rowId(b) ? 1 : 0));
       }
+      let cursorPos: { c: number; after?: string } | null = null;
+      if (cursorRaw) {
+        try {
+          const parsed = JSON.parse(Buffer.from(cursorRaw, "base64url").toString("utf8"));
+          if (
+            parsed && typeof parsed === "object" &&
+            Number.isInteger(parsed.c) && parsed.c >= 0 && parsed.c < collections.length &&
+            (parsed.after === undefined || typeof parsed.after === "string")
+          ) {
+            cursorPos = { c: parsed.c, ...(parsed.after !== undefined ? { after: parsed.after } : {}) };
+          }
+        } catch {}
+        if (!cursorPos) return { status_code: 400, body: { error: "invalid_cursor" } };
+      }
+      for (const [name, rows] of collections) {
+        const unexportable = rows.some((row) => payloadByteLength(row) > SAFE_PAYLOAD_BYTES);
+        if (unexportable) {
+          return { status_code: 413, body: oversizedPayloadError(SAFE_PAYLOAD_BYTES + 1, `use ?since, ?project, or ?collections to exclude the oversized ${name} record`) };
+        }
+      }
+      if (!paged) {
+        const full = Object.fromEntries(collections);
+        const oversized = checkPayloadFrameSize(
+          full,
+          "use ?limit and ?cursor to page, ?since to fetch only changes after a timestamp, or ?project to scope the export",
+        );
+        if (oversized) return { status_code: 413, body: oversized };
+        return { status_code: 200, body: full };
+      }
+      let limit = pageLimit;
+      let body: Record<string, unknown> = {};
+      let nextCursor: string | undefined;
+      for (;;) {
+        body = Object.fromEntries(collections.map(([name]) => [name, []]));
+        nextCursor = undefined;
+        let remaining = limit;
+        let ci = cursorPos ? cursorPos.c : 0;
+        let after = cursorPos?.after;
+        for (; ci < collections.length && remaining > 0; ci++) {
+          const [name, rows] = collections[ci]!;
+          let start = 0;
+          if (after !== undefined) {
+            const resumeAfter = after;
+            start = rows.findIndex((row) => rowId(row) > resumeAfter);
+            if (start < 0) { after = undefined; continue; }
+          }
+          const take = Math.min(remaining, rows.length - start);
+          const slice = take > 0 ? rows.slice(start, start + take) : [];
+          body[name] = slice;
+          remaining -= take;
+          after = undefined;
+          if (start + take < rows.length) {
+            nextCursor = Buffer.from(JSON.stringify({ c: ci, after: rowId(slice[slice.length - 1]) })).toString("base64url");
+            break;
+          }
+        }
+        if (!nextCursor && remaining === 0) {
+          for (let c = ci; c < collections.length; c++) {
+            if (collections[c]![1].length > 0) {
+              nextCursor = Buffer.from(JSON.stringify({ c })).toString("base64url");
+              break;
+            }
+          }
+        }
+        const oversized = checkPayloadFrameSize(
+          body,
+          "use ?since to fetch only changes after a timestamp, ?cursor to page, or ?project to scope the export",
+        );
+        if (!oversized) break;
+        if (limit <= 1) return { status_code: 413, body: oversized };
+        limit = Math.max(1, Math.floor(limit / 2));
+      }
+      if (nextCursor) body.nextCursor = nextCursor;
       return { status_code: 200, body };
     },
   );
@@ -4349,9 +4594,9 @@ export function registerApiTriggers(
     const body = (req.body as Record<string, unknown>) || {};
     const result = await sdk.trigger({ function_id: "mem::reflect", payload: {
       project: typeof body.project === "string" ? body.project : undefined,
-      maxClusters: typeof body.maxClusters === "number" ? body.maxClusters : undefined,
+      maxClusters: body.maxClusters,
     } });
-    return { status_code: 200, body: result };
+    return insightHttpResponse(result);
   });
   sdk.registerTrigger({ type: "http", function_id: "api::reflect", config: { api_path: "/agentmemory/reflect", http_method: "POST" } });
 
@@ -4378,7 +4623,7 @@ export function registerApiTriggers(
       minConfidence,
       limit,
     } });
-    return { status_code: 200, body: result };
+    return insightHttpResponse(result);
   });
   sdk.registerTrigger({ type: "http", function_id: "api::insight-list", config: { api_path: "/agentmemory/insights", http_method: "GET" } });
 
@@ -4390,10 +4635,10 @@ export function registerApiTriggers(
     const result = await sdk.trigger({ function_id: "mem::insight-search", payload: {
       query: body.query,
       project: typeof body.project === "string" ? body.project : undefined,
-      minConfidence: typeof body.minConfidence === "number" ? body.minConfidence : undefined,
-      limit: typeof body.limit === "number" ? body.limit : undefined,
+      minConfidence: body.minConfidence,
+      limit: body.limit,
     } });
-    return { status_code: 200, body: result };
+    return insightHttpResponse(result);
   });
   sdk.registerTrigger({ type: "http", function_id: "api::insight-search", config: { api_path: "/agentmemory/insights/search", http_method: "POST" } });
 }

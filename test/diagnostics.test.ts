@@ -5,6 +5,7 @@ vi.mock("../src/logger.js", () => ({
 }));
 
 import { registerDiagnosticsFunction } from "../src/functions/diagnostics.js";
+import { isFacetStillOrphan } from "../src/functions/facets.js";
 import type {
   Action,
   ActionEdge,
@@ -195,11 +196,12 @@ describe("Diagnostics Functions", () => {
       };
 
       expect(result.success).toBe(true);
-      // 15 = 8 original (actions, leases, sentinels, sketches, signals,
+      // 16 = 8 original (actions, leases, sentinels, sketches, signals,
       // sessions, memories, mesh) + 6 added in #lesson-visibility
       // (lessons, summaries, semantic, procedural, crystals, insights) +
-      // 1 added in #memory-project-scope (memory-project-coverage).
-      expect(result.summary.pass).toBe(15);
+      // 1 added in #memory-project-scope (memory-project-coverage) +
+      // facets-ok.
+      expect(result.summary.pass).toBe(16);
       expect(result.summary.warn).toBe(0);
       expect(result.summary.fail).toBe(0);
       expect(result.summary.fixable).toBe(0);
@@ -490,6 +492,89 @@ describe("Diagnostics Functions", () => {
       expect(
         result.checks.some((c) => c.category === "actions"),
       ).toBe(false);
+    });
+  });
+
+  describe("orphan facets", () => {
+    const facet = (id: string, targetId: string, targetType: "memory" | "action" | "observation") => ({
+      id, targetId, targetType, dimension: "tool", value: "x", createdAt: new Date().toISOString(),
+    });
+
+    beforeEach(async () => {
+      const memory = { id: "mem_live", title: "live", content: "c", type: "fact", concepts: [], files: [], sessionIds: [], strength: 5, version: 1, isLatest: true, createdAt: "", updatedAt: "" };
+      await kv.set(KV.memories, memory.id, memory);
+      const action = makeAction({ id: "act_live" } as Partial<Action>);
+      await kv.set(KV.actions, action.id, action);
+      for (const f of [
+        facet("fct_1", "mem_live", "memory"),
+        facet("fct_2", "mem_gone", "memory"),
+        facet("fct_3", action.id, "action"),
+        facet("fct_4", "act_gone", "action"),
+        facet("fct_5", "obs_unindexed", "observation"),
+        facet("fct_6", "obs_gone", "observation"),
+      ]) await kv.set(KV.facets, f.id, f);
+      await kv.set(KV.sessions, "ses_1", { id: "ses_1" });
+      await kv.set(KV.observations("ses_1"), "obs_unindexed", { id: "obs_unindexed", sessionId: "ses_1" });
+    });
+
+    it("does not delete a facet retargeted after the orphan scan", async()=>{
+      const stale=facet("fct_changed","mem_missing","memory");
+      await kv.set(KV.facets,stale.id,{...stale,targetId:"mem_live"});
+      expect(await isFacetStillOrphan(kv as never,stale)).toBe(false);
+    });
+    it("rejects a replaced facet with a different creation timestamp", async()=>{
+      const stored=(await kv.get<ReturnType<typeof facet>>(KV.facets,"fct_2"))!;
+      const stale={...stored,createdAt:new Date(Date.parse(stored.createdAt)-1).toISOString()};
+      expect(await isFacetStillOrphan(kv as never,stale)).toBe(false);
+      expect(await isFacetStillOrphan(kv as never,stored)).toBe(true);
+    });
+    it("rechecks unindexed observations restored into a live session before delete", async()=>{
+      const stale=facet("fct_restored","restored-no-prefix","observation");
+      await kv.set(KV.facets,stale.id,stale);
+      await kv.set(KV.observations("ses_1"),stale.targetId,{id:stale.targetId,sessionId:"ses_1"});
+      expect(await isFacetStillOrphan(kv as never,stale)).toBe(false);
+    });
+    it("diagnose reports facets whose target was deleted", async () => {
+      const result = (await sdk.trigger("mem::diagnose", { categories: ["facets"] })) as { checks: DiagnosticCheck[] };
+      expect(result.checks).toEqual([expect.objectContaining({ name: "orphan-facets", status: "warn", fixable: true })]);
+    });
+
+    it("heal dry run reports orphan facets without removing them", async () => {
+      const result = (await sdk.trigger("mem::heal", { categories: ["facets"], dryRun: true })) as { fixed: number };
+      expect(result.fixed).toBe(3);
+      expect((await kv.list(KV.facets)).length).toBe(6);
+    });
+
+    it("heal removes only facets whose target was deleted", async () => {
+      const result = (await sdk.trigger("mem::heal", { categories: ["facets"] })) as { fixed: number };
+      expect(result.fixed).toBe(3);
+      expect((await kv.list<{ id: string }>(KV.facets)).map((f) => f.id).sort()).toEqual(["fct_1", "fct_3", "fct_5"]);
+      const after = (await sdk.trigger("mem::diagnose", { categories: ["facets"] })) as { checks: DiagnosticCheck[] };
+      expect(after.checks[0]!.name).toBe("facets-ok");
+    });
+
+    it("heal keeps a facet on a migrated observation that has no session record", async () => {
+      await kv.set(KV.facets, "fct_7", facet("fct_7", "obs_migrated", "observation"));
+      await kv.set(KV.observations("migrated"), "obs_migrated", { id: "obs_migrated", sessionId: "migrated" });
+      await sdk.trigger("mem::heal", { categories: ["facets"] });
+      expect((await kv.list<{ id: string }>(KV.facets)).map((f) => f.id)).toContain("fct_7");
+      expect(await isFacetStillOrphan(kv as never, (await kv.get<ReturnType<typeof facet>>(KV.facets,"fct_7"))!)).toBe(false);
+    });
+
+    it("heal keeps a facet on a migrated observation whose id has no obs_ prefix", async () => {
+      await kv.set(KV.facets, "fct_8", facet("fct_8", "mig_abc", "observation"));
+      await kv.set(KV.observations("migrated"), "mig_abc", { id: "mig_abc", sessionId: "migrated" });
+      await sdk.trigger("mem::heal", { categories: ["facets"] });
+      expect((await kv.list<{ id: string }>(KV.facets)).map((f) => f.id)).toContain("fct_8");
+      expect(await isFacetStillOrphan(kv as never, (await kv.get<ReturnType<typeof facet>>(KV.facets,"fct_8"))!)).toBe(false);
+    });
+
+    it("heal keeps a facet whose target comes back before the delete", async () => {
+      const orphan = (await kv.get<ReturnType<typeof facet>>(KV.facets, "fct_2"))!;
+      expect(orphan).not.toBeNull();
+      expect(await isFacetStillOrphan(kv as never, orphan)).toBe(true);
+      await kv.set(KV.memories, "mem_gone", { id: "mem_gone" });
+      expect(await isFacetStillOrphan(kv as never, orphan)).toBe(false);
     });
   });
 

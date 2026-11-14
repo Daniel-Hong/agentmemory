@@ -9,10 +9,10 @@ it('matches the full sanitized Unicode source regardless of object field order a
  expect(capturePayloadDigest(body)).not.toBe(captureSourceDigest(body.hookType,body.timestamp,{a:stored.a,z:stored.z.slice(0,16000)}));
 });
 it('accounts for sourceRaw duplication near the existing transport ceiling without truncating it',()=>{
- const tool='x'.repeat(7_034_880),raw={raw:{tool_output:tool},toolOutput:tool};
- expect(payloadByteLength({sourceRaw:raw})).toBeGreaterThan(14_000_000);
+ const sourceLength=Math.floor(SAFE_PAYLOAD_BYTES*.45),tool='x'.repeat(sourceLength),raw={raw:{tool_output:tool},toolOutput:tool};
+ expect(payloadByteLength({sourceRaw:raw})).toBeGreaterThan(SAFE_PAYLOAD_BYTES*.89);
  expect(payloadByteLength({sourceRaw:raw})).toBeLessThan(SAFE_PAYLOAD_BYTES);
  const unsupported={raw:{tool_output:tool,tool_response:tool},toolOutput:tool};
  expect(payloadByteLength({sourceRaw:unsupported})).toBeGreaterThan(SAFE_PAYLOAD_BYTES);
- expect(raw.raw.tool_output.length).toBe(7_034_880);
+ expect(raw.raw.tool_output.length).toBe(sourceLength);
 });

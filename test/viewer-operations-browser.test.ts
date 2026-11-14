@@ -95,6 +95,10 @@ describe.skipIf(spawnSync('google-chrome',['--version'],{encoding:'utf8',timeout
       await send('Page.enable');
       await send('Page.bringToFront');
       while(!(await evaluate("document.readyState==='complete' && typeof loadOperations==='function'")) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,25));
+      const unknownCapture=await evaluate("captureCardHtml({capture:{inbox:null,spool:[],sinceStart:{},policy:{}}})");
+      expect(unknownCapture).toContain('not checked');
+      expect(unknownCapture).toContain('Inbox status is unknown');
+      expect(unknownCapture).not.toContain('Empty means every accepted observation is stored.');
       await evaluate("(async()=>{await loadSnapshot();await loadOperations();switchTab('health');await showTab('health');setAutoRefresh(false,30);document.querySelector('#operations-details>summary').focus();})()");
       expect(await evaluate("document.activeElement===document.querySelector('#operations-details>summary')")).toBe(true);
       await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13});

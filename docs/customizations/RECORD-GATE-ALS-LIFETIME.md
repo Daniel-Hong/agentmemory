@@ -18,7 +18,7 @@ Evidence directory: ../observation-work-selection-development/als-lifetime-valid
 
 - TDD regression: original source has3 expected lifetime failures; fixed focused suite12/12 passes. Includes concurrent references, queued writer, nested and unselected keys, actual escaped Promise descendant, bound context, callback failure, caller timeout/abort and independent trace preservation.
 - Full default-fork suite: 5800pass/13existing conditional skips/0fail, including summary-sdk-boundary's existing12GiB-gated transport test. Build, skills generation/check and docs sync passed.
-- Real SDK0.25.0, installed engine0.22.1 SHA60858a8d8663bc2696078602a8d2f9f5f61ee2ab75d76c35ffe24a01c5576b81. Independent temp HOME/config/state/spool and loopback port per arm; fixed initial17keys+5canonical nodes. Payload preparation and sealed-manifest setup are outside measured graph work. Both main comparison arms are uninstrumented, with identical2ms CPU profiling. N is requested normal writes; initial22 writes and previous graph writes also contribute, so total state-set counts are recorded.
+- Real SDK0.25.1, installed engine0.22.1 SHA60858a8d8663bc2696078602a8d2f9f5f61ee2ab75d76c35ffe24a01c5576b81. Independent temp HOME/config/state/spool and loopback port per arm; fixed initial17keys+5canonical nodes. Payload preparation and sealed-manifest setup are outside measured graph work. Both main comparison arms are uninstrumented, with identical2ms CPU profiling. N is requested normal writes; initial22 writes and previous graph writes also contribute, so total state-set counts are recorded.
 
 | Requested writes N | Actual set count before reads | Old100SDK gets | Fixed100SDK gets | Old5-node graph | Fixed5-node graph |
 |---|---:|---:|---:|---:|---:|

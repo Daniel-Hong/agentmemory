@@ -663,7 +663,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory toimii Windows 10/11:ssä. WSL2 noudattaa Linuxin polkua ja voi asentaa kiinnitetyn moottorin automaattisesti. Natiivi Windows vaatii iii-engine v0.25.0:n kiinnitetyn binäärin asentamisen käsin; lataa sopiva paketti [iii v0.25.0 -julkaisusivulta](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0), tarkista sen tarkistussumma ja sijoita `iii.exe` `PATH`-polkuun (esimerkiksi `%USERPROFILE%\.local\bin\iii.exe`). CLI ei pura Windows-ZIP-pakettia automaattisesti.
+agentmemory toimii Windows 10/11:ssä. WSL2 noudattaa Linuxin polkua ja voi asentaa kiinnitetyn moottorin automaattisesti. Natiivi Windows vaatii iii-engine v0.25.1:n kiinnitetyn binäärin asentamisen käsin; lataa sopiva paketti [iii v0.25.1 -julkaisusivulta](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1), tarkista sen tarkistussumma ja sijoita `iii.exe` `PATH`-polkuun (esimerkiksi `%USERPROFILE%\.local\bin\iii.exe`). CLI ei pura Windows-ZIP-pakettia automaattisesti.
 
 Natiivin Windowsin automaattinen MCP-kytkentä tukee vain komentoa `agentmemory connect copilot-cli`. Muiden natiivien Windows-agenttien kanssa käytä manuaalista MCP-lohkoa kohdasta [Muut agentit](#other-agents). Suorita `connect` WSL:ssä vain, kun kohdeagentti on asennettu samaan WSL-ympäristöön.
 
@@ -1160,7 +1160,7 @@ Täydellinen [`.env.example`](../.env.example) kattaa palveluntarjoajat, tallenn
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 endpointia portissa `3111`. REST-rajapinta sitoutuu oletuksena osoitteeseen `127.0.0.1`. Suojatut endpointit vaativat `Authorization: Bearer <secret>`, ja mesh-synkronointiendpointit vaativat nimenomaisesti asetetun `AGENTMEMORY_SECRET`-arvon molemmilla vertaisilla.
+161 endpointia portissa `3111`. REST-rajapinta sitoutuu oletuksena osoitteeseen `127.0.0.1`. Suojatut endpointit vaativat `Authorization: Bearer <secret>`, ja mesh-synkronointiendpointit vaativat nimenomaisesti asetetun `AGENTMEMORY_SECRET`-arvon molemmilla vertaisilla.
 
 **Autentikointi on oletuksena päällä.** Jos `AGENTMEMORY_SECRET` puuttuu, CLI luo ensimmäisellä käynnistyksellä satunnaisen salaisuuden tiedostoon `~/.agentmemory/secret` oikeuksilla `0600` ja kopioi sen myös valittuun datahakemistoon. Kaikki mukana toimitetut asiakkaat lukevat salaisuuden sieltä käyttäessään paikallista palvelinta: CLI, katseluohjelma, `plugin/scripts`-hakemiston hookit, MCP-palvelin ja `@agentmemory/mcp`-shim, `agentmemory connect` -komennon luomat asetukset sekä mukana toimitetut OpenCode-, Pi-, OpenClaw-, Hermes- ja filesystem-watcher-integraatiot. Tallennettu salaisuus lähetetään vain loopback-osoitteisiin (`localhost`, `127.0.0.0/8`, `::1`). Nimenomainen `AGENTMEMORY_SECRET` voittaa aina, ja etäasiakkaiden on asetettava salaisuus ympäristöönsä. Repositorion Docker-itseylläpitokäyttöönotot ja `deploy/`-entrypointit luovat ja vievät oman salaisuutensa. Rajapinnan manuaalinen kutsu:
 

@@ -663,7 +663,7 @@ npm install && npm run build && npm start
 
 ### Windows
 
-agentmemory працює у Windows 10/11; WSL2 може автоматично встановити engine. Нативна Windows потребує ручного встановлення iii-engine v0.25.0: завантажте архів зі [сторінки iii v0.25.0](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.0), перевірте checksum і розмістіть `iii.exe` у `PATH`. CLI не розпаковує ZIP автоматично
+agentmemory працює у Windows 10/11; WSL2 може автоматично встановити engine. Нативна Windows потребує ручного встановлення iii-engine v0.25.1: завантажте архів зі [сторінки iii v0.25.1](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.25.1), перевірте checksum і розмістіть `iii.exe` у `PATH`. CLI не розпаковує ZIP автоматично
 
 Автоматичне налаштування MCP у нативній Windows підтримує лише `agentmemory connect copilot-cli`; для інших скористайтеся [Other agents](#other-agents). У WSL виконуйте `connect`, лише якщо агент встановлений у тому самому середовищі
 
@@ -1160,7 +1160,7 @@ EMBEDDING_PROVIDER=local
 
 <h2 id="api"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-api.svg"><img src="../assets/tags/section-api.svg" alt="API" height="32" /></picture></h2>
 
-160 ендпоінтів на порту `3111`. REST API за замовчуванням прив'язується до `127.0.0.1`. Захищені ендпоінти вимагають `Authorization: Bearer <secret>`, а ендпоінти синхронізації mesh вимагають явно встановленого `AGENTMEMORY_SECRET` на обох сторонах.
+161 ендпоінтів на порту `3111`. REST API за замовчуванням прив'язується до `127.0.0.1`. Захищені ендпоінти вимагають `Authorization: Bearer <secret>`, а ендпоінти синхронізації mesh вимагають явно встановленого `AGENTMEMORY_SECRET` на обох сторонах.
 
 **Автентифікацію ввімкнено типово.** Якщо `AGENTMEMORY_SECRET` не задано, під час першого запуску CLI створює випадковий секрет у `~/.agentmemory/secret` з правами `0600` і копіює його також у вибраний каталог даних. Вбудовані клієнти читають його звідти для локального сервера; secret надсилається лише на loopback URL (`localhost`, `127.0.0.0/8`, `::1`). Віддалені клієнти мають отримати secret через власне середовище. Docker self-host і `deploy/` створюють власні секрети. Щоб викликати API вручну:
 

@@ -12,7 +12,7 @@ import { registerEmbeddingRecovery, EMBEDDING_RETRY_NAMESPACE as RETRY, EMBEDDIN
 
 vi.mock('../src/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 const fixtures: ReturnType<typeof fixture>[] = [];
-function fixture() {
+function fixture(timeoutMs = 2000) {
   const directory = mkdtempSync(join(tmpdir(), 'scoped-vector-publication-'));
   const kv = mockKV(), index = new VectorIndex();
   const blocked = new Set<string>();
@@ -23,7 +23,9 @@ function fixture() {
   const set = kv.set, remove = kv.delete;
   kv.set = async (scope, key, value) => { const result = await set(scope, key, value); flush(scope); changed?.(scope, key); return result; };
   kv.delete = async (scope, key) => { await remove(scope, key); flush(scope); changed?.(scope, key); };
-  Object.assign(kv, { backend: 'file', durability: createStateDurabilityFence({ storePath: directory, timeoutMs: 80, pollIntervalMs: 5 }) });
+  // These tests certify real async filesystem I/O, not 80ms CI throughput.
+  // Injected mismatch tests still require the fence to expire without publishing.
+  Object.assign(kv, { backend: 'file', durability: createStateDurabilityFence({ storePath: directory, timeoutMs, pollIntervalMs: 5 }) });
   const persistence = new IndexPersistence(kv as never, index); persistence.stop();
   let clock = 0;
   const provider = { dimensions: 2, embed: vi.fn(async () => new Float32Array([1, 0])) };
@@ -116,6 +118,8 @@ it('keeps retry until the committed fingerprint is on disk and retries publicati
  const f=fixture();await f.kv.set(KV.observations('s'),item.id,{id:item.id,title:'canonical'});f.blocked.add(COMMITTED);
  await f.recovery.add(item);await f.recovery.drain();expect(await f.kv.get(RETRY,item.id)).toBeTruthy();
  f.blocked.clear();f.advance();await f.recovery.pump();await f.recovery.drain();
+ expect(await f.kv.get(RETRY,item.id)).toBeNull();
+ expect(await f.kv.get(COMMITTED,item.id)).toBeTruthy();
  expect(f.disk(COMMITTED)[item.id]).toBeTruthy();expect(f.disk(RETRY)[item.id]).toBeUndefined();expect(f.provider.embed).toHaveBeenCalledOnce();
 });
 
@@ -180,4 +184,20 @@ it('bounds observed publication history and reports evicted identities as unknow
     expect(worker.snapshot()).toMatchObject({completedCount:513,pendingCount:0,publicationEvidence:{limit:512,retained:512,observed:513,evicted:1}});
     expect(JSON.stringify(worker.snapshot())).not.toContain('proof_');
   }finally{worker.stop();await worker.drain();}
+});
+
+
+it('retains retry without a committed file when an earlier vector read exceeds its finite budget', async () => {
+  const f = fixture(80);
+  await f.kv.set(KV.observations('s'), item.id, { id: item.id, title: 'canonical' });
+  const get = f.kv.get;
+  f.kv.get = async (scope, key) => {
+    if (scope === vectorBucketScope(0)) await new Promise(resolve => setTimeout(resolve, 120));
+    return get(scope, key);
+  };
+  await f.recovery.add(item); await f.recovery.drain();
+  expect(await get(RETRY, item.id)).toMatchObject({ attempts: 1, errorCode: 'VECTOR_PUBLICATION_UNVERIFIED' });
+  expect(await get(COMMITTED, item.id)).toBeNull();
+  expect(() => f.disk(COMMITTED)).toThrow(/ENOENT/);
+  expect(f.provider.embed).toHaveBeenCalledOnce();
 });

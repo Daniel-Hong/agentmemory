@@ -17,7 +17,8 @@ vi.mock("node:fs/promises", async () => ({
   rename: vi.fn(async () => {}), unlink: vi.fn(async () => {}),
 }));
 
-vi.mock("node:fs", () => ({
+vi.mock("node:fs", async () => ({
+  constants: (await vi.importActual<typeof import("node:fs")>("node:fs")).constants,
   existsSync: vi.fn().mockReturnValue(true),
   readFileSync: vi.fn(() => snapshotContent()),
   mkdirSync: vi.fn(),

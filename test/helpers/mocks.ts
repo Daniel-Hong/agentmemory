@@ -33,9 +33,10 @@ export function mockKV() {
     delete: async (scope: string, key: string): Promise<void> => {
       store.get(scope)?.delete(key);
     },
-    list: async <T>(scope: string): Promise<T[]> => {
+    list: async <T>(scope: string, options?: { project?: (value: unknown, key?: string) => T }): Promise<T[]> => {
       const entries = store.get(scope);
-      return entries ? (Array.from(entries.values()) as T[]) : [];
+      const values = entries ? Array.from(entries.values()) : [];
+      return options?.project ? Array.from(entries ?? [], ([key, value]) => options.project!(value, key)) : values as T[];
     },
   };
 }

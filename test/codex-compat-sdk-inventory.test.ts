@@ -11,7 +11,7 @@ async function fixture(){
  cpSync(resolve('integrations/codex-compat'),join(root,'integrations/codex-compat'),{recursive:true});
  for(const dir of ['plugin/scripts','dist/hooks']){mkdirSync(join(root,dir),{recursive:true});writeFileSync(join(root,dir,'_capture.mjs'),'function handoffObservation(){}\nexport { handoffObservation };\n');}
  for(const name of ['cli.mjs','index.mjs'])writeFileSync(join(root,'dist',name),'export {};\n');
- for(const [name,version]of Object.entries({'iii-sdk':'0.25.0','@iii-dev/helpers':'0.25.0',yaml:'2.8.1',json5:'2.2.3'})){
+ for(const [name,version]of Object.entries({'iii-sdk':'0.25.1','@iii-dev/helpers':'0.25.1',yaml:'2.8.1',json5:'2.2.3'})){
   mkdirSync(join(root,'node_modules',name),{recursive:true});writeFileSync(join(root,'node_modules',name,'package.json'),JSON.stringify({version}));
  }
  writeFileSync(join(root,'dist/server-sdk-bundle.json'),JSON.stringify(await auditServerSdkBundle(root)));
