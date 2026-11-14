@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
+import {waitForDevToolsPort} from './helpers/devtools-port.js';
 
 const source=readFileSync(process.env.METRICS_UI_SOURCE || 'src/viewer/index.html','utf8');
 const evidence=process.env.METRICS_UI_EVIDENCE;
@@ -30,9 +31,7 @@ async function browserProof(dir:string,path:string,width:number,screenshot:strin
   const pause=()=>new Promise(resolve=>setTimeout(resolve,25));
   try{
     const portFile=join(dir,'profile','DevToolsActivePort');
-    while(!existsSync(portFile)&&chrome.exitCode===null&&Date.now()<deadline)await pause();
-    expect(existsSync(portFile),stderr).toBe(true);
-    const port=readFileSync(portFile,'utf8').split('\n')[0];
+    const port=await waitForDevToolsPort(portFile,deadline,()=>chrome.exitCode===null&&chrome.signalCode===null).catch(error=>{throw Error(String(error)+'; '+stderr);});
     const target=await fetch(`http://127.0.0.1:${port}/json/new?about:blank`,{method:'PUT',signal:AbortSignal.timeout(5000)}).then(r=>r.json());
     socket=new WebSocket(target.webSocketDebuggerUrl,{handshakeTimeout:5000});
     await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('CDP connection timeout')),5000);socket!.once('open',()=>{clearTimeout(timer);resolve();});socket!.once('error',()=>{clearTimeout(timer);reject(Error('CDP connection failed'));});});
