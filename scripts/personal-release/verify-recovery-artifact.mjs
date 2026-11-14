@@ -6,21 +6,28 @@ import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 const ensure=(condition,code)=>{if(!condition)throw Error(code);};
-const selectedNames=new Set(['GiB','SAFE_APIS','MEMORY_RECOVERY_ENABLED']);
+const selectedNames=new Set(['GiB','SAFE_APIS','MEMORY_RECOVERY_ENABLED','PRESSURE_BUDGET']);
 function isolatedGuard(bundle){
  const file=ts.createSourceFile('reviewed-recovery-bundle.mjs',bundle,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
  ensure(file.parseDiagnostics.length===0,'compiled_guard_shape_unsupported');
  const functions=file.statements.filter(s=>ts.isFunctionDeclaration(s)&&s.name?.text==='createMemoryPressureGuard');
  ensure(functions.length===1&&functions[0].body,'compiled_guard_shape_unsupported');
+ const helpers=['validPressure','pressureWindow'].flatMap(name=>{
+  const matches=file.statements.filter(s=>ts.isFunctionDeclaration(s)&&s.name?.text===name);
+  ensure(matches.length<=1,'compiled_guard_shape_unsupported');
+  return matches.map(s=>s.getText(file).replace(/^export\s+/,''));
+ });
  const constants=new Map();
  for(const statement of file.statements){
   if(!ts.isVariableStatement(statement))continue;
   for(const declaration of statement.declarationList.declarations){
    if(!ts.isIdentifier(declaration.name)||!selectedNames.has(declaration.name.text))continue;
-   const name=declaration.name.text,value=declaration.initializer;
+   const name=declaration.name.text,initializer=declaration.initializer;
+   const value=name==='PRESSURE_BUDGET'&&initializer&&ts.isCallExpression(initializer)&&initializer.expression.getText(file)==='Object.freeze'&&initializer.arguments.length===1?initializer.arguments[0]:initializer;
    ensure(!constants.has(name)&&value,'compiled_guard_shape_unsupported');
    let valid=false;
    if(name==='MEMORY_RECOVERY_ENABLED')valid=value.kind===ts.SyntaxKind.TrueKeyword||value.kind===ts.SyntaxKind.FalseKeyword;
+   if(name==='PRESSURE_BUDGET')valid=ts.isObjectLiteralExpression(value)&&value.properties.length===2&&value.properties.every(p=>ts.isPropertyAssignment(p)&&ts.isIdentifier(p.name)&&ts.isNumericLiteral(p.initializer)&&((p.name.text==='some'&&Number(p.initializer.text)===1)||(p.name.text==='full'&&Number(p.initializer.text)===0.1)))&&new Set(value.properties.map(p=>p.name.text)).size===2;
    if(name==='GiB')valid=/^1024\s*\*\*\s*3$/.test(value.getText(file))||ts.isNumericLiteral(value)&&Number(value.text)===1024**3;
    if(name==='SAFE_APIS')valid=ts.isNewExpression(value)&&ts.isIdentifier(value.expression)&&value.expression.text==='Set'&&value.arguments?.length===1&&ts.isArrayLiteralExpression(value.arguments[0])&&value.arguments[0].elements.every(v=>ts.isStringLiteral(v));
    ensure(valid,'compiled_guard_shape_unsupported');constants.set(name,`const ${name}=${value.getText(file)};`);
@@ -28,7 +35,7 @@ function isolatedGuard(bundle){
  }
  const context=createContext({setInterval(){throw Error('unexpected_scheduled_work');},clearInterval(){}},{codeGeneration:{strings:false,wasm:false}});
  const body=functions[0].getText(file).replace(/^export\s+/,'');
- return new Script([...constants.values(),body,'createMemoryPressureGuard;'].join('\n')).runInContext(context,{timeout:1000});
+ return new Script([...constants.values(),...helpers,body,'createMemoryPressureGuard;'].join('\n')).runInContext(context,{timeout:1000});
 }
 export async function verifyRecoveryBundle({bundle,manifest,expectedVersion}={}){
  const profile=manifest?.agentmemoryCompatibility;
@@ -38,7 +45,7 @@ export async function verifyRecoveryBundle({bundle,manifest,expectedVersion}={})
  let now=1000,available=8*1024**3,reads=0,resumes=0,pauses=0,releasePause;
  const pausePending=new Promise(r=>{releasePause=r;});
  const control={snapshot:()=>({status:'paused',pausedRequested:true,holds:['memory'],recovery:{attempts:2,maxAttempts:3,nextAttemptAt:0}}),change(action){if(action==='resume'){resumes++;return Promise.resolve(this.snapshot());}pauses++;return pausePending;}};
- const guard=createGuard({control,schedule:false,clock:()=>now,readSample:async()=>{reads++;return{total:16*1024**3,available};}});
+ const guard=createGuard({control,schedule:false,clock:()=>now,monotonicClock:()=>now,readSample:async()=>{reads++;return{total:16*1024**3,available};}});
  try{
   ensure(guard.snapshot().automaticMemoryRecovery===false,'compiled_recovery_not_disabled');
   for(let i=0;i<80;i++){now+=5000;await guard.refresh();await guard.drain();}

@@ -1,3 +1,11 @@
+## 0.9.33-daniel.75 — Additive memory-pressure recovery
+
+- Preserve the existing available-memory normal/recovery paths; Linux PSI adds a separately qualified recovery path rather than vetoing previously allowed work.
+- Keep independent legacy and PSI observation windows, invalidate interrupted legacy evidence at every activation read, and reject malformed PSI fields instead of treating them as zero.
+- Preserve critical protection, recovery-attempt history, other pause holds, and final durability/activation checks. Existing application data and capture originals are not rewritten by this policy change.
+- Correct the `.74` candidate's additional PSI veto. The `.75` package passed isolated tests and installed-package save/search/normal-shutdown verification, and was subsequently deployed. Live observation does not guarantee safety against future allocation bursts.
+- Policy and limitations: `docs/customizations/MEMORY-PRESSURE-BUDGET.md`.
+
 ## 0.9.32-daniel.68 — Sharded graph retrieval index
 
 - Store new graph retrieval builds in per-build hash shards to stay below the native file namespace size limit.
@@ -22,6 +30,8 @@
 
 ## [Unreleased]
 
+## [0.9.33-daniel.75] — 2026-11-14
+## [0.9.33-daniel.74] — 2026-11-14
 ## [0.9.33-daniel.73] — 2026-11-14
 - Stage existing SDK capture queue reference replacements in a private, quota-counted queue workspace, avoiding permanent ext4 directory growth from random temporary names in large queues. Preserve the existing 5 MiB admission and 8 KiB transition budgets, crash files, source originals, and conservative refusal when legacy bootstrap cannot fit. Source fix only; installed services are unchanged. See `docs/customizations/SDK-SPOOL-TRANSITION-WORKSPACE.md`.
 - Make Ubuntu CI subprocess fixtures use the active Node executable. Validate finite capture deadlines under contention without weakening exact-once ACK/original preservation checks, and wait for real browser fixture completion instead of a fixed virtual-time DOM dump. Test-only changes; no operating service changes.
@@ -690,6 +700,8 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.33-daniel.75]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.74...v0.9.33-daniel.75
+[0.9.33-daniel.74]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.73...v0.9.33-daniel.74
 [0.9.33-daniel.73]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.72...v0.9.33-daniel.73
 [0.9.33-daniel.72]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.71...v0.9.33-daniel.72
 [0.9.33-daniel.71]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.70...v0.9.33-daniel.71
