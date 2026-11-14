@@ -22,6 +22,8 @@
 
 ## [Unreleased]
 
+## [0.9.33-daniel.73] — 2026-11-14
+- Stage existing SDK capture queue reference replacements in a private, quota-counted queue workspace, avoiding permanent ext4 directory growth from random temporary names in large queues. Preserve the existing 5 MiB admission and 8 KiB transition budgets, crash files, source originals, and conservative refusal when legacy bootstrap cannot fit. Source fix only; installed services are unchanged. See `docs/customizations/SDK-SPOOL-TRANSITION-WORKSPACE.md`.
 - Make Ubuntu CI subprocess fixtures use the active Node executable. Validate finite capture deadlines under contention without weakening exact-once ACK/original preservation checks, and wait for real browser fixture completion instead of a fixed virtual-time DOM dump. Test-only changes; no operating service changes.
 
 ## [0.9.33-daniel.72] — 2026-11-13
@@ -688,6 +690,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.33-daniel.73]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.72...v0.9.33-daniel.73
 [0.9.33-daniel.72]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.71...v0.9.33-daniel.72
 [0.9.33-daniel.71]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.70...v0.9.33-daniel.71
 [0.9.33-daniel.70]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.69...v0.9.33-daniel.70

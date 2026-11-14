@@ -1,0 +1,13 @@
+# SDK queue transition workspace
+
+CI reproduced a real ext4 boundary defect: a queue initially charged at 5,242,880 bytes grew by 4,096 directory bytes after random temporary-file insertion/rename. A later hold correctly refused its reservation, stranding otherwise valid transitions. Local `/tmp` is tmpfs and did not exhibit that allocation pattern.
+
+Existing-reference replacements now stage one file inside `queue/.transitions`, then rename over the existing reference and fsync both directories. Empty stores prepare this workspace under the existing lease before admission; its directory and any contents count recursively toward queue usage. New admission remains unchanged. The 5 MiB admission limit and additional 8 KiB transition reservation are unchanged. There is no automatic cleanup, overwrite of crash evidence, source deletion, or quota increase.
+
+A legacy store bootstraps the workspace only if the directory and possible parent growth fit the same reserve, then checks the actual resulting usage before staging. Some already-full or over-limit legacy layouts cannot bootstrap safely and still return `QUEUE_FULL`. This patch does not promise progress under impossible space pressure. A nonempty workspace or unsafe/symlinked directory is preserved and rejected. Existing clients safely ignore the non-ref directory during listing and include it in recursive accounting; their own old transition algorithm is not fixed by sharing the new workspace.
+
+Tests preserve the exact byte-saturated transition→retry→hold→explicit verified resend→two ACKs→new admission sequence and retained originals. Portable successful fixtures use 1,200 references plus filler rather than assume 1,240 references fit every ext4 directory layout; a separate 1,240-reference over-limit case requires unchanged refusal and preservation. Actual staged peak, crash workspace, symlink, bootstrap pressure and tmpfs/ext4 behavior are covered. No operating service or installed hook is changed by this source patch.
+
+Upstream replacement criterion: equivalent atomic replacement, recursive accounting, crash preservation, exact byte-boundary and ext4 regressions pass. Production activation requires a separately verified package/client rollout.
+
+Candidate `0.9.33-daniel.73` is source-only. The same runtime change passed the full isolated fork-pool suite: 7,058 tests passed, 14 skipped, zero failures. Version-only generation then passed final build, skills/documentation checks, Codex artifact generation and eval TypeScript verification. Focused spool tests passed 72/72 on tmpfs and 12/12 boundary tests on ext4; prior-client accounting/listing/lease compatibility was verified. Installed operating `.72` and client hooks have not been replaced. Remote CI is a separate gate.

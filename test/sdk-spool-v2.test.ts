@@ -148,7 +148,7 @@ describe('SdkSpoolV2 durable originals and references',()=>{
 
  it('uses one bounded lease file and no growing ticket bookkeeping',async()=>{
   const s=store();for(let index=0;index<10;index++)await s.usage();
-  expect(readdirSync(join(dir,'queue'))).toEqual(['lease.lock']);
+  expect(readdirSync(join(dir,'queue'))).toEqual(['.transitions','lease.lock']);
   expect(statSync(join(dir,'queue','lease.lock')).size).toBe(0);
  });
  it('kernel releases crashed writer lease while preserving its partial original',async()=>{
@@ -158,7 +158,7 @@ describe('SdkSpoolV2 durable originals and references',()=>{
   expect(output.trim()).toBe('synthetic-crash');
   const s=store();const r=await s.retain(target,'event-1',body());expect(await s.load(target,r.sourceId)).toEqual(body());
   expect(readdirSync(join(dir,'originals')).some(name=>name.startsWith('.stage-'))).toBe(true);
-  expect(readdirSync(join(dir,'queue'))).toEqual(['lease.lock']);
+  expect(readdirSync(join(dir,'queue'))).toEqual(['.transitions','lease.lock']);
  });
 
  it('rejects impossible fixture budgets below fixed directory and lease charges',()=>{

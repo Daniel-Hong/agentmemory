@@ -121,7 +121,7 @@ function limit(value: number | undefined, maximum: number): number {
 /** Linux-only durable source storage. The lock covers all targets and every quota decision.
  * Source/staging files are never reclaimed. Disk charges are conservative logical bytes,
  * rounded to 4 KiB and at least stat.blocks*512; they are not filesystem hard quotas.
- * The queue includes a 4 KiB lease plus queue/root directory charges (12 KiB minimum).
+ * The queue includes a 4 KiB lease plus queue/root/workspace directory charges (16 KiB for initialized stores).
  * Writes additionally reserve a parent-directory block, and 256 bytes per new chunk-directory entry.
  * Admission cannot consume transition workspace: existing refs may use an additional 8 KiB,
  * and completed manifests an additional 68 KiB. Preserved crash temporaries count toward both.
@@ -131,6 +131,7 @@ export class SdkSpoolV2 {
   private readonly originals: string;
   private readonly queue: string;
   private readonly lease: string;
+  private readonly queueWorkspace: string;
   private readonly maxOriginalBytes: number;
   private readonly maxQueueBytes: number;
   private readonly maxInputBytes: number;
@@ -140,7 +141,7 @@ export class SdkSpoolV2 {
   constructor(options: SdkSpoolV2Options = {}) {
     const path = options.dir ?? process.env.AGENTMEMORY_SDK_CAPTURE_V2_DIR ?? join(homedir(), '.local', 'share', 'agentmemory', 'capture-spool-sdk-v2');
     if (!isAbsolute(path)) fail('STORE_OPTIONS_INVALID');
-    this.dir = resolve(path); this.originals = join(this.dir, 'originals'); this.queue = join(this.dir, 'queue'); this.lease = join(this.queue, 'lease.lock');
+    this.dir = resolve(path); this.originals = join(this.dir, 'originals'); this.queue = join(this.dir, 'queue'); this.lease = join(this.queue, 'lease.lock'); this.queueWorkspace = join(this.queue, '.transitions');
     this.maxOriginalBytes = limit(options.maxOriginalBytes, ORIGINAL_LIMIT);
     this.maxQueueBytes = limit(options.maxQueueBytes, QUEUE_LIMIT);
     if (this.maxOriginalBytes < BLOCK || this.maxQueueBytes < 3 * BLOCK) fail('STORE_OPTIONS_INVALID');
@@ -168,6 +169,14 @@ export class SdkSpoolV2 {
     const reserve = transition ? kind === 'original' ? ACK_TRANSITION_RESERVE : QUEUE_TRANSITION_RESERVE : 0;
     if (usage + additional > maximum + reserve) fail(kind === 'original' ? 'ORIGINALS_FULL' : 'QUEUE_FULL');
   }
+  private prepareQueueWorkspace(): void {
+    try { checkDirectory(this.queueWorkspace); return; }
+    catch (error) { if (code(error) !== 'ENOENT') throw error; }
+    // Bootstrap includes both the new directory and possible queue-parent growth.
+    // Legacy saturated layouts may safely refuse; never reclaim their files.
+    this.budget('queue', 2 * BLOCK, true);
+    mkdirSync(this.queueWorkspace, { mode: 0o700 }); syncDirectory(this.queue);
+  }
   private writeFile(path: string, bytes: Buffer | string): void {
     const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try { privateStat(fstatSync(fd), false); writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
@@ -175,11 +184,19 @@ export class SdkSpoolV2 {
   private atomicJson(path: string, value: unknown, kind?: 'original' | 'queue', beforePublish?: string, transition = false): void {
     const bytes = Buffer.from(canonical(value));
     if (kind && bytes.length > (kind === 'queue' ? BLOCK : 64 * 1024)) fail('SOURCE_UNVERIFIED');
+    const stagedQueue = kind === 'queue' && transition;
+    if (stagedQueue) {
+      this.prepareQueueWorkspace();
+      // A prior crash remains evidence. No overwrite, reuse, or automatic cleanup.
+      if (readdirSync(this.queueWorkspace).length) fail('QUEUE_FULL');
+    }
     if (kind) this.budget(kind, charge(bytes.length) + BLOCK, transition);
-    const temp = path + '.' + randomUUID() + '.tmp';
+    const temp = stagedQueue ? join(this.queueWorkspace, 'pending.tmp') : path + '.' + randomUUID() + '.tmp';
     this.writeFile(temp, bytes);
     if (beforePublish) this.phase(beforePublish);
+    if (stagedQueue) this.phase('queue_transition_staged');
     renameSync(temp, path); syncDirectory(join(path, '..'));
+    if (stagedQueue) syncDirectory(this.queueWorkspace);
   }
   private async locked<T>(operation: () => T): Promise<T> {
     const operationDeadline = this.deadline;
@@ -202,6 +219,8 @@ export class SdkSpoolV2 {
         await new Promise(resolveWait => setTimeout(resolveWait, 5));
       }
       fsyncSync(fd); syncDirectory(this.queue);
+      // Prepare empty stores before admission, so workspace is charged from day one.
+      if (readdirSync(this.queue).every(name => name === 'lease.lock')) this.prepareQueueWorkspace();
       if (operationDeadline !== undefined && performance.now() >= deadline) fail('STORE_BUSY');
       return operation();
     } catch (error) {

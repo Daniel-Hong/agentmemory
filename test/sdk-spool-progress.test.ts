@@ -1,6 +1,6 @@
 import {afterEach,expect,it,vi} from 'vitest';
 import {createHash} from 'node:crypto';
-import {chmodSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,truncateSync,writeFileSync} from 'node:fs';
+import {chmodSync,mkdirSync,mkdtempSync,readFileSync,lstatSync,readdirSync,symlinkSync,rmSync,truncateSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {performance} from 'node:perf_hooks';
@@ -28,9 +28,12 @@ async function fixture(refs=1240,completed=2328,textBytes=32*1024){
 }
 function fill(path:string,bytes:number){expect(bytes).toBeGreaterThanOrEqual(BLOCK);writeFileSync(path,'',{mode:0o600});truncateSync(path,bytes);}
 
-it('progresses a legacy 1240-ref saturated queue, preserving all originals and reserved admission',async()=>{
- const {dir,store,selected}=await fixture();
- fill(join(dir,'queue','legacy-preserved.tmp'),5*MiB-(await store.usage()).queueBytes);
+it('progresses a legacy 1200-ref byte-saturated queue, preserving all originals and reserved admission',async()=>{
+ // Keep reference count portable; exact byte saturation below still tests the same cap.
+ // ext4 directory blocks can make 1240 refs alone exceed 5MiB on some layouts.
+ const {dir,store,selected}=await fixture(1200,2368);
+ const filler=join(dir,'queue','legacy-preserved.tmp');writeFileSync(filler,'',{mode:0o600});
+ fill(filler,5*MiB-(await store.usage()).queueBytes+BLOCK);
  const before=await store.usage();expect(before.queueBytes).toBeLessThanOrEqual(5*MiB);expect(5*MiB-before.queueBytes).toBeLessThan(2*BLOCK);
  const source=selected[0],chunk=join(dir,'originals',source.sourceId,'000000.chunk'),digest=hash(readFileSync(chunk));
  const extra=await store.retain(target,'new-after-full',{eventId:'new-after-full',data:'synthetic'});
@@ -92,15 +95,15 @@ it('a malformed unrelated reference cannot prevent selected delivery',async()=>{
 });
 
 it('lists metadata and verifies only selected source bytes for direct delivery and bounded drain',async()=>{
- const {dir,store,selected}=await fixture();let verified=0;
+ const {dir,store,selected}=await fixture(1200,2368);let verified=0;
  const options={dir,storeOptions:{onPhase:(phase:string)=>{if(phase==='source_verified')verified++;}}};
  const start=performance.now(),records=await new SdkSpoolV2({...options.storeOptions,dir}).pending(target),listingMs=performance.now()-start;
- expect(records).toHaveLength(1240);expect(verified).toBe(0);
+ expect(records).toHaveLength(1200);expect(verified).toBe(0);
  const result=await deliverSdkCaptureV2(target,selected[0].body,async body=>ack(body),options);
  expect(result.outcome).toBe('delivered');expect(verified).toBeLessThanOrEqual(5);
  verified=0;const drained=await drainSdkCapturesV2(target,async body=>ack(body),{...options,limit:1,budgetMs:1500});
- expect(drained).toMatchObject({attempted:1,delivered:1,remaining:1238});expect(verified).toBeLessThanOrEqual(3);
- console.log(JSON.stringify({syntheticSpoolProgress:true,refs:1240,originals:3568,listingMs:Math.round(listingMs),selectedSourceReads:verified}));
+ expect(drained).toMatchObject({attempted:1,delivered:1,remaining:1198});expect(verified).toBeLessThanOrEqual(3);
+ console.log(JSON.stringify({syntheticSpoolProgress:true,refs:1200,originals:3568,listingMs:Math.round(listingMs),selectedSourceReads:verified}));
  expect((await store.usage()).originalBytes).toBeGreaterThan(100*MiB);
 },30000);
 
@@ -111,4 +114,59 @@ it('queue transitions do not inspect unrelated original trees and corrupt select
  const chunk=join(dir,'originals',selected[1].sourceId,'000000.chunk');writeFileSync(chunk,'corrupt');let posts=0;
  const result=await deliverSdkCaptureV2(target,selected[1].body,async body=>{posts++;return ack(body);},{dir});
  expect(result.outcome).toBe('dropped');expect(posts).toBe(0);expect(readFileSync(chunk,'utf8')).toBe('corrupt');
+});
+
+
+it('preserves crashed transition workspace and refuses replacement without consuming another slot',async()=>{
+ const {dir,store,selected}=await fixture(1,0,256);
+ const slot=join(dir,'queue','.transitions','pending.tmp');writeFileSync(slot,'synthetic crash evidence',{mode:0o600});
+ const before=await store.usage();
+ await expect(store.markSending(target,selected[0].sourceId)).rejects.toMatchObject({code:'QUEUE_FULL'});
+ expect(readFileSync(slot,'utf8')).toBe('synthetic crash evidence');
+ expect(await store.usage()).toEqual(before);expect((await store.pending(target))[0].state).toBe('pending');
+});
+
+it('refuses legacy workspace bootstrap over its reserved peak without deleting preserved pressure',async()=>{
+ const {dir,store,selected}=await fixture(1,0,256);
+ rmSync(join(dir,'queue','.transitions'),{recursive:true});
+ const before=await store.usage(),pressure=join(dir,'queue','legacy-crash.tmp');
+ fill(pressure,5*MiB-before.queueBytes+BLOCK);
+ const usage=await store.usage();
+ await expect(store.markSending(target,selected[0].sourceId)).rejects.toMatchObject({code:'QUEUE_FULL'});
+ expect(await store.usage()).toEqual(usage);
+ expect(readdirSync(join(dir,'queue'))).not.toContain('.transitions');
+ expect((await store.pending(target))[0].state).toBe('pending');
+});
+
+
+it('keeps actual staged replacement peak inside the unchanged 8KiB reserve',async()=>{
+ const {dir,store,selected}=await fixture(1,0,256);
+ const before=await store.usage();let peaks=0;
+ const measure=(path:string):number=>{const stat=lstatSync(path);return Math.max(BLOCK,Math.ceil(stat.size/BLOCK)*BLOCK,stat.blocks*512)+(stat.isDirectory()?readdirSync(path).reduce((sum,name)=>sum+measure(join(path,name)),0):0);};
+ const constrained=new SdkSpoolV2({dir,maxQueueBytes:before.queueBytes,onPhase:phase=>{
+  if(phase==='queue_transition_staged'){peaks++;expect(measure(join(dir,'queue'))+BLOCK).toBeLessThanOrEqual(before.queueBytes+2*BLOCK);}
+ }});
+ await constrained.markSending(target,selected[0].sourceId);await constrained.hold(target,selected[0].sourceId,'unknown');
+ expect(peaks).toBe(2);expect(readdirSync(join(dir,'queue','.transitions'))).toEqual([]);
+ expect(await store.load(target,selected[0].sourceId)).toEqual(selected[0].body);
+});
+
+it('rejects a symlinked transition workspace without writing outside the spool',async()=>{
+ const {dir,store,selected}=await fixture(1,0,256),outside=root();
+ rmSync(join(dir,'queue','.transitions'),{recursive:true});symlinkSync(outside,join(dir,'queue','.transitions'));
+ await expect(store.markSending(target,selected[0].sourceId)).rejects.toMatchObject({code:'STORE_UNSAFE'});
+ expect(readdirSync(outside)).toEqual([]);
+});
+
+
+it('preserves a legacy 1240-ref layout that is actually over the byte quota',async()=>{
+ const {dir,store,selected}=await fixture(1240,0,256);
+ rmSync(join(dir,'queue','.transitions'),{recursive:true});
+ const usage=await store.usage();
+ if(usage.queueBytes<=5*MiB)fill(join(dir,'queue','preserved-pressure.tmp'),5*MiB-usage.queueBytes+BLOCK);
+ const before=await store.usage();expect(before.queueBytes).toBeGreaterThan(5*MiB);
+ await expect(store.markSending(target,selected[0].sourceId)).rejects.toMatchObject({code:'QUEUE_FULL'});
+ expect(await store.usage()).toEqual(before);expect(await store.pending(target)).toHaveLength(1240);
+ expect(readdirSync(join(dir,'originals'))).toHaveLength(1240);
+ expect(await store.load(target,selected[0].sourceId)).toEqual(selected[0].body);
 });

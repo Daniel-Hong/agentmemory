@@ -522,6 +522,12 @@ describe("Diagnostics Functions", () => {
       await kv.set(KV.facets,stale.id,{...stale,targetId:"mem_live"});
       expect(await isFacetStillOrphan(kv as never,stale)).toBe(false);
     });
+    it("rejects a replaced facet with a different creation timestamp", async()=>{
+      const stored=(await kv.get<ReturnType<typeof facet>>(KV.facets,"fct_2"))!;
+      const stale={...stored,createdAt:new Date(Date.parse(stored.createdAt)-1).toISOString()};
+      expect(await isFacetStillOrphan(kv as never,stale)).toBe(false);
+      expect(await isFacetStillOrphan(kv as never,stored)).toBe(true);
+    });
     it("rechecks unindexed observations restored into a live session before delete", async()=>{
       const stale=facet("fct_restored","restored-no-prefix","observation");
       await kv.set(KV.facets,stale.id,stale);
@@ -552,7 +558,7 @@ describe("Diagnostics Functions", () => {
       await kv.set(KV.observations("migrated"), "obs_migrated", { id: "obs_migrated", sessionId: "migrated" });
       await sdk.trigger("mem::heal", { categories: ["facets"] });
       expect((await kv.list<{ id: string }>(KV.facets)).map((f) => f.id)).toContain("fct_7");
-      expect(await isFacetStillOrphan(kv as never, facet("fct_7", "obs_migrated", "observation"))).toBe(false);
+      expect(await isFacetStillOrphan(kv as never, (await kv.get<ReturnType<typeof facet>>(KV.facets,"fct_7"))!)).toBe(false);
     });
 
     it("heal keeps a facet on a migrated observation whose id has no obs_ prefix", async () => {
@@ -560,11 +566,12 @@ describe("Diagnostics Functions", () => {
       await kv.set(KV.observations("migrated"), "mig_abc", { id: "mig_abc", sessionId: "migrated" });
       await sdk.trigger("mem::heal", { categories: ["facets"] });
       expect((await kv.list<{ id: string }>(KV.facets)).map((f) => f.id)).toContain("fct_8");
-      expect(await isFacetStillOrphan(kv as never, facet("fct_8", "mig_abc", "observation"))).toBe(false);
+      expect(await isFacetStillOrphan(kv as never, (await kv.get<ReturnType<typeof facet>>(KV.facets,"fct_8"))!)).toBe(false);
     });
 
     it("heal keeps a facet whose target comes back before the delete", async () => {
-      const orphan = facet("fct_2", "mem_gone", "memory");
+      const orphan = (await kv.get<ReturnType<typeof facet>>(KV.facets, "fct_2"))!;
+      expect(orphan).not.toBeNull();
       expect(await isFacetStillOrphan(kv as never, orphan)).toBe(true);
       await kv.set(KV.memories, "mem_gone", { id: "mem_gone" });
       expect(await isFacetStillOrphan(kv as never, orphan)).toBe(false);

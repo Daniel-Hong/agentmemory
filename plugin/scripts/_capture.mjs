@@ -142,7 +142,7 @@ function limit(value, maximum) {
 /** Linux-only durable source storage. The lock covers all targets and every quota decision.
 * Source/staging files are never reclaimed. Disk charges are conservative logical bytes,
 * rounded to 4 KiB and at least stat.blocks*512; they are not filesystem hard quotas.
-* The queue includes a 4 KiB lease plus queue/root directory charges (12 KiB minimum).
+* The queue includes a 4 KiB lease plus queue/root/workspace directory charges (16 KiB for initialized stores).
 * Writes additionally reserve a parent-directory block, and 256 bytes per new chunk-directory entry.
 * Admission cannot consume transition workspace: existing refs may use an additional 8 KiB,
 * and completed manifests an additional 68 KiB. Preserved crash temporaries count toward both.
@@ -152,6 +152,7 @@ var SdkSpoolV2 = class {
 	originals;
 	queue;
 	lease;
+	queueWorkspace;
 	maxOriginalBytes;
 	maxQueueBytes;
 	maxInputBytes;
@@ -165,6 +166,7 @@ var SdkSpoolV2 = class {
 		this.originals = join(this.dir, "originals");
 		this.queue = join(this.dir, "queue");
 		this.lease = join(this.queue, "lease.lock");
+		this.queueWorkspace = join(this.queue, ".transitions");
 		this.maxOriginalBytes = limit(options.maxOriginalBytes, ORIGINAL_LIMIT);
 		this.maxQueueBytes = limit(options.maxQueueBytes, QUEUE_LIMIT);
 		if (this.maxOriginalBytes < BLOCK || this.maxQueueBytes < 3 * BLOCK) fail("STORE_OPTIONS_INVALID");
@@ -197,6 +199,17 @@ var SdkSpoolV2 = class {
 		const reserve = transition ? kind === "original" ? ACK_TRANSITION_RESERVE : QUEUE_TRANSITION_RESERVE : 0;
 		if (usage + additional > maximum + reserve) fail(kind === "original" ? "ORIGINALS_FULL" : "QUEUE_FULL");
 	}
+	prepareQueueWorkspace() {
+		try {
+			checkDirectory(this.queueWorkspace);
+			return;
+		} catch (error) {
+			if (code(error) !== "ENOENT") throw error;
+		}
+		this.budget("queue", 2 * BLOCK, true);
+		mkdirSync(this.queueWorkspace, { mode: 448 });
+		syncDirectory$1(this.queue);
+	}
 	writeFile(path, bytes) {
 		const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
 		try {
@@ -210,12 +223,19 @@ var SdkSpoolV2 = class {
 	atomicJson(path, value, kind, beforePublish, transition = false) {
 		const bytes = Buffer.from(canonical$1(value));
 		if (kind && bytes.length > (kind === "queue" ? BLOCK : 64 * 1024)) fail("SOURCE_UNVERIFIED");
+		const stagedQueue = kind === "queue" && transition;
+		if (stagedQueue) {
+			this.prepareQueueWorkspace();
+			if (readdirSync(this.queueWorkspace).length) fail("QUEUE_FULL");
+		}
 		if (kind) this.budget(kind, charge(bytes.length) + BLOCK, transition);
-		const temp = path + "." + randomUUID() + ".tmp";
+		const temp = stagedQueue ? join(this.queueWorkspace, "pending.tmp") : path + "." + randomUUID() + ".tmp";
 		this.writeFile(temp, bytes);
 		if (beforePublish) this.phase(beforePublish);
+		if (stagedQueue) this.phase("queue_transition_staged");
 		renameSync(temp, path);
 		syncDirectory$1(join(path, ".."));
+		if (stagedQueue) syncDirectory$1(this.queueWorkspace);
 	}
 	async locked(operation) {
 		const operationDeadline = this.deadline;
@@ -252,6 +272,7 @@ var SdkSpoolV2 = class {
 			}
 			fsyncSync(fd);
 			syncDirectory$1(this.queue);
+			if (readdirSync(this.queue).every((name) => name === "lease.lock")) this.prepareQueueWorkspace();
 			if (operationDeadline !== void 0 && performance.now() >= deadline) fail("STORE_BUSY");
 			return operation();
 		} catch (error) {
