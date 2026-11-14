@@ -1,3 +1,10 @@
+## 0.9.33-daniel.76 — Request-local search hydration
+
+- Reuse unchanged hydration within one expanding search request, preserving pinned State identity checks and invalidating on State writes or index publication.
+- Bound observers and release them on every request exit; no cross-request cache or backend safety bypass. Synthetic sparse-project RPC reads halve with identical results; production latency is not yet measured.
+- Make compatibility-hook test fixtures wait for their actual detached writers before cleanup and propagate child failures; production hook behavior is unchanged.
+- Details: `docs/customizations/SEARCH-REQUEST-HYDRATION.md`.
+
 ## 0.9.33-daniel.75 — Additive memory-pressure recovery
 
 - Preserve the existing available-memory normal/recovery paths; Linux PSI adds a separately qualified recovery path rather than vetoing previously allowed work.
@@ -30,6 +37,7 @@
 
 ## [Unreleased]
 
+## [0.9.33-daniel.76] — 2026-11-14
 ## [0.9.33-daniel.75] — 2026-11-14
 ## [0.9.33-daniel.74] — 2026-11-14
 ## [0.9.33-daniel.73] — 2026-11-14
@@ -700,6 +708,7 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.33-daniel.76]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.75...v0.9.33-daniel.76
 [0.9.33-daniel.75]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.74...v0.9.33-daniel.75
 [0.9.33-daniel.74]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.73...v0.9.33-daniel.74
 [0.9.33-daniel.73]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.72...v0.9.33-daniel.73

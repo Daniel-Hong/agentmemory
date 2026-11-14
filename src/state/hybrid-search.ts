@@ -1,4 +1,4 @@
-import { SearchIndex } from "./search-index.js";
+import { SearchIndex, type SearchIndexRevision } from "./search-index.js";
 import type { SearchLayer } from "./search-layer.js";
 import { VectorIndex } from "./vector-index.js";
 import type {
@@ -28,6 +28,16 @@ const MIN_FUSION_POOL = 40;
 export interface HybridSearchRequest {
   embedding?: { query: string; value: Promise<Float32Array> };
   candidateCount?: number;
+  onHydrationInvalidated?: () => void;
+}
+
+type Hydrated = { observation: CompressedObservation; layer: "observation" | "memory" };
+type HydrationEntry = { value: Promise<Hydrated | null>; revision: SearchIndexRevision; keys: { unchanged(): boolean; release(): void } };
+const requestHydration = new WeakMap<HybridSearchRequest, { owner: HybridSearch; query: string; layer: SearchLayer; entries: Map<string, HydrationEntry> }>();
+export function releaseHybridSearchRequest(request: HybridSearchRequest): void {
+  const cache = requestHydration.get(request);
+  if (cache) for (const entry of cache.entries.values()) { entry.revision.release(); entry.keys.release(); }
+  requestHydration.delete(request);
 }
 
 export class HybridSearch {
@@ -258,7 +268,14 @@ export class HybridSearch {
     if (request) request.candidateCount = combined.length;
     const retrievalDepth = Math.max(limit, 20);
     const diversified = this.diversifyBySession(combined, combined.length);
-    const enriched = await this.enrichResults(diversified, retrievalDepth);
+    let cache = request ? requestHydration.get(request) : undefined;
+    if (request && this.kv.durability?.watchKeys && this.kv.hydrationReadCurrent) {
+      if (cache && (cache.owner !== this || cache.query !== query || cache.layer !== targetLayer)) {
+        releaseHybridSearchRequest(request); request.onHydrationInvalidated?.(); cache = undefined;
+      }
+      if (!cache) { cache = { owner: this, query, layer: targetLayer, entries: new Map() }; requestHydration.set(request, cache); }
+    }
+    const enriched = await this.enrichResults(diversified, retrievalDepth, cache?.entries, request);
 
     return applyReranking ? this.rerankResults(query, enriched, limit) : enriched.slice(0, limit);
   }
@@ -365,13 +382,15 @@ export class HybridSearch {
       graphContext?: string;
     }>,
     limit: number,
+    cache?: Map<string, HydrationEntry>,
+    request?: HybridSearchRequest,
   ): Promise<HybridSearchResult[]> {
     const enriched: HybridSearchResult[] = [];
     let next = 0;
     while (next < results.length && enriched.length < limit) {
       const batch = results.slice(next, next + limit);
       next += batch.length;
-      enriched.push(...(await this.enrichBatch(batch)));
+      enriched.push(...(await this.enrichBatch(batch, cache, request)));
     }
     return enriched.slice(0, limit);
   }
@@ -386,21 +405,53 @@ export class HybridSearch {
       combinedScore: number;
       graphContext?: string;
     }>,
+    cache?: Map<string, HydrationEntry>,
+    request?: HybridSearchRequest,
   ): Promise<HybridSearchResult[]> {
     const observations = await Promise.all(
       sliced.map(async (r) => {
-        const obs = await this.kv
-          .get<CompressedObservation>(KV.observations(r.sessionId), r.obsId)
-          .catch(() => null);
-        if (obs) return { observation: obs, layer: "observation" as const };
-        // Fallback: indexed entry may originate from mem::remember, which
-        // writes to KV.memories with a synthetic sessionId ("memory" or the
-        // memory's first associated session). Coerce the Memory record into
-        // a CompressedObservation so search/recall surface saved memories.
-        const mem = await this.kv
-          .get<Memory>(KV.memories, r.obsId)
-          .catch(() => null);
-        return mem ? { observation: memoryToObservation(mem), layer: "memory" as const } : null;
+        let failedRead = false;
+        const load = async (): Promise<Hydrated | null> => {
+          const obs = await this.kv
+            .get<CompressedObservation>(KV.observations(r.sessionId), r.obsId)
+            .catch(() => { failedRead = true; return null; });
+          if (obs) return { observation: obs, layer: "observation" as const };
+          // Fallback: indexed entry may originate from mem::remember, which
+          // writes to KV.memories with a synthetic sessionId ("memory" or the
+          // memory's first associated session). Coerce the Memory record into
+          // a CompressedObservation so search/recall surface saved memories.
+          const mem = await this.kv
+            .get<Memory>(KV.memories, r.obsId)
+            .catch(() => { failedRead = true; return null; });
+          return mem ? { observation: memoryToObservation(mem), layer: "memory" as const } : null;
+        };
+        if (!cache || !this.kv.durability?.watchKeys || !this.kv.hydrationReadCurrent) return load();
+        const key = JSON.stringify([r.sessionId, r.obsId]);
+        const valid = (entry: HydrationEntry) => entry.revision.isCurrent() && entry.keys.unchanged();
+        const discard = (entry: HydrationEntry, changed = false) => {
+          entry.revision.release(); entry.keys.release();
+          if (cache.get(key) === entry) cache.delete(key);
+          if (changed) request?.onHydrationInvalidated?.();
+        };
+        const previous = cache.get(key);
+        if (previous) {
+          if (valid(previous) && this.kv.hydrationReadCurrent()) {
+            const value = await previous.value;
+            if (valid(previous) && this.kv.hydrationReadCurrent()) return value;
+          }
+          discard(previous, true);
+        }
+        if (cache.size >= 1000) return load();
+        const revision = this.bm25.watchRevision(r.obsId);
+        const keys = this.kv.durability.watchKeys([{scope: KV.observations(r.sessionId), key: r.obsId}, {scope: KV.memories, key: r.obsId}]);
+        const entry = { revision, keys, value: load() };
+        cache.set(key, entry);
+        try {
+          const value = await entry.value;
+          if (!valid(entry)) { discard(entry, true); return null; }
+          if (!value || failedRead) discard(entry);
+          return value;
+        } catch (error) { discard(entry); throw error; }
       }),
     );
     const enriched: HybridSearchResult[] = [];

@@ -32,6 +32,22 @@ beforeAll(async () => {
     for (const name of ["session-start.mjs", "pre-tool-use.mjs", "notification.mjs"]) writeFileSync(join(sandbox, directory, name), "stock sentinel " + name);
   }
   await buildCodexCompat(sandbox);
+  // Production hooks detach their retry worker to meet host deadlines. In this
+  // fixture, retain that real child so hook completion also proves writer exit.
+  // Do not set CAPTURE_DRAIN_CHILD here: that bypasses normal hook collection.
+  writeFileSync(join(sandbox, "await-hook-children.mjs"), `
+    import childProcess from 'node:child_process';
+    import {syncBuiltinESMExports} from 'node:module';
+    const spawn=childProcess.spawn;
+    childProcess.spawn=function(...args){
+      const child=spawn(...args);
+      child.unref=()=>child;
+      child.once('error',()=>{process.exitCode=1;});
+      child.once('close',(code,signal)=>{if(code!==0||signal)process.exitCode=1;});
+      return child;
+    };
+    syncBuiltinESMExports();
+  `);
 }, 30_000);
 afterAll(() => rmSync(sandbox, { recursive: true, force: true }));
 beforeEach(async () => {
@@ -74,8 +90,8 @@ async function client(directory = "plugin/scripts", historical = true) {
 }
 async function hook(name: string, input: unknown) {
   return await new Promise<{ code: number | null; output: string }>((resolveResult, reject) => {
-    const child = spawn(process.execPath, [join(sandbox, "plugin/scripts/codex-compat", name + ".mjs")], { env: { PATH: process.env.PATH ?? "", HOME: home, AGENTMEMORY_HOME: join(home, ".agentmemory"), AGENTMEMORY_URL: url, AGENTMEMORY_SECRET: "synthetic-secret", AGENTMEMORY_CAPTURE_SPOOL_DIR: join(home, "spool"), AGENTMEMORY_HOOK_INJECT_CONTEXT: "true" }, stdio: ["pipe", "pipe", "pipe"] });
-    let output = ""; child.stdout.on("data", data => { output += data; }); child.on("error", reject); child.on("exit", code => resolveResult({ code, output })); child.stdin.end(JSON.stringify(input));
+    const child = spawn(process.execPath, ["--import", pathToFileURL(join(sandbox, "await-hook-children.mjs")).href, join(sandbox, "plugin/scripts/codex-compat", name + ".mjs")], { env: { PATH: process.env.PATH ?? "", HOME: home, AGENTMEMORY_HOME: join(home, ".agentmemory"), AGENTMEMORY_URL: url, AGENTMEMORY_SECRET: "synthetic-secret", AGENTMEMORY_CAPTURE_SPOOL_DIR: join(home, "spool"), AGENTMEMORY_HOOK_INJECT_CONTEXT: "true" }, stdio: ["pipe", "pipe", "pipe"] });
+    let output = ""; child.stdout.on("data", data => { output += data; }); child.stderr.resume(); child.on("error", reject); child.on("close", code => resolveResult({ code, output })); child.stdin.end(JSON.stringify(input));
   });
 }
 async function drain() {
@@ -195,6 +211,31 @@ describe("explicit custom compatibility build artifacts", () => {
     const instance = await client(); await instance.enqueue("/agentmemory/observe", event);
     expect(await instance.flush()).toBe(false);
     expect(records(join(home, "legacy"), n => n.endsWith(".json"))[0].body.data).toEqual(event.data);
+  });
+  it("waits for detached hook writers before resolving fixture completion", async () => {
+    const marker = join(home, "delayed-writer-finished");
+    writeFileSync(join(sandbox, "plugin/scripts/codex-compat/fixture-delayed-writer.mjs"), `
+      import {spawn} from 'node:child_process';
+      const child=spawn(process.execPath,['--input-type=module','-e',
+        ${JSON.stringify(`await new Promise(r=>setTimeout(r,300));(await import('node:fs')).writeFileSync(${JSON.stringify(marker)},'complete');`)}],
+        {detached:true,stdio:'ignore'});
+      child.unref();
+    `);
+    try {
+      expect(await hook("fixture-delayed-writer", {})).toEqual({code:0,output:""});
+      expect(readFileSync(marker,"utf8")).toBe("complete");
+    } finally {
+      // Keep the negative-control run isolated too: never delete a live writer's home.
+      await vi.waitFor(()=>expect(readFileSync(marker,"utf8")).toBe("complete"));
+    }
+  });
+  it("does not report fixture success when a detached writer fails", async () => {
+    writeFileSync(join(sandbox, "plugin/scripts/codex-compat/fixture-failed-writer.mjs"), `
+      import {spawn} from 'node:child_process';
+      const child=spawn(process.execPath,['-e','setTimeout(()=>process.exit(7),50)'],{detached:true,stdio:'ignore'});
+      child.unref();
+    `);
+    expect(await hook("fixture-failed-writer", {})).toEqual({code:1,output:""});
   });
   it("retains PreCompact collection while suppressing unsupported output and context lookup", async () => {
     const result = await hook("pre-compact", { session_id: "synthetic-precompact", cwd: home, trigger: "auto" });

@@ -1,7 +1,7 @@
 import { observationIndexEligible } from '../ops/observation-index-policy.mjs';
 import type { IIIClient } from 'iii-sdk'
 import type { GraphObservationAuthorization } from "./graph-retrieval.js";
-import type { HybridSearchRequest } from "../state/hybrid-search.js";
+import { releaseHybridSearchRequest, type HybridSearchRequest } from "../state/hybrid-search.js";
 import type { IndexPersistenceStatus } from "../state/index-persistence.js";
 import type { CompressedObservation, Memory, SearchResult, Session } from '../types.js'
 import { KV } from '../state/schema.js'
@@ -948,7 +948,8 @@ export function registerSearchFunction(sdk: IIIClient, kv: StateKV): void {
         observation: CompressedObservation
         layer: SearchResultLayer
       } | null>>()
-      const hybridRequest: HybridSearchRequest = {}
+      const hybridRequest: HybridSearchRequest = { onHydrationInvalidated: () => { sessionCache.clear(); memoryProjectCache.clear(); observationCache.clear(); } }
+      try {
       let enriched: SearchResult[] = []
       let useHybridRanker = hybridRanker !== null
       while (true) {
@@ -1051,6 +1052,7 @@ export function registerSearchFunction(sdk: IIIClient, kv: StateKV): void {
         hasCwdFilter: !!cwdFilter,
       })
       return response
+      } finally { releaseHybridSearchRequest(hybridRequest); }
     }
   )
 }

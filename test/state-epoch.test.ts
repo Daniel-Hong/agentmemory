@@ -76,3 +76,10 @@ it('bounds socket reobservation and still rejects persistent foreign ownership',
  const f=await fixture();rmSync(join(f.proc,'200/fd/3'));let reads=0;race.afterRead=path=>{if(path===join(f.proc,'200/fd'))reads++;};
  expect(()=>f.m.createStateBoundEvidence({...f,storePath:f.store,procRoot:f.proc})).toThrow();expect(reads).toBeLessThanOrEqual(3);
 });
+it('exposes the exact pinned read predicate without issuing RPCs and fails closed',async()=>{
+ const {pinStateClient,pinnedStateReadCurrent}=await import('../src/ops/state-epoch.mjs');
+ const trigger=vi.fn();const sdk={trigger} as any;let current=true;
+ expect(pinnedStateReadCurrent(sdk)).toBeNull();
+ const pinned=pinStateClient(sdk,'state::11111111-1111-4111-8111-111111111111::',()=>{if(!current)throw Error('identity unavailable');return true;});
+ const check=pinnedStateReadCurrent(pinned)!;expect(check()).toBe(true);current=false;expect(check()).toBe(false);expect(trigger).not.toHaveBeenCalled();
+});

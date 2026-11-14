@@ -49,9 +49,13 @@ export function createStateBoundEvidence({engineEvidence,identity,expectedExecut
  const initial=capture();if(!initial)fail();
  return {...engineEvidence,capture,diagnostic:()=>lastFailure,current(expected){const now=capture();if(!now)return false;if(!expected?.state)return reject('STATE_EXPECTED_EPOCH_MISSING');if(!engineEvidence.current(expected))return reject(engineEvidence.diagnostic?.()??'ENGINE_EPOCH_CHANGED');if(JSON.stringify(now.state)!==JSON.stringify(expected.state))return reject('STATE_EPOCH_CHANGED');return true;}};
 }
+// Reuse exactly the pinned predicate for request-local cached read admission.
+// Unpinned clients must not opt into hydration reuse.
+const pinnedReadChecks=new WeakMap();
+export function pinnedStateReadCurrent(client){return pinnedReadChecks.get(client)??null;}
 export function pinStateClient(sdk,prefix,current=()=>true,diagnostic=()=>'STATE_EPOCH_NOT_CURRENT'){
  if(!/^state::[a-f0-9-]{36}::$/.test(prefix))fail();
- return new Proxy(sdk,{get(target,key){
+ const pinned=new Proxy(sdk,{get(target,key){
   if(key==='trigger')return async request=>{
    const stateCall=request.function_id.startsWith('state::');
    if(stateCall&&!current())throw stateDispatchRejected(diagnostic()??'STATE_EPOCH_NOT_CURRENT');
@@ -61,4 +65,6 @@ export function pinStateClient(sdk,prefix,current=()=>true,diagnostic=()=>'STATE
   };
   const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;
  }});
+ pinnedReadChecks.set(pinned,()=>{try{return current()===true;}catch{return false;}});
+ return pinned;
 }
