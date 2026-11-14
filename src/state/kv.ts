@@ -1,3 +1,4 @@
+import {pinnedStateReadCurrent} from '../ops/state-epoch.mjs'
 import {isStateDispatchRejected,localMutationRejected} from '../ops/state-dispatch-error.mjs'
 import { lstatSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
@@ -146,6 +147,8 @@ export class StateKV {
   get recoveryMutationSafe(){return !this.uncertainMutation&&!!this.writerLease&&fileWriterRecoveryAdmitted(this.writerLease)}
   readonly recoveryWrite?: ReturnType<typeof createRecordRecoveryGate>
   readonly backend: StateBackend
+  get hydrationReadCurrent(){return pinnedStateReadCurrent(this.sdk)}
+
   readonly durability: ReturnType<typeof createStateDurabilityFence> | null
   readonly observationReader: ReturnType<typeof createObservationReader> | null
   readonly graphFileList: ReturnType<typeof createGraphFileList> | null
