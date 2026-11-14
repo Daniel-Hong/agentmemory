@@ -5,7 +5,7 @@ import {auditServerSdkBundle} from '../scripts/audit-server-sdk-bundle.mjs';
 let root:string;
 beforeEach(async()=>{
  root=await mkdtemp(join(tmpdir(),'am-closure-audit-'));await mkdir(join(root,'dist'));
- for(const [name,version]of Object.entries({'iii-sdk':'0.25.0','@iii-dev/helpers':'0.25.0',yaml:'2.8.1',json5:'2.2.3'})){
+ for(const [name,version]of Object.entries({'iii-sdk':'0.25.1','@iii-dev/helpers':'0.25.1',yaml:'2.8.1',json5:'2.2.3'})){
   await mkdir(join(root,'node_modules',name),{recursive:true});await writeFile(join(root,'node_modules',name,'package.json'),JSON.stringify({version}));
  }
  await writeFile(join(root,'dist/cli.mjs'),"import fs from 'node:fs';export const cli=true;");await writeFile(join(root,'dist/index.mjs'),"export const worker=true;");

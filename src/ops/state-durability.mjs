@@ -1,3 +1,4 @@
+import {isStateDispatchRejected} from './state-dispatch-error.mjs';
 import {open,stat} from 'node:fs/promises';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {isAbsolute,join} from 'node:path';
@@ -27,7 +28,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   if(typeof storePath!=='string'||!isAbsolute(storePath))throw Error('absolute_state_store_path_required');
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||!Number.isSafeInteger(pollIntervalMs)||pollIntervalMs<1)throw Error('state_durability_interval_invalid');
   if(!['sdk','disk'].includes(completion))throw Error('state_completion_invalid');
-  let sdkCompleted=0,sdkFailed=0;
+  let sdkCompleted=0,sdkFailed=0,firstMutationFailure=null,latestMutationFailure=null;
   let frozen=false,mutationFailures=0,revision=0,pruning=false,lastVerification=null,pruneSequence=0;
   const active=new Set(),mutationKeys=new WeakMap(),touched=new Map(),pruneAttempts=new Map(),revisionObservers=new Map();
   const certificates=new Set(),certificateContext=new AsyncLocalStorage();
@@ -62,7 +63,7 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
   function mutate(scope,key,fn){
     if(frozen)return Promise.reject(Object.assign(Error('state_mutations_frozen'),{code:'STATE_FROZEN'}));
     remember(scope,key);const promise=Promise.resolve().then(fn);mutationKeys.set(promise,{scope,key});active.add(promise);
-    promise.then(()=>{remember(scope,key);active.delete(promise);},()=>{remember(scope,key);active.delete(promise);mutationFailures++;});return promise;
+    promise.then(()=>{remember(scope,key);active.delete(promise);},error=>{remember(scope,key);active.delete(promise);if(!isStateDispatchRejected(error)){mutationFailures++;const codes=['STATE_WRITER_IDENTITY_CHANGED','FILE_WRITER_LOST','WRITER_EPOCH_UNVERIFIED','STATE_SET_ACK_UNVERIFIED','STATE_FROZEN'];const reasons=['STATE_ENGINE_SOCKET_OWNER_UNVERIFIED','STATE_ENGINE_CONNECTION_MISSING','STATE_ENGINE_CONNECTION_LIMIT','STATE_EPOCH_CHANGED','ENGINE_EPOCH_CHANGED','STATE_PROCESS_START_CHANGED','STATE_PROCESS_CHANGED_DURING_CAPTURE','STATE_BOOT_CHANGED','STATE_STORE_PATH_CHANGED','STATE_UID_CHANGED','STATE_EXPECTED_EPOCH_MISSING','STATE_EXECUTABLE_CHANGED','STATE_NAMESPACE_CHANGED'];const detail={at:clock(),code:codes.includes(error?.code)?error.code:'MUTATION_FAILED',phase:error?.phase==='after_dispatch'?'after_dispatch':'unknown',diagnostic:reasons.includes(error?.diagnostic)?error.diagnostic:null};firstMutationFailure??=detail;latestMutationFailure=detail;}});return promise;
   }
   async function drain(){
     if(certificateContext.getStore()?.active)throw Object.assign(Error('state_read_coordination_reentrant'),{code:'STATE_READ_COORDINATION_REENTRANT'});
@@ -252,5 +253,5 @@ export function createStateDurabilityFence({storePath,timeoutMs=15000,pollInterv
     catch(error){return {success:false,deferred:true,errorCode:typeof error.code==='string'?error.code:'STATE_DURABILITY_UNAVAILABLE',diagnostics:error.diagnostics??null,retained:true};}
     finally{pruning=false;}
   }
-  return {completion,withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,watchKeys,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({completion,sdkCompletion:completion==='sdk'?{completed:sdkCompleted,failed:sdkFailed}:null,frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,pruning,lastVerification:structuredClone(lastVerification),measurements:completion==='disk'?measurements.snapshot():null,readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
+  return {completion,withBulkRead:(work,options)=>readCoordinator.run('bulk',work,options),mutate,keys,keysFor,watchKeys,forgetKeys,stableKeys,flushStable,freeze(){frozen=true;},drain,wait,waitForKeys,waitForKeyGroups,snapshot:()=>({completion,sdkCompletion:completion==='sdk'?{completed:sdkCompleted,failed:sdkFailed}:null,frozen,activeMutations:active.size,touchedScopes:touched.size,mutationFailures,firstMutationFailure:structuredClone(firstMutationFailure),latestMutationFailure:structuredClone(latestMutationFailure),pruning,lastVerification:structuredClone(lastVerification),measurements:completion==='disk'?measurements.snapshot():null,readSharing:readSharing.snapshot(),readCoordination:readCoordinator.snapshot()})};
 }

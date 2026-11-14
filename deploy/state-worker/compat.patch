@@ -1,0 +1,917 @@
+diff --git a/state/README.md b/state/README.md
+index a9b0f17..5f62e30 100644
+--- a/state/README.md
++++ b/state/README.md
+@@ -226,3 +226,48 @@ externalized builtin. A formal benchmark was waived by project decision
+ | Durability | store dies with the ENGINE process | store dies with the WORKER process (ADR 0001; file_based/redis unchanged) |
+ | Latency | in-process µs | engine⇄worker WS round-trip (low ms) — formal benchmark waived by project decision 2026-07-06 |
+ | Telemetry (`track_state_*`) | engine-internal counters | none — out of scope for this migration; lands with the shared worker observability story |
++
++## Personal compatibility extension: compact write acknowledgement
++
++This local candidate adds `state::set_ack` with the same input and mutation,
++validation, reserved-scope protection, and event behavior as `state::set`.
++It returns only JSON `true` after success and propagates the same errors.
++`state::set` retains its existing old/new-value response. This avoids echoing
++large source records across the RPC connection when the caller only needs an
++acknowledgement. An ACK is **not** a disk-flush or crash-durability receipt;
++AgentMemory's separate persistence verification must remain enabled.
++
++This is a custom extension of the `state/v0.22.22` source tag, not an official
++State Worker release. It can be removed only when the official worker provides
++an equivalent bounded response and passes the same compatibility tests.
++
++### Local boot identity / instance aliases (migration evidence only)
++
++`state::boot_identity` returns immutable Linux boot facts: `version:1`, `pid`,
++`start` (process start ticks as a decimal string), `instanceId` (boot UUID),
++`bootId`, `adapter`, and canonical `storePath` (null for non-file stores).
++The path is taken from the constructed adapter, not the seed configuration.
++No credentials or complete configuration are returned. Unavailable process or
++path evidence returns `BOOT_IDENTITY_UNAVAILABLE`; it never fabricates evidence.
++
++The same handlers also register under `state::<instanceId>::` for `set`,
++`set_ack`, `compare-and-set`, `barrier`, `get`, `delete`, `update`, `list`,
++`list_keys`, `list_groups`, and `boot_identity`. These directly share the canonical
++handlers and guards, rather than forwarding through a replaceable canonical RPC.
++Canonical APIs remain unchanged; private namespace claims remain canonical.
++Clients can independently validate the boot identity, then pin these aliases so a
++replacement worker does not silently receive their calls.
++
++Identity is NOT authentication, a single-writer lock, or a durability receipt.
++Consumers must validate executable/process/socket/store evidence separately.
++This lifecycle defense is against accidental replacement and stale routing, not
++an adversary with the same OS user/root authority or arbitrary engine registration.
++
++File-backed local workers also hold an exclusive, nonblocking advisory lock on
++`.agentmemory-state.lock` in the canonical store directory before loading state.
++Contention fails startup before registering RPCs. The lock file is never removed
++or truncated; it is separate from AgentMemory's application writer lease. The
++open lock stays owned by the shared flush mutex, including background and pending
++blocking flush tasks, until all writer references end or the process exits.
++This excludes cooperating patched workers only. Older/unpatched processes do not
++honor this advisory lock and must not be run against the same store.
+diff --git a/state/src/adapters.rs b/state/src/adapters.rs
+index 6b2cba0..68bbe68 100644
+--- a/state/src/adapters.rs
++++ b/state/src/adapters.rs
+@@ -40,6 +40,8 @@ pub enum CompareAndSetOutcome {
+ 
+ #[async_trait]
+ pub trait StateAdapter: Send + Sync + 'static {
++    /// Actual constructed file store, never the seed or mutable configuration.
++    fn file_store_path(&self) -> anyhow::Result<Option<std::path::PathBuf>> { Ok(None) }
+     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult>;
+     async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<StateValue>>;
+     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()>;
+@@ -88,24 +90,37 @@ pub trait StateAdapter: Send + Sync + 'static {
+     async fn flush(&self) -> anyhow::Result<()> {
+         Ok(())
+     }
++    async fn seal_flush(&self) -> anyhow::Result<std::path::PathBuf> { anyhow::bail!("STATE_SEAL_UNSUPPORTED") }
+     async fn destroy(&self) -> anyhow::Result<()>;
+ }
+ 
+ pub struct KvStoreAdapter {
+     storage: KvStore,
++    mutation_gate: tokio::sync::RwLock<()>,
++    sealed: std::sync::atomic::AtomicBool,
+ }
+ 
+ impl KvStoreAdapter {
+     pub fn new(config: Option<Value>) -> Self {
+-        Self {
+-            storage: KvStore::new(config),
+-        }
++        Self::from_store(KvStore::new(config))
++    }
++    fn from_store(storage: KvStore) -> Self {
++        Self { storage, mutation_gate: tokio::sync::RwLock::new(()), sealed: std::sync::atomic::AtomicBool::new(false) }
++    }
++    async fn admit(&self) -> anyhow::Result<tokio::sync::RwLockReadGuard<'_, ()>> {
++        let guard = self.mutation_gate.read().await;
++        if self.sealed.load(std::sync::atomic::Ordering::Acquire) { anyhow::bail!("STATE_WRITER_SEALED"); }
++        Ok(guard)
+     }
+ }
+ 
+ #[async_trait]
+ impl StateAdapter for KvStoreAdapter {
++    fn file_store_path(&self) -> anyhow::Result<Option<std::path::PathBuf>> {
++        self.storage.file_store_path()
++    }
+     async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<StreamSetResult> {
++        let _admission = self.admit().await?;
+         Ok(self
+             .storage
+             .set(scope.to_string(), key.to_string(), value)
+@@ -115,6 +130,7 @@ impl StateAdapter for KvStoreAdapter {
+         Ok(self.storage.get(scope.to_string(), key.to_string()).await)
+     }
+     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
++        let _admission = self.admit().await?;
+         self.storage
+             .remove_shared(scope.to_string(), key.to_string())
+             .await;
+@@ -126,6 +142,7 @@ impl StateAdapter for KvStoreAdapter {
+         key: &str,
+         ops: Vec<UpdateOp>,
+     ) -> anyhow::Result<StreamUpdateResult> {
++        let _admission = self.admit().await?;
+         Ok(self
+             .storage
+             .update(scope.to_string(), key.to_string(), ops)
+@@ -138,6 +155,7 @@ impl StateAdapter for KvStoreAdapter {
+         expected: Option<&Value>,
+         value: Value,
+     ) -> anyhow::Result<CompareAndSetOutcome> {
++        let _admission = self.admit().await?;
+         Ok(self
+             .storage
+             .compare_and_set(scope.to_string(), key.to_string(), expected, value)
+@@ -151,6 +169,7 @@ impl StateAdapter for KvStoreAdapter {
+         cfg: &crate::barrier::BarrierConfig,
+         event: &Value,
+     ) -> anyhow::Result<crate::barrier::Decision> {
++        let _admission = self.admit().await?;
+         self.storage
+             .barrier_arrive(scope.to_string(), key.to_string(), cfg, event)
+             .await
+@@ -172,6 +191,13 @@ impl StateAdapter for KvStoreAdapter {
+     async fn flush(&self) -> anyhow::Result<()> {
+         self.storage.flush().await
+     }
++    async fn seal_flush(&self) -> anyhow::Result<std::path::PathBuf> {
++        let path = self.storage.file_store_path()?.ok_or_else(|| anyhow::anyhow!("STATE_SEAL_UNSUPPORTED"))?;
++        let _exclusive = self.mutation_gate.write().await;
++        self.sealed.store(true, std::sync::atomic::Ordering::Release);
++        self.storage.flush_and_sync().await?;
++        Ok(path)
++    }
+     async fn destroy(&self) -> anyhow::Result<()> {
+         Ok(())
+     }
+@@ -1046,7 +1072,7 @@ impl StateAdapter for RedisAdapter {
+ /// builtin's adapter registry). `bridge` is intentionally not ported.
+ pub async fn build_adapter(config: &StateConfig) -> anyhow::Result<Arc<dyn StateAdapter>> {
+     match config.effective_adapter_name() {
+-        "kv" => Ok(Arc::new(KvStoreAdapter::new(config.adapter_config()))),
++        "kv" => Ok(Arc::new(KvStoreAdapter::from_store(KvStore::try_new(config.adapter_config())?))),
+         "redis" => {
+             let url = config
+                 .adapter
+@@ -1067,6 +1093,17 @@ mod tests {
+     use super::*;
+     use crate::config::StateConfig;
+ 
++    async fn reopen_after_drop(config: Value) -> KvStore {
++        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
++        loop {
++            match KvStore::try_new(Some(config.clone())) {
++                Ok(store) => return store,
++                Err(error) if error.to_string().starts_with("STATE_WRITER_LOCK_UNAVAILABLE") && tokio::time::Instant::now() < deadline => tokio::time::sleep(Duration::from_millis(10)).await,
++                Err(error) => panic!("store failed to release after drop: {error}"),
++            }
++        }
++    }
++
+     #[test]
+     fn cas_uses_json_value_equality() {
+         let stored = serde_json::from_str(r#"{"a":1,"b":2}"#).unwrap();
+@@ -1155,7 +1192,7 @@ mod tests {
+         // them to disk as one file per scope.
+         for _ in 0..50 {
+             if std::fs::read_dir(&dir)
+-                .map(|d| d.count() >= 2)
++                .map(|d| d.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "bin")).count() >= 2)
+                 .unwrap_or(false)
+             {
+                 break;
+@@ -1163,7 +1200,8 @@ mod tests {
+             tokio::time::sleep(Duration::from_millis(100)).await;
+         }
+ 
+-        let reloaded = KvStore::new(Some(config));
++        drop(store);
++        let reloaded = reopen_after_drop(config).await;
+         assert_eq!(
+             reloaded
+                 .get("claims".into(), "slot".into())
+@@ -1208,7 +1246,8 @@ mod tests {
+         a.set("s", "k", serde_json::json!({"v": 1})).await.unwrap();
+         a.flush().await.unwrap();
+ 
+-        let reloaded = KvStoreAdapter::new(Some(config));
++        drop(a);
++        let reloaded = KvStoreAdapter::from_store(reopen_after_drop(config).await);
+         assert_eq!(
+             reloaded.get("s", "k").await.unwrap().as_deref(),
+             Some(&serde_json::json!({"v": 1}))
+@@ -1216,3 +1255,48 @@ mod tests {
+         std::fs::remove_dir_all(&dir).ok();
+     }
+ }
++
++#[cfg(test)]
++mod seal_tests {
++    use super::*;
++    fn fixture() -> (std::path::PathBuf, Arc<KvStoreAdapter>) {
++        let path=std::env::temp_dir().join(format!("state-seal-{}", uuid::Uuid::new_v4()));
++        let adapter=Arc::new(KvStoreAdapter::new(Some(serde_json::json!({"store_method":"file_based","file_path":path,"save_interval_ms":3600000}))));
++        (path,adapter)
++    }
++    #[tokio::test]
++    async fn seal_waits_for_admitted_work_and_rejects_all_mutators() {
++        let (path,a)=fixture();
++        a.set("s","k",serde_json::json!(1)).await.unwrap();
++        let admitted=a.admit().await.unwrap();
++        let b=a.clone(); let sealing=tokio::spawn(async move { b.seal_flush().await });
++        tokio::time::sleep(Duration::from_millis(20)).await;
++        assert!(!sealing.is_finished()); drop(admitted);
++        assert_eq!(sealing.await.unwrap().unwrap(),path.canonicalize().unwrap());
++        assert!(a.set("s","k",serde_json::json!(2)).await.unwrap_err().to_string().contains("SEALED"));
++        assert!(a.delete("s","k").await.is_err());
++        assert!(a.update("s","k",vec![]).await.is_err());
++        assert!(a.compare_and_set("s","k",None,serde_json::json!(2)).await.is_err());
++        let cfg=crate::barrier::BarrierConfig{id:"b".into(),expect:crate::barrier::Expect::Count(1),key_from:None,carry:None};
++        assert!(a.barrier_arrive("s","k",&cfg,&serde_json::json!({})).await.is_err());
++        assert_eq!(a.get("s","k").await.unwrap().as_deref(),Some(&serde_json::json!(1)));
++        assert!(a.seal_flush().await.is_ok()); // retry never reopens admission
++        drop(a);tokio::time::sleep(Duration::from_millis(20)).await;
++        let reopened=KvStoreAdapter::new(Some(serde_json::json!({"store_method":"file_based","file_path":path})));
++        reopened.set("s","k",serde_json::json!(3)).await.unwrap();
++        reopened.flush().await.unwrap();drop(reopened);tokio::time::sleep(Duration::from_millis(20)).await;
++        std::fs::remove_dir_all(path).unwrap();
++    }
++    #[tokio::test]
++    async fn sync_failure_stays_sealed_without_success_receipt() {
++        let (path,a)=fixture();
++        std::fs::create_dir(path.join("invalid.bin")).unwrap();
++        assert!(a.seal_flush().await.is_err());
++        assert!(a.set("s","k",serde_json::json!(1)).await.unwrap_err().to_string().contains("SEALED"));
++        std::fs::remove_dir(path.join("invalid.bin")).unwrap();
++        assert!(a.seal_flush().await.is_ok());
++        assert!(a.set("s","k",serde_json::json!(1)).await.is_err());
++        drop(a);tokio::time::sleep(Duration::from_millis(20)).await;
++        std::fs::remove_dir_all(path).unwrap();
++    }
++}
+diff --git a/state/src/boot.rs b/state/src/boot.rs
+index e332978..6e7fddc 100644
+--- a/state/src/boot.rs
++++ b/state/src/boot.rs
+@@ -88,6 +88,10 @@ pub async fn start(iii: Arc<IIIClient>, config: StateConfig) -> anyhow::Result<B
+     // ledger fails the boot instead of silently serving private scopes.
+     functions::restore_persisted_claims(&iii, &ctx).await?;
+     functions::register_functions(&iii, ctx.clone());
++    let name = cell.read().await.effective_adapter_name().to_owned();
++    if let Some(instance) = crate::boot_identity::register(&iii, &ctx.adapter, &name) {
++        functions::register_data_functions(&iii, ctx.clone(), &format!("state::{instance}"));
++    }
+ 
+     // Injectable console UI: content function + console:script trigger.
+     // Ordering doesn't matter for the console side (the engine parks the
+diff --git a/state/src/functions.rs b/state/src/functions.rs
+index ce5ee8c..1a6a361 100644
+--- a/state/src/functions.rs
++++ b/state/src/functions.rs
+@@ -275,6 +275,35 @@ pub struct StateCtx {
+ }
+ 
+ impl StateCtx {
++    async fn set_value(&self, input: StateSetInput) -> Result<iii_helpers::stream::StreamSetResult, Error> {
++        reject_reserved_scope(&self.private, &input.scope)?;
++        if let Some(limit) = self.snapshot().await.max_value_bytes {
++            let size = crate::json_budget::size_within(&input.value, limit)
++                .map_err(|error| Error::Handler(format!("VALUE_SERIALIZATION_ERROR: {error}")))?;
++            if size.is_none() {
++                return Err(Error::Handler(format!(
++                    "VALUE_TOO_LARGE: value exceeds the configured max_value_bytes limit of {limit}"
++                )));
++            }
++        }
++        let result = self
++            .adapter
++            .set(&input.scope, &input.key, input.value)
++            .await
++            .map_err(|e| {
++                Error::Handler(format!("SET_ERROR: Failed to set value: {e}"))
++            })?;
++        let et = if result.old_value.is_none() {
++            StateEventType::Created
++        } else {
++            StateEventType::Updated
++        };
++        self.emit_change(et, &input.scope, &input.key,
++            result.old_value.as_ref(), &result.new_value)
++        .await;
++        Ok(result)
++    }
++
+     async fn snapshot(&self) -> Arc<StateConfig> {
+         self.config.read().await.clone()
+     }
+@@ -355,41 +384,21 @@ fn event(
+ 
+ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     register_claim_namespace(iii, &ctx);
++    register_data_functions(iii, ctx, "state");
++}
++
++/// Boot-qualified aliases use these exact handlers, never a routable RPC proxy.
++pub fn register_data_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>, prefix: &str) {
+ 
+     // state::set — max_value_bytes LIVE guard before the adapter write.
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::set",
++            format!("{prefix}::set"),
+             RegisterFunction::new_async(move |input: StateSetInput| {
+                 let ctx = ctx.clone();
+                 async move {
+-                    reject_reserved_scope(&ctx.private, &input.scope)?;
+-                    if let Some(limit) = ctx.snapshot().await.max_value_bytes {
+-                        let size = crate::json_budget::size_within(&input.value, limit)
+-                            .map_err(|error| Error::Handler(format!("VALUE_SERIALIZATION_ERROR: {error}")))?;
+-                        if size.is_none() {
+-                            return Err(Error::Handler(format!(
+-                                "VALUE_TOO_LARGE: value exceeds the configured max_value_bytes limit of {limit}"
+-                            )));
+-                        }
+-                    }
+-                    let result = ctx
+-                        .adapter
+-                        .set(&input.scope, &input.key, input.value)
+-                        .await
+-                        .map_err(|e| {
+-                            Error::Handler(format!("SET_ERROR: Failed to set value: {e}"))
+-                        })?;
+-                    let et = if result.old_value.is_none() {
+-                        StateEventType::Created
+-                    } else {
+-                        StateEventType::Updated
+-                    };
+-                    ctx.emit_change(et, &input.scope, &input.key,
+-                        result.old_value.as_ref(), &result.new_value)
+-                    .await;
+-                    Ok(result)
++                    ctx.set_value(input).await
+                 }
+             })
+             .description(
+@@ -398,13 +407,25 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+         );
+     }
+ 
++    {
++        let ctx = ctx.clone();
++        iii.register_function(
++            format!("{prefix}::set_ack"),
++            RegisterFunction::new_async(move |input: StateSetInput| {
++                let ctx = ctx.clone();
++                async move { ctx.set_value(input).await.map(|_| true) }
++            })
++            .description("Store a value and return only a successful acknowledgement; not a disk flush receipt"),
++        );
++    }
++
+     // state::compare-and-set — the primitive a claim needs. `get` then `set`
+     // from outside cannot express "swap only if nobody moved it": two callers
+     // reading the same value both write, and both believe they won.
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::compare-and-set",
++            format!("{prefix}::compare-and-set"),
+             RegisterFunction::new_async(move |input: CompareAndSetInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -463,7 +484,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::barrier",
++            format!("{prefix}::barrier"),
+             RegisterFunction::new_async(move |input: BarrierInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -495,7 +516,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::get",
++            format!("{prefix}::get"),
+             RegisterFunction::new_async(move |input: StateGetInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -519,7 +540,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::delete",
++            format!("{prefix}::delete"),
+             RegisterFunction::new_async(move |input: StateDeleteInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -562,7 +583,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::update",
++            format!("{prefix}::update"),
+             RegisterFunction::new_async(move |input: StateUpdateInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -600,7 +621,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::list",
++            format!("{prefix}::list"),
+             RegisterFunction::new_async(move |input: StateGetGroupInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -626,7 +647,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::list_keys",
++            format!("{prefix}::list_keys"),
+             RegisterFunction::new_async(move |input: StateGetGroupInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -645,7 +666,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
+     {
+         let ctx = ctx.clone();
+         iii.register_function(
+-            "state::list_groups",
++            format!("{prefix}::list_groups"),
+             RegisterFunction::new_async(move |_input: StateListGroupsInput| {
+                 let ctx = ctx.clone();
+                 async move {
+@@ -1221,6 +1242,16 @@ mod private_namespace_tests {
+         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+     }
+ 
++    #[tokio::test]
++    async fn shared_set_path_propagates_adapter_failure_before_success() {
++        let ctx = test_ctx(Arc::new(FailFirstAdapter::default()));
++        let input = || StateSetInput { scope: "ack-test".into(), key: "k".into(), value: serde_json::json!(42) };
++        let error = ctx.set_value(input()).await.unwrap_err();
++        assert!(error.to_string().contains("SET_ERROR"));
++        assert!(error.to_string().contains("disk full"));
++        assert_eq!(ctx.set_value(input()).await.unwrap().new_value, serde_json::json!(42));
++    }
++
+     #[tokio::test]
+     async fn observers_get_the_document_trigger_handlers_get() {
+         let invoker = Arc::new(RecordingInvoker::default());
+diff --git a/state/src/lib.rs b/state/src/lib.rs
+index 2592580..980fa82 100644
+--- a/state/src/lib.rs
++++ b/state/src/lib.rs
+@@ -20,3 +20,5 @@ pub mod ui;
+ pub mod update_ops;
+ 
+ mod json_budget;
++
++pub mod boot_identity;
+diff --git a/state/src/store.rs b/state/src/store.rs
+index 99ee5e3..e599d99 100644
+--- a/state/src/store.rs
++++ b/state/src/store.rs
+@@ -185,7 +185,7 @@ pub struct KvStore {
+     /// shutdown flush can find the map already empty while the loop's write
+     /// is still in flight — and process exit then cancels that write,
+     /// losing precisely the update this store is here to keep.
+-    flush_lock: Arc<tokio::sync::Mutex<()>>,
++    flush_lock: Arc<tokio::sync::Mutex<Option<std::fs::File>>>,
+     /// The boot-configured save cadence (ms, already floored). A reconfigure
+     /// that clears `save_interval_ms` reverts to this rather than to the global
+     /// default, so clearing the runtime knob restores the adapter's configured
+@@ -193,8 +193,30 @@ pub struct KvStore {
+     default_interval: u64,
+ }
+ 
++/// Advisory exclusion for cooperating State processes. Never unlink this file:
++/// the lock belongs to its inode, and replacement could create a second lock.
++fn lock_store(dir: &Path) -> anyhow::Result<std::fs::File> {
++    let path = dir.join(".agentmemory-state.lock");
++    match std::fs::symlink_metadata(&path) {
++        Ok(meta) if !meta.file_type().is_file() => anyhow::bail!("STATE_WRITER_LOCK_INVALID"),
++        Ok(_) => {},
++        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
++        Err(error) => return Err(error.into()),
++    }
++    let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
++    if !file.metadata()?.is_file() { anyhow::bail!("STATE_WRITER_LOCK_INVALID"); }
++    file.try_lock().map_err(|error| anyhow::anyhow!("STATE_WRITER_LOCK_UNAVAILABLE: {error}"))?;
++    Ok(file)
++}
++
+ impl KvStore {
++    pub fn file_store_path(&self) -> anyhow::Result<Option<PathBuf>> {
++        self.file_store_dir.as_ref().map(|path| std::fs::canonicalize(path).map_err(Into::into)).transpose()
++    }
+     pub fn new(config: Option<Value>) -> Self {
++        Self::try_new(config).expect("failed to open State store")
++    }
++    pub fn try_new(config: Option<Value>) -> anyhow::Result<Self> {
+         tracing::debug!("Initializing KvStore with config: {:?}", config);
+         let store_method = config
+             .clone()
+@@ -231,10 +253,8 @@ impl KvStore {
+         let file_store_dir = match store_method.as_str() {
+             "file_based" => {
+                 let dir = file_path;
+-                if let Err(err) = std::fs::create_dir_all(&dir) {
+-                    tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+-                }
+-                Some(dir)
++                std::fs::create_dir_all(&dir)?;
++                Some(std::fs::canonicalize(dir)?)
+             }
+             "in_memory" => None,
+             other => {
+@@ -243,6 +263,9 @@ impl KvStore {
+             }
+         };
+ 
++        // Take the cooperative process lock BEFORE loading persisted state.
++        // The flush mutex owns the file so spawned blocking flushes retain it.
++        let writer_lock = file_store_dir.as_ref().map(|dir| lock_store(dir)).transpose()?;
+         let data_from_disk = match &file_store_dir {
+             Some(dir) => load_store_from_dir(dir),
+             None => HashMap::new(),
+@@ -255,7 +278,7 @@ impl KvStore {
+             file_store_dir,
+             dirty,
+             save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
+-            flush_lock: Arc::new(tokio::sync::Mutex::new(())),
++            flush_lock: Arc::new(tokio::sync::Mutex::new(writer_lock)),
+             default_interval: interval,
+         };
+ 
+@@ -263,7 +286,7 @@ impl KvStore {
+         // nothing to persist. `spawn_save_loop` is a no-op when not file-backed.
+         kv.spawn_save_loop(interval);
+ 
+-        kv
++        Ok(kv)
+     }
+ 
+     /// (Re)start the background save loop at `interval_ms`, signalling any prior
+@@ -317,7 +340,7 @@ impl KvStore {
+     async fn save_loop(
+         store: Store,
+         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+-        flush_lock: Arc<tokio::sync::Mutex<()>>,
++        flush_lock: Arc<tokio::sync::Mutex<Option<std::fs::File>>>,
+         polling_interval: u64,
+         dir: PathBuf,
+         mut stop_rx: tokio::sync::watch::Receiver<bool>,
+@@ -352,7 +375,7 @@ impl KvStore {
+     async fn flush_dirty(
+         store: &Store,
+         dirty: &Arc<RwLock<HashMap<String, DirtyOp>>>,
+-        flush_lock: &Arc<tokio::sync::Mutex<()>>,
++        flush_lock: &Arc<tokio::sync::Mutex<Option<std::fs::File>>>,
+         dir: &Path,
+     ) -> anyhow::Result<()> {
+         // Move the lock into the blocking task BEFORE it drains dirty intent.
+@@ -410,6 +433,24 @@ impl KvStore {
+     /// Flush pending dirty scopes to disk immediately — the shutdown path,
+     /// so a stop right after a write doesn't lose the last save window.
+     /// No-op for in-memory stores.
++    /// Called only after the adapter seals and drains mutation admission.
++    pub async fn flush_and_sync(&self) -> anyhow::Result<()> {
++        self.flush().await?;
++        let directory = self.file_store_dir.clone().ok_or_else(|| anyhow::anyhow!("STATE_SEAL_UNSUPPORTED"))?;
++        let guard = Arc::clone(&self.flush_lock).lock_owned().await;
++        tokio::task::spawn_blocking(move || {
++            let _guard = guard;
++            for entry in std::fs::read_dir(&directory)? {
++                let entry = entry?;
++                if entry.path().extension() != Some(OsStr::new(KEY_FILE_EXTENSION)) { continue; }
++                if !entry.file_type()?.is_file() { anyhow::bail!("STATE_SYNC_FILE_INVALID"); }
++                std::fs::File::open(entry.path())?.sync_all()?;
++            }
++            std::fs::File::open(&directory)?.sync_all()?;
++            Ok(())
++        }).await?
++    }
++
+     pub async fn flush(&self) -> anyhow::Result<()> {
+         match &self.file_store_dir {
+             Some(dir) => Self::flush_dirty(&self.store, &self.dirty, &self.flush_lock, dir).await,
+@@ -1153,3 +1194,29 @@ mod cas_tests {
+ #[cfg(test)]
+ #[path = "store_memory_tests.rs"]
+ mod memory_tests;
++
++#[cfg(test)]
++mod writer_lock_tests {
++    use super::*;
++    #[test]
++    fn writer_lock_excludes_alias_and_releases_on_drop() {
++        let dir = std::env::temp_dir().join(format!("state-lock-{}", uuid::Uuid::new_v4()));
++        std::fs::create_dir(&dir).unwrap();
++        let first = lock_store(&dir).unwrap();
++        assert!(lock_store(&dir.join(".")).is_err());
++        drop(first);
++        let second = lock_store(&dir).unwrap(); drop(second);
++        std::fs::remove_dir_all(dir).unwrap();
++    }
++    #[cfg(unix)]
++    #[test]
++    fn writer_lock_rejects_symlink_without_touching_target() {
++        let dir = std::env::temp_dir().join(format!("state-lock-{}", uuid::Uuid::new_v4()));
++        std::fs::create_dir(&dir).unwrap();
++        let target = dir.join("sentinel"); std::fs::write(&target, "untouched").unwrap();
++        std::os::unix::fs::symlink(&target, dir.join(".agentmemory-state.lock")).unwrap();
++        assert!(lock_store(&dir).is_err());
++        assert_eq!(std::fs::read_to_string(target).unwrap(), "untouched");
++        std::fs::remove_dir_all(dir).unwrap();
++    }
++}
+diff --git a/state/src/store_memory_tests.rs b/state/src/store_memory_tests.rs
+index abd55e3..ee04401 100644
+--- a/state/src/store_memory_tests.rs
++++ b/state/src/store_memory_tests.rs
+@@ -13,7 +13,7 @@ pub(super) fn manual_store(dir: &Path) -> KvStore {
+         file_store_dir: Some(dir.to_path_buf()),
+         dirty: Arc::new(RwLock::new(HashMap::new())),
+         save_loop_stop: Arc::new(std::sync::Mutex::new(None)),
+-        flush_lock: Arc::new(tokio::sync::Mutex::new(())),
++        flush_lock: Arc::new(tokio::sync::Mutex::new(None)),
+         default_interval: 60_000,
+     }
+ }
+diff --git a/state/tests/e2e_state.rs b/state/tests/e2e_state.rs
+index 09b9c63..7f521c1 100644
+--- a/state/tests/e2e_state.rs
++++ b/state/tests/e2e_state.rs
+@@ -903,8 +903,10 @@ async fn claim_namespace_lifecycle() {
+ #[tokio::test]
+ #[serial]
+ async fn claims_survive_a_state_restart() {
+-    let name = unique("e2e-phoenix");
+-    let dir = std::env::temp_dir().join(unique("state-e2e-store"));
++    let child = std::env::var("STATE_CLAIM_RESTART_CHILD").ok();
++    let (name, scope, dir) = if let Some(raw) = &child {
++        let values: (String, String, std::path::PathBuf) = serde_json::from_str(raw).unwrap(); values
++    } else { (unique("e2e-phoenix"), unique("phoenix"), std::env::temp_dir().join(unique("state-e2e-store"))) };
+     let file_config = || {
+         serde_json::from_value::<StateConfig>(json!({
+             "adapter": {"name": "kv", "config": {
+@@ -916,6 +918,7 @@ async fn claims_survive_a_state_restart() {
+         .expect("file-backed state config")
+     };
+ 
++    if child.is_some() {
+     // First life: claim, then wait for the ledger to flush to disk (the
+     // claim is the only write, so any file in the dir is the ledger).
+     let Some(iii) = engine::connect_fresh_named(&name).await else {
+@@ -924,7 +927,6 @@ async fn claims_survive_a_state_restart() {
+     let boot = iii_state::boot::start(iii.clone(), file_config())
+         .await
+         .expect("state worker should boot");
+-    let scope = unique("phoenix");
+     let claimed = call(
+         &iii,
+         "state::claim-namespace",
+@@ -935,7 +937,7 @@ async fn claims_survive_a_state_restart() {
+     assert_eq!(claimed["claimed"], json!(true));
+     for _ in 0..50 {
+         if std::fs::read_dir(&dir)
+-            .map(|d| d.count() >= 1)
++            .map(|d| d.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "bin")).count() >= 1)
+             .unwrap_or(false)
+         {
+             break;
+@@ -944,7 +946,7 @@ async fn claims_survive_a_state_restart() {
+     }
+     assert!(
+         std::fs::read_dir(&dir)
+-            .map(|d| d.count() >= 1)
++            .map(|d| d.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "bin")).count() >= 1)
+             .unwrap_or(false),
+         "the claims ledger never flushed to {}",
+         dir.display()
+@@ -952,6 +954,14 @@ async fn claims_survive_a_state_restart() {
+     boot.shutdown().await;
+     iii.shutdown_async().await;
+ 
++        return; // Child process exit releases all SDK-held adapter references.
++    }
++    let output = std::process::Command::new(std::env::current_exe().unwrap())
++        .args(["--exact", "claims_survive_a_state_restart", "--nocapture"])
++        .env("STATE_CLAIM_RESTART_CHILD", serde_json::to_string(&(&name, &scope, &dir)).unwrap())
++        .output().unwrap();
++    assert!(output.status.success(), "child failed: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
++
+     // Second life: a fresh connection and a fresh boot over the same store.
+     // Restoration must re-reserve the scope and re-register the accessors
+     // without anyone re-claiming.
+@@ -1080,3 +1090,112 @@ async fn cas_misses_and_barrier_fan_in_via_bus() {
+     boot.shutdown().await;
+     iii.shutdown_async().await;
+ }
++
++
++#[tokio::test]
++#[serial]
++async fn set_ack_returns_only_true_and_preserves_legacy_set() {
++    let iii = engine::connect_fresh().await.expect("explicit engine required");
++    let boot = iii_state::boot::start(iii.clone(), in_memory_config()).await.unwrap();
++    let scope = unique("compact-ack");
++    let large = "x".repeat(1024 * 1024);
++    let ack = call(&iii, "state::set_ack", json!({"scope": scope, "key": "k", "value": large})).await.expect("compact ACK write");
++    assert_eq!(ack, json!(true));
++    assert_eq!(serde_json::to_vec(&ack).unwrap().len(), 4);
++    assert_eq!(call(&iii, "state::get", json!({"scope": scope, "key": "k"})).await.unwrap(), json!(large));
++    let legacy = call(&iii, "state::set", json!({"scope": scope, "key": "k", "value": 2})).await.unwrap();
++    assert_eq!(legacy["old_value"], json!(large));
++    assert_eq!(legacy["new_value"], json!(2));
++    boot.shutdown().await;
++    iii.shutdown_async().await;
++}
++
++#[tokio::test]
++#[serial]
++async fn set_ack_preserves_size_and_reserved_scope_guards() {
++    let iii = engine::connect_fresh().await.expect("explicit engine required");
++    let config = StateConfig { max_value_bytes: Some(8), ..in_memory_config() };
++    let boot = iii_state::boot::start(iii.clone(), config).await.unwrap();
++    let scope = unique("ack-reject");
++    let err = call(&iii, "state::set_ack", json!({"scope": scope, "key": "k", "value": "too large"})).await.unwrap_err();
++    assert!(err.to_string().contains("VALUE_TOO_LARGE"), "{err}");
++    assert_eq!(call(&iii, "state::get", json!({"scope": scope, "key": "k"})).await.unwrap(), Value::Null);
++    let err = call(&iii, "state::set_ack", json!({"scope": iii_state::functions::CLAIMS_SCOPE, "key": "k", "value": 1})).await.unwrap_err();
++    assert!(err.to_string().contains("RESERVED"), "{err}");
++    boot.shutdown().await;
++    iii.shutdown_async().await;
++}
++
++
++#[tokio::test]
++#[serial]
++async fn set_ack_concurrent_writes_keep_each_value() {
++    let iii = engine::connect_fresh().await.expect("explicit engine required");
++    let boot = iii_state::boot::start(iii.clone(), in_memory_config()).await.unwrap();
++    let scope = unique("ack-concurrent");
++    let mut tasks = tokio::task::JoinSet::new();
++    for i in 0..16 {
++        let iii = iii.clone();
++        let scope = scope.clone();
++        tasks.spawn(async move {
++            let ack = call(&iii, "state::set_ack", json!({"scope": scope, "key": i.to_string(), "value": i})).await.unwrap();
++            assert_eq!(ack, json!(true));
++        });
++    }
++    while let Some(result) = tasks.join_next().await { result.unwrap(); }
++    for i in 0..16 {
++        assert_eq!(call(&iii, "state::get", json!({"scope": scope, "key": i.to_string()})).await.unwrap(), json!(i));
++    }
++    boot.shutdown().await;
++    iii.shutdown_async().await;
++}
++
++#[tokio::test]
++#[serial]
++async fn boot_identity_is_stable_and_does_not_expose_config() {
++    let Some(iii) = engine::connect_fresh().await else { return };
++    let boot = iii_state::boot::start(iii.clone(), in_memory_config()).await.unwrap();
++    let first = call(&iii, "state::boot_identity", json!({})).await.unwrap();
++    assert_eq!(first["version"], 1);
++    assert_eq!(first["pid"], std::process::id());
++    assert_eq!(first["adapter"], "kv");
++    assert!(first["storePath"].is_null());
++    assert!(first["start"].as_str().unwrap().parse::<u64>().is_ok());
++    assert!(Uuid::parse_str(first["instanceId"].as_str().unwrap()).is_ok());
++    assert!(Uuid::parse_str(first["bootId"].as_str().unwrap()).is_ok());
++    assert_eq!(first.as_object().unwrap().len(), 7);
++    assert_eq!(first, call(&iii, "state::boot_identity", json!({})).await.unwrap());
++    boot.shutdown().await;
++    iii.shutdown_async().await;
++}
++
++#[tokio::test]
++#[serial]
++async fn boot_aliases_keep_the_original_handlers_when_another_worker_registers() {
++    let Some(first) = engine::connect_fresh().await else { return };
++    let boot1 = iii_state::boot::start(first.clone(), in_memory_config()).await.unwrap();
++    let identity1 = call(&first, "state::boot_identity", json!({})).await.unwrap();
++    let prefix1 = format!("state::{}", identity1["instanceId"].as_str().unwrap());
++    let key = json!({"scope":unique("alias"),"key":"k"});
++    let mut write = key.clone(); write["value"] = json!({"original":true});
++    assert_eq!(call(&first, &format!("{prefix1}::set_ack"), write).await.unwrap(), true);
++    let Some(second) = engine::connect_fresh_named(&unique("alias-second")).await else { panic!("second connection unavailable") };
++    assert_eq!(call(&second, &format!("{prefix1}::boot_identity"), json!({})).await.unwrap(), identity1);
++    let alias = format!("{prefix1}::get");
++    second.register_function(alias.clone(), RegisterFunction::new_async(|_:Value| async { Ok::<_, Error>(json!({"hijacked":true})) }));
++    tokio::time::sleep(Duration::from_millis(100)).await;
++    let duplicate_result = call(&second, &alias, key.clone()).await.unwrap();
++    println!("duplicate_alias_observed={duplicate_result}");
++    assert_eq!(duplicate_result, json!({"original":true}));
++    boot1.shutdown().await; first.shutdown_async().await;
++    tokio::time::sleep(Duration::from_millis(100)).await;
++    // A rejected duplicate must not be revived when the old owner disconnects.
++    assert!(call(&second, &alias, key.clone()).await.is_err());
++    let boot2 = iii_state::boot::start(second.clone(), in_memory_config()).await.unwrap();
++    let identity2 = call(&second, "state::boot_identity", json!({})).await.unwrap();
++    let prefix2 = format!("state::{}", identity2["instanceId"].as_str().unwrap());
++    assert_ne!(prefix1, prefix2);
++    assert!(call(&second, &format!("{prefix1}::set_ack"), json!({"scope":"unused","key":"k","value":1})).await.is_err());
++    assert_eq!(call(&second, &format!("{prefix2}::get"), key).await.unwrap(), Value::Null);
++    boot2.shutdown().await; second.shutdown_async().await;
++}
+diff --git a/state/src/boot_identity.rs b/state/src/boot_identity.rs
+new file mode 100644
+index 0000000..8d93fb6
+--- /dev/null
++++ b/state/src/boot_identity.rs
+@@ -0,0 +1,82 @@
++//! Read-only boot facts. These are evidence inputs, NOT authentication or a disk receipt.
++use std::sync::Arc;
++use iii_sdk::{IIIClient, RegisterFunction};
++use iii_sdk::errors::Error;
++use serde_json::{Value, json};
++use crate::adapters::StateAdapter;
++
++fn process_start(stat: &str) -> anyhow::Result<String> {
++    let (_, fields) = stat.rsplit_once(") ").ok_or_else(|| anyhow::anyhow!("process stat invalid"))?;
++    let start = fields.split_whitespace().nth(19).ok_or_else(|| anyhow::anyhow!("process start unavailable"))?;
++    start.parse::<u64>()?;
++    Ok(start.to_owned())
++}
++
++fn capture(adapter: &dyn StateAdapter, name: &str) -> anyhow::Result<Value> {
++    // Linux evidence is unavailable on other platforms; never invent a start time.
++    let start = process_start(&std::fs::read_to_string("/proc/self/stat")?)?;
++    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
++    let boot_id = uuid::Uuid::parse_str(boot_id.trim())?;
++    let store_path = adapter.file_store_path()?.map(|path| path.into_os_string().into_string())
++        .transpose().map_err(|_| anyhow::anyhow!("non UTF-8 store path"))?;
++    Ok(json!({"version":1,"pid":std::process::id(),"start":start,
++        "instanceId":uuid::Uuid::new_v4().to_string(),"bootId":boot_id.to_string(),
++        "adapter":name,"storePath":store_path}))
++}
++
++pub fn register(iii: &Arc<IIIClient>, adapter: &Arc<dyn StateAdapter>, name: &str) -> Option<String> {
++    // Capture once from the built adapter. Mutable config is not authoritative.
++    // Failure disables only evidence; existing State behavior is unchanged.
++    let identity = capture(adapter.as_ref(), name).map_err(|_| "BOOT_IDENTITY_UNAVAILABLE".to_string());
++    let instance = identity.as_ref().ok().and_then(|value| value["instanceId"].as_str()).map(str::to_owned);
++    let mut seal_ids = vec!["state::seal_flush".to_string()];
++    if let Some(id) = &instance { seal_ids.push(format!("state::{id}::seal_flush")); }
++    for id in seal_ids {
++        let adapter = adapter.clone(); let identity = identity.clone();
++        iii.register_function(id, RegisterFunction::new_async(move |_: Value| {
++            let adapter = adapter.clone(); let identity = identity.clone();
++            async move {
++                let identity = identity.map_err(Error::Handler)?;
++                let path = adapter.seal_flush().await.map_err(|e| Error::Handler(format!("STATE_SEAL_FAILED: {e}")))?;
++                if Some(path.to_string_lossy().as_ref()) != identity["storePath"].as_str() { return Err(Error::Handler("STATE_SEAL_STORE_CHANGED".to_string())); }
++                Ok::<Value, Error>(json!({"version":1,"instanceId":identity["instanceId"],"storePath":identity["storePath"],"sealed":true,"synced":true}))
++            }
++        }).description("Seal mutation admission and flush+fsync this instance; never reopens"));
++    }
++    let mut ids = vec!["state::boot_identity".to_string()];
++    if let Some(id) = &instance { ids.push(format!("state::{id}::boot_identity")); }
++    for id in ids {
++        let identity = identity.clone();
++        iii.register_function(id, RegisterFunction::new_async(move |_: Value| {
++            let identity = identity.clone();
++            async move { identity.map_err(Error::Handler) }
++        }).description("Read immutable boot identity; requires independent owner validation"));
++    }
++    instance
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn stat_parser_handles_spaces_and_parentheses() {
++        assert_eq!(process_start("42 (worker (name)) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 123 0").unwrap(), "123");
++        assert!(process_start("42 bad").is_err());
++        assert!(process_start("42 (name) S bad").is_err());
++    }
++    #[tokio::test]
++    async fn identity_uses_constructed_store_not_changed_configuration() {
++        let directory = std::env::temp_dir().join(format!("state-identity-{}", uuid::Uuid::new_v4()));
++        std::fs::create_dir(&directory).unwrap();
++        let adapter = crate::adapters::KvStoreAdapter::new(Some(json!({"store_method":"file_based","file_path":directory})));
++        let before = capture(&adapter, "kv").unwrap();
++        adapter.reconfigure(&json!({"file_path":"/not/the/store","save_interval_ms":100})).await.unwrap();
++        let after = capture(&adapter, "kv").unwrap();
++        assert_eq!(before["storePath"], directory.canonicalize().unwrap().to_str().unwrap());
++        assert_eq!(before["storePath"], after["storePath"]);
++        assert_ne!(before["instanceId"], after["instanceId"]);
++        assert_eq!(before.as_object().unwrap().len(), 7);
++        adapter.destroy().await.unwrap();
++        std::fs::remove_dir_all(&directory).unwrap();
++    }
++}

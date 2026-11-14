@@ -31,3 +31,35 @@ it.each(['foreign-peer','unowned-socket','duplicate-listen','namespace','missing
 it('does not treat hidden-but-live processes as terminated',async()=>{const f=await fixture();f.setLiveness(true);expect(f.evidence.gone({pid:201,start:'30'})).toBe(false);});
 it('supports the actual IPv6 loopback socket tuple without DNS assumptions',async()=>{const f=await fixture(),address='00000000000000000000000001000000';f.setPeer({remoteAddress:'::1',remotePort:1000,localAddress:'::1',localPort:2000});f.write(join(f.proc,'200/net/tcp'),'');f.write(join(f.proc,'200/net/tcp6'),f.listen.replaceAll('0100007F',address).replace('00000000:0000','00000000000000000000000000000000:0000')+'\n'+f.connected.replaceAll('0100007F',address));expect(f.evidence.capture()).not.toBeNull();});
 it('refuses a socket peer that changes while evidence is being captured',async()=>{const f=await fixture();let calls=0;f.setPeer(()=>({remoteAddress:'127.0.0.1',remotePort:1000,localAddress:'127.0.0.1',localPort:++calls===1?2000:2001}));expect(f.evidence.capture()).toBeNull();});
+
+it('uses matching Compose metadata instead of a stale native PID',async()=>{
+ const f=await fixture();const {readEnginePid}=await import('../src/ops/engine-epoch.mjs');
+ f.write(join(f.d,'engine-state.json'),JSON.stringify({kind:'compose',engineUrl:'ws://localhost:1000',enginePid:200}));
+ const opts={enginePidPath:join(f.d,'iii.pid'),engineStatePath:join(f.d,'engine-state.json'),engineUrl:'ws://localhost:1000'};
+ f.write(opts.enginePidPath,'999');expect(readEnginePid(opts)).toBe(200);
+ for(const state of [{},null,[],{kind:'unknown'},{kind:'compose',engineUrl:opts.engineUrl},{kind:'compose',engineUrl:'ws://localhost:2000',enginePid:200},{kind:'compose',engineUrl:opts.engineUrl,enginePid:0}]){
+  f.write(opts.engineStatePath,JSON.stringify(state));expect(()=>readEnginePid(opts)).toThrow();
+ }
+ f.write(opts.engineStatePath,'{');expect(()=>readEnginePid(opts)).toThrow();
+ rmSync(opts.engineStatePath);expect(readEnginePid(opts)).toBe(999);
+});
+it('validates Compose PID against the actual SDK socket',async()=>{
+ const f=await fixture();const {createEngineEpochEvidence}=await import('../src/ops/engine-epoch.mjs');
+ rmSync(join(f.d,'iii.pid'));f.write(join(f.d,'engine-state.json'),JSON.stringify({kind:'compose',engineUrl:'ws://localhost:1000',enginePid:200}));
+ const evidence=createEngineEpochEvidence({engineUrl:'ws://localhost:1000',enginePidPath:join(f.d,'iii.pid'),engineStatePath:join(f.d,'engine-state.json'),peer:()=>({remoteAddress:'127.0.0.1',remotePort:1000,localAddress:'127.0.0.1',localPort:2000}),procRoot:f.proc,machineIdPath:join(f.d,'machine-id'),workerPid:100,workerUid:1000});
+ expect(evidence.capture()?.engine.pid).toBe(200);rmSync(join(f.proc,'200/fd/4'));expect(evidence.capture()).toBeNull();
+});
+it('waits for delayed PID publication before admitting a writer',async()=>{
+ const {waitForEngineEpoch}=await import('../src/ops/engine-epoch.mjs');
+ let calls=0;const epoch={engine:{pid:200,start:'20'}};
+ expect(await waitForEngineEpoch({capture:()=>++calls<3?null:epoch} as any,{timeoutMs:100,pollMs:1})).toBe(epoch);
+ expect(calls).toBe(3);
+});
+it('fails startup on missing engine evidence rather than returning an unsupported writer epoch',async()=>{
+ const {waitForEngineEpoch}=await import('../src/ops/engine-epoch.mjs');
+ await expect(waitForEngineEpoch({capture:()=>null} as any,{timeoutMs:5,pollMs:1})).rejects.toThrow('ENGINE_EPOCH_UNVERIFIED');
+});
+it('streams large unrelated TIME_WAIT tables without rejecting the exact owned connection',async()=>{
+ const f=await fixture();f.write(join(f.proc,'200/net/tcp'),('0: 0100007F:0AAA 0100007F:0BBB 06 0 0 0 1000 0 0\n').repeat(26000)+f.listen+'\n'+f.connected);expect(f.evidence.capture()?.engine.pid).toBe(200);
+ f.write(join(f.proc,'200/net/tcp'),('0: 0100007F:0AAA 0100007F:0BBB 06 0 0 0 1000 0 0\n').repeat(26000)+f.listen+'\n'+f.connected.replace('501','999'));expect(f.evidence.capture()).toBeNull();
+});

@@ -17,8 +17,8 @@ export interface StateBackendOptions {
 
 /** Registry versions are pinned here so every generated project uses one reviewed set. */
 export const COMPOSE_WORKER_VERSIONS = {
-  state: "0.22.20",
-  http: "0.22.7",
+  state: "0.22.22",
+  http: "0.22.8",
 } as const;
 
 export const COMPOSE_STOP_TIMEOUT_SECONDS = 20;
@@ -78,7 +78,8 @@ const AGENTMEMORY_WORKER_ENV_ALLOWLIST = new Set([
   "AGENTMEMORY_CAPTURE_SPOOL", "AGENTMEMORY_CAPTURE_SPOOL_DIR",
   "AGENTMEMORY_CAPTURE_SPOOL_MAX_BYTES", "AGENTMEMORY_CAPTURE_SPOOL_MAX_AGE_HOURS",
   "AGENTMEMORY_IMPORT_ROOT", "AGENTMEMORY_EXPORT_ROOT", "AGENTMEMORY_GRAPH_WEIGHT",
-  "SUMMARIZE_CHUNK_SIZE", "SUMMARIZE_CHUNK_CONCURRENCY", "CONSOLIDATION_DECAY_DAYS",
+  "SUMMARIZE_CHUNK_SIZE", "SUMMARIZE_CHUNK_CONCURRENCY", "AGENTMEMORY_SUMMARY_TIMEOUT_MS",
+  "CONSOLIDATION_DECAY_DAYS",
   "CONSOLIDATION_INTERVAL_MS", "AGENTMEMORY_CONSOLIDATION_COOLDOWN_MS",
   "AGENTMEMORY_FOLLOWUP_WINDOW_SECONDS", "GRAPH_EXTRACTION_BATCH_SIZE", "AGENTMEMORY_LLM_NOTHINK",
   "AGENTMEMORY_REFLECT", "AGENTMEMORY_IMAGE_EMBEDDINGS", "AGENTMEMORY_IMAGE_STORE_MAX_BYTES",
@@ -87,6 +88,11 @@ const AGENTMEMORY_WORKER_ENV_ALLOWLIST = new Set([
   "AGENTMEMORY_VECTOR_BACKFILL", "AGENTMEMORY_SLOTS", "AGENTMEMORY_PROVIDER", "AGENTMEMORY_VERBOSE",
   "OBSIDIAN_AUTO_EXPORT", "AUTO_FORGET_ENABLED", "AUTO_FORGET_INTERVAL_MS", "LESSON_DECAY_ENABLED",
   "INSIGHT_DECAY_ENABLED", "REBUILD_EMBED_BATCH_SIZE", "RERANK_ENABLED",
+  "AGENTMEMORY_LOCAL_DISPATCH",
+  "OPENAI_API_KEY_FOR_LLM", "AGENTMEMORY_OLLAMA_NATIVE_CHAT",
+  "SUMMARIZE_MIN_NEW_OBS", "SUMMARIZE_MAX_AGE_MS", "SUMMARIZE_BATCH_OBS",
+  "SUMMARIZE_INPUT_CHARS", "SUMMARIZE_RECOVERY_INTERVAL_MS",
+  "AGENTMEMORY_HOOK_INJECT_CONTEXT", "AGENTMEMORY_FEEDBACK_DIR", "AGENTMEMORY_RECEIPT_DIR",
 ]);
 
 const COMPOSE_RESERVED_ENV = new Set([
@@ -169,6 +175,9 @@ function yamlString(value: string): string {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) {
     throw new Error("A Compose path or configuration value contains an unsupported control character.");
   }
+  if (/[\r\n\u0080-\u009f\u2028\u2029]/.test(value)) {
+    return JSON.stringify(value).replace(/[\u0080-\u009f\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  }
   return `'${value.replace(/'/g, "''")}'`;
 }
 
@@ -234,6 +243,8 @@ function ensureEngineTraceStorageConfig(configDir: string, dataDir: string): voi
 }
 
 export interface ComposeProjectOptions {
+  runtimeDir?: string;
+  stateWorkerExecutable?: string;
   ports: EngineRuntimePorts;
   dataDir: string;
   projectRoot: string;
@@ -269,11 +280,11 @@ export function renderWorkerCompose(options: ComposeProjectOptions): string {
   }
 
   const workerSource = (name: keyof typeof COMPOSE_WORKER_VERSIONS): string =>
-    workerBinDir
+    workerBinDir || (name === "state" && options.stateWorkerExecutable)
       ? `path://${localWorkerProjectDir(paths, name)}`
       : `package://api.workers.iii.dev/${name}`;
   const workerScript = (name: keyof typeof COMPOSE_WORKER_VERSIONS): string =>
-    workerBinDir ? (windows ? win32.join(workerBinDir, name) : join(workerBinDir, name)) : "";
+    name === "state" && options.stateWorkerExecutable ? options.stateWorkerExecutable : workerBinDir ? (windows ? win32.join(workerBinDir, name) : join(workerBinDir, name)) : "";
   const filteredEnvFile = options.envFile
     ? join(paths.directory, ".agentmemory-filtered.env")
     : undefined;
@@ -300,10 +311,10 @@ export function renderWorkerCompose(options: ComposeProjectOptions): string {
   lines.push(
     "  state:",
     `    worker: ${yamlString(workerSource("state"))}`,
-    ...(!workerBinDir ? [`    version: ${yamlString(COMPOSE_WORKER_VERSIONS.state)}`] : []),
+    ...(!stateScript ? [`    version: ${yamlString(COMPOSE_WORKER_VERSIONS.state)}`] : []),
     "    config_name: state",
     ...restartPolicyLines("    ", restartEnabled),
-    ...(workerBinDir ? [`    scripts:`, `      run: ${yamlString(windows ? windowsWorkerScript(stateScript) : shellCommand(stateScript, []))}`] : []),
+    ...(stateScript ? [`    scripts:`, `      run: ${yamlString(windows ? windowsWorkerScript(stateScript) : shellCommand(stateScript, []))}`] : []),
     "    config_override:",
     "      adapter:",
     "        name: kv",
@@ -368,7 +379,7 @@ export function renderWorkerCompose(options: ComposeProjectOptions): string {
     `      HOME: ${yamlString(options.homeDir)}`,
     `      PATH: ${yamlString(windows ? windowsWorkerPath(options.nodeBin, options.workerEnvironment?.PATH ?? process.env.PATH) : `${dirname(options.nodeBin)}:/usr/local/bin:/usr/bin:/bin`)}`,
     `      AGENTMEMORY_DATA_DIR: ${yamlString(options.dataDir)}`,
-    `      AGENTMEMORY_RUNTIME_DIR: ${yamlString(options.dataDir)}`,
+    `      AGENTMEMORY_RUNTIME_DIR: ${yamlString(options.runtimeDir ?? options.dataDir)}`,
     ...(filteredEnvFile ? [`      AGENTMEMORY_ENV_FILE: ${yamlString(filteredEnvFile)}`] : []),
     ...(options.stateBackend?.kind === "redis" && options.redisUrl ? [`      AGENTMEMORY_REDIS_URL: ${yamlString(options.redisUrl)}`, "      AGENTMEMORY_STATE_BACKEND: 'redis'"] : []),
     `      III_ENGINE_PORT: ${yamlString(String(enginePort))}`,
@@ -388,11 +399,13 @@ export function writeWorkerCompose(options: ComposeProjectOptions): { file: stri
   mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
   ensureEngineTraceStorageConfig(paths.configDir, options.dataDir);
   mkdirSync(join(options.dataDir, "observability", "traces"), { recursive: true, mode: 0o700 });
-  if (options.workerBinDir) {
-    const binDir = options.workerBinDirIsAbsolute
+  if (options.workerBinDir || options.stateWorkerExecutable) {
+    const binDir = options.workerBinDir ? (options.workerBinDirIsAbsolute
       ? resolve(options.workerBinDir)
-      : localWorkerDirectory(options.workerBinDir, options.cwd ?? process.cwd(), options.projectRoot);
+      : localWorkerDirectory(options.workerBinDir, options.cwd ?? process.cwd(), options.projectRoot)) : null;
     for (const name of Object.keys(COMPOSE_WORKER_VERSIONS) as Array<keyof typeof COMPOSE_WORKER_VERSIONS>) {
+      const binary = name === "state" && options.stateWorkerExecutable ? options.stateWorkerExecutable : binDir ? join(binDir,name) : null;
+      if (!binary) continue;
       const projectDir = localWorkerProjectDir(paths, name);
       mkdirSync(projectDir, { recursive: true, mode: 0o700 });
       const manifest = [
@@ -400,7 +413,7 @@ export function writeWorkerCompose(options: ComposeProjectOptions): { file: stri
         `name: ${name}`,
         "language: rust",
         "scripts:",
-        `  start: ${yamlString(join(binDir, name))}`,
+        `  start: ${yamlString(binary)}`,
         "",
       ].join("\n");
       writeFileSync(join(projectDir, "iii.worker.yaml"), manifest, { encoding: "utf8", mode: 0o600 });

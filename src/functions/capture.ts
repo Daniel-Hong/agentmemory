@@ -279,7 +279,7 @@ export function registerCaptureFunctions(
   let lastPruneAt: string | null = null;
   let lastBootDrain: CaptureStatus["lastBootDrain"] = null;
   let sweeping: Promise<{ processed: number; recovered: number; deadLettered: number }> | null = null;
-  let inboxSize: number | null = null;
+  let inboxKeys: Set<string | object> | null = null;
   let activeInboxKeys: Set<string> | null = null;
   let stopped = false;
   const timers: Array<ReturnType<typeof setInterval>> = [];
@@ -304,7 +304,6 @@ export function registerCaptureFunctions(
   }
 
   function refreshInbox(records: Array<InboxRecord | CaptureInboxMetadata>): void {
-    inboxSize = records.length;
     activeInboxKeys = new Set(records.filter((rec) => rec && rec.status !== "dead" && rec.storageCompletion !== "sdk").map((rec) => rec.key));
     updatePendingSince();
   }
@@ -316,13 +315,22 @@ export function registerCaptureFunctions(
   }
 
   async function currentInboxSize(): Promise<number> {
-    if (inboxSize === null) refreshInbox(await listCaptureInboxMetadata(kv));
-    return inboxSize!;
+    // Only admission initializes membership, under its lock. Status/sweep snapshots
+    // must not overwrite it after a concurrent completion or admission.
+    if (inboxKeys === null) {
+      const records = await listCaptureInboxMetadata(kv);
+      inboxKeys = new Set(records.filter(rec => rec?.storageCompletion !== "sdk").map(rec => typeof rec?.key === "string" ? rec.key : {}));
+      refreshInbox(records);
+    }
+    return inboxKeys.size;
   }
 
   async function complete(rec: InboxRecord, observationId: string): Promise<void> {
     if(sdkCompletion){
-      await kv.set(KV.captureInbox,rec.key,{...rec,observationId,storageCompletion:'sdk',updatedAt:new Date().toISOString()});
+      await withKeyedLock('capture:inbox-admission',async()=>{
+        await kv.set(KV.captureInbox,rec.key,{...rec,observationId,storageCompletion:'sdk',updatedAt:new Date().toISOString()});
+        inboxKeys?.delete(rec.key); // Idempotent; retained evidence is not pending capacity.
+      });
       updateActiveInbox(rec.key,false);return;
     }
     await resolveCaptureReview(kv,rec,observationId);
@@ -337,8 +345,10 @@ export function registerCaptureFunctions(
       attempts: rec.attempts,
     };
     if (rec.eventSource === "client") await kv.set(eventScope(rec.key), rec.key, done);
-    await kv.delete(KV.captureInbox, rec.key);
-    if (inboxSize !== null) inboxSize = Math.max(0, inboxSize - 1);
+    await withKeyedLock('capture:inbox-admission',async()=>{
+      await kv.delete(KV.captureInbox, rec.key);
+      inboxKeys?.delete(rec.key);
+    });
     updateActiveInbox(rec.key, false);
     counters.completed++;
     lastCompletedAt = done.completedAt;
@@ -493,8 +503,8 @@ export function registerCaptureFunctions(
       };
       const admitted=await withKeyedLock('capture:inbox-admission',async()=>{
         if((await currentInboxSize())>=policy.inboxMax)return false;
-        try{await kv.set(KV.captureInbox,key,rec);}catch(error){inboxSize=null;throw error;}
-        if(inboxSize!==null)inboxSize++;updateActiveInbox(key,true);return true;
+        try{await kv.set(KV.captureInbox,key,rec);}catch(error){inboxKeys=null;throw error;}
+        inboxKeys?.add(key);updateActiveInbox(key,true);return true;
       });
       if(!admitted){counters.rejected++;return {status:'rejected',eventId,error:`capture inbox is full (${policy.inboxMax} unprocessed events)`,retryable:true};}
       counters.accepted++;
@@ -529,12 +539,11 @@ export function registerCaptureFunctions(
           alreadyPresent=!!obs;
           if(rec&&['sdkRestoreState','sdkRestoreRequestId','sdkRestoreAttempts'].some(field=>Object.hasOwn(rec,field))&&(!['pending','completed'].includes(rec.sdkRestoreState??'')||typeof rec.sdkRestoreRequestId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(rec.sdkRestoreRequestId)||rec.sdkRestoreAttempts===undefined))throw sdkSourceFailure('SDK_SOURCE_RESTORE_METADATA_INVALID');
           if(rec?.sdkRestoreAttempts!==undefined&&(!Number.isSafeInteger(rec.sdkRestoreAttempts)||rec.sdkRestoreAttempts<0||rec.sdkRestoreAttempts>3))throw sdkSourceFailure('SDK_SOURCE_BUDGET_INVALID');
-          if(!rec&&(await currentInboxSize())>=policy.inboxMax)throw sdkSourceFailure('SDK_SOURCE_INBOX_FULL');
           if(!obs&&(rec?.sdkRestoreAttempts??0)>=3)throw sdkSourceFailure('SDK_SOURCE_RESTORE_LIMIT');
           const now=new Date().toISOString();
           source={...(rec??{key,eventId,eventSource:'client',sessionId:payload.sessionId,project:payload.project,hookType:payload.hookType,observationId:id,status:'pending',attempts:0,acceptedAt:now,payload:{...payload,data:scrubRecord(payload.data)}}),storageCompletion:'sdk',updatedAt:now,sdkRestoreRequestId:requestId,sdkRestoreState:'pending',sdkRestoreAttempts:(rec?.sdkRestoreAttempts??0)+(obs?0:1)};
-          try{await kv.set(KV.captureInbox,key,source);}catch(error){if(!rec)inboxSize=null;throw error;}
-          if(!rec&&inboxSize!==null)inboxSize++;
+          try{await kv.set(KV.captureInbox,key,source);}catch(error){if(!rec)inboxKeys=null;throw error;}
+          // SDK restore preserves a source record, not an unprocessed capture slot.
         }));
         if(!alreadyPresent){const outcome:any=await sdk.trigger({function_id:'mem::observe',payload:{...payload,eventId,captureKey:key,observationId:id,sdkSourceRestore:{key,requestId}}});alreadyPresent=outcome?.deduplicated===true;}
         else await restoreIndexEntriesAdmitted((await kv.get<CompressedObservation>(KV.observations(payload.sessionId),id))!);
@@ -558,14 +567,15 @@ export function registerCaptureFunctions(
     return withKeyedLock(`capture:${key}`, async () => {
       if (stopped) return "stopped";
       if(sdkCompletion)return "waiting";
-      await currentInboxSize();
       const stored=await kv.get<InboxRecord>(KV.captureInbox,key);
       if (!stored) return "gone";
       const rec={...stored};
       if(rec.lastError==='vector_recovery_interrupted')return 'waiting';
       if(rec.eventSource==='client'&&(await kv.get<CompletedEvent>(eventScope(key),key))?.state==='deleted'){
-        await kv.delete(KV.captureInbox,key);
-        if(inboxSize!==null)inboxSize=Math.max(0,inboxSize-1);
+        await withKeyedLock('capture:inbox-admission',async()=>{
+          await kv.delete(KV.captureInbox,key);
+          inboxKeys?.delete(key);
+        });
         updateActiveInbox(key, false);
         counters.duplicates++;return 'gone';
       }
@@ -667,7 +677,7 @@ export function registerCaptureFunctions(
     }
     // Unprocessed originals and their review history have no age/count expiry.
     if (!stopped) removed += await prunePromptLedgers(kv, cutoff, policy.eventsMax);
-    inboxSize = null;
+    inboxKeys = null;
     activeInboxKeys = null;
     counters.pruned += removed;
     lastPruneAt = new Date().toISOString();
@@ -813,7 +823,17 @@ export function registerCaptureFunctions(
     const selection=sdkReconciliationInvocation(input);
     return trackWork(()=>backgroundTask(async()=>{
       try{
-        const result=await sdkReconciliation.reconcile(selection);
+        let result:Awaited<ReturnType<typeof sdkReconciliation.reconcile>>;
+        try{result=await sdkReconciliation.reconcile(selection);}
+        finally{
+          // Reconcile releases its capture:key lock before taking admission; never
+          // invert capture/restore's key -> admission order. A partial SDK source
+          // remains evidence, not a claim of completed reconciliation.
+          await withKeyedLock('capture:inbox-admission',async()=>{
+            try{if((await kv.get<InboxRecord>(KV.captureInbox,selection.key))?.storageCompletion==='sdk')inboxKeys?.delete(selection.key);}
+            catch{inboxKeys=null;}
+          });
+        }
         if(result.status==='reconciled'){counters.recovered++;updateActiveInbox(selection.key,false);trackMaintenance(()=>automaticRecovery.refreshSdkReviews());}
         return result;
       }catch(error){const code=(error as {code?:unknown})?.code;return{completed:false,completion:'sdk',verified:false,synced:false,code:typeof code==='string'&&/^SDK_RECONCILIATION_[A-Z_]+$/.test(code)?code:'SDK_RECONCILIATION_UNAVAILABLE'};}

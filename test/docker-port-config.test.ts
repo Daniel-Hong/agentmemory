@@ -50,8 +50,8 @@ describe("Docker Worker Compose runtime", () => {
 
   it("starts the pinned runtime through the shared entrypoint with telemetry disabled", () => {
     expect(compose).toContain('III_TELEMETRY_ENABLED: "false"');
-    expect(entrypoint).toContain("/usr/local/bin/iii compose");
-    expect(entrypoint).toContain("--namespace agentmemory --up --file");
+    expect(entrypoint).toContain("node /opt/agentmemory/deploy-runtime/state-bootstrap.mjs");
+    expect(readFileSync(join(root,"deploy/runtime/state-bootstrap.mjs"),"utf8")).toContain("['compose','--namespace',config.namespace,'--up','--file',file]");
     expect(workerCompose).toContain("configuration:");
     expect(workerCompose).toContain('save_interval_ms: "${AGENTMEMORY_STATE_SAVE_INTERVAL_MS:-2000}"');
     expect(entrypoint).toContain('AGENTMEMORY_STATE_SAVE_INTERVAL_MS="${AGENTMEMORY_STATE_SAVE_INTERVAL_MS:-2000}"');

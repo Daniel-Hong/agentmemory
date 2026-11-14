@@ -1,0 +1,17 @@
+# Template only: fill immutable release paths after approval. Do not install as-is.
+[Service]
+Type=forking
+PIDFile=/run/agentmemory-compose/compose.pid
+RuntimeDirectory=agentmemory-compose
+RuntimeDirectoryMode=0700
+GuessMainPID=no
+ExecStart=
+ExecStart=/usr/bin/python3 -I -B APPROVED_DEPLOYMENT_DIR/start.py APPROVED_DEPLOYMENT_DIR/config.json
+ExecStop=
+ExecStop=/usr/bin/node RELEASE_DIR/dist/cli.mjs stop --data-dir /srv/agentmemory/data
+Restart=on-failure
+RestartPreventExitStatus=78
+TimeoutStartSec=900
+TimeoutStopSec=660
+KillMode=process
+SendSIGKILL=no

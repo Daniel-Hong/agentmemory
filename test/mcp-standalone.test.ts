@@ -4,7 +4,8 @@ vi.mock("../src/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("node:fs", () => ({
+vi.mock("node:fs", async () => ({
+  constants: (await vi.importActual<typeof import("node:fs")>("node:fs")).constants,
   existsSync: vi.fn().mockReturnValue(false),
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),

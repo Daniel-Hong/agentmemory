@@ -5,7 +5,7 @@ import type { HybridSearchRequest } from "../state/hybrid-search.js";
 import type { IndexPersistenceStatus } from "../state/index-persistence.js";
 import type { CompressedObservation, Memory, SearchResult, Session } from '../types.js'
 import { KV } from '../state/schema.js'
-import { StateKV } from '../state/kv.js'
+import { StateKV, collectAll } from '../state/kv.js'
 import { getSearchResultLayer, isSearchLayer, matchesSearchLayer, type SearchLayer, type SearchResultLayer } from "../state/search-layer.js";
 import { SearchIndex, type SearchIndexRevision } from '../state/search-index.js'
 import { VectorIndex } from '../state/vector-index.js'
@@ -521,7 +521,7 @@ export async function rebuildIndex(kv: StateKV): Promise<number> {
   let memories: Memory[] = []
   let memoriesLoaded = false
   try {
-    memories = await kv.list<Memory>(KV.memories)
+    memories = await collectAll<Memory>(kv, KV.memories)
     memoriesLoaded = true
   } catch (err) {
     logger.warn('rebuildIndex: failed to load memories', {
@@ -589,7 +589,7 @@ async function listWithRetry<T>(kv: StateKV, scope: string, label: string, deadl
   while (attempts < LIST_RETRY_ATTEMPTS) {
     attempts++
     try {
-      return await kv.list<T>(scope)
+      return await collectAll<T>(kv, scope)
     } catch (err) {
       lastErr = err
       if (!isStateNotReadyError(err)) break
@@ -606,7 +606,7 @@ async function listWithRetry<T>(kv: StateKV, scope: string, label: string, deadl
   return null
 }
 
-type KeywordRebuildResult = { documents: number; vectorJobs: VectorBackfillJob[]; fullBackfillPending: number }
+type KeywordRebuildResult = { documents: number; vectorJobs: VectorBackfillJob[]; fullBackfillPending: number; historicalVectorGaps: number }
 
 export async function rebuildKeywordIndex(
   kv: StateKV,
@@ -640,6 +640,7 @@ async function runKeywordRebuild(
   const backfillCap = backfillActive ? getVectorBackfillMax() : 0
   const vectorJobs: VectorBackfillJob[] = []
   let fullBackfillPending = 0
+  let historicalVectorGaps = 0
   const consider = (
     id: string,
     sessionId: string,
@@ -648,7 +649,7 @@ async function runKeywordRebuild(
     kind: "memory" | "observation",
   ): void => {
     if (!backfillEligible || vi?.has(id)) return
-    if (!Number.isNaN(cutoff) && !(Date.parse(timestamp ?? '') > cutoff)) return
+    if (!Number.isNaN(cutoff) && !(Date.parse(timestamp ?? '') > cutoff)) { historicalVectorGaps++; return }
     pendingVectorBackfillIds?.add(id)
     if (backfillGated || (wholeStoreBackfill && vectorJobs.length >= backfillCap)) {
       fullBackfillPending++
@@ -679,7 +680,7 @@ async function runKeywordRebuild(
   if (sessions === null) {
     bm25RebuildIncomplete = true
     if (memoriesLoaded) memoryIndexReady = true
-    return { documents, vectorJobs, fullBackfillPending }
+    return { documents, vectorJobs, fullBackfillPending, historicalVectorGaps }
   }
   const failedSessions: string[] = []
   for (let batch = 0; batch < sessions.length; batch += 10) {
@@ -706,7 +707,7 @@ async function runKeywordRebuild(
     logger.warn('rebuildKeywordIndex: failed to load observations for sessions', { failedSessions })
   }
   if (memoriesLoaded) memoryIndexReady = true
-  return { documents, vectorJobs, fullBackfillPending }
+  return { documents, vectorJobs, fullBackfillPending, historicalVectorGaps }
 }
 
 const BACKFILL_SAVE_EVERY_BATCHES = 10

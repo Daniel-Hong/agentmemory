@@ -114,6 +114,5 @@ fs.writeFileSync(target, input, { mode: 0o600 });
 NODE
 chown node:node "$DATA_DIR/config/iii-observability.yaml" "$WORKER_COMPOSE_FILE"
 
-# Compose owns the 0.25.0 engine and supervises state, http, and agentmemory.
-exec gosu node:node /usr/local/bin/iii compose \
-  --namespace agentmemory --up --file "$WORKER_COMPOSE_FILE"
+# Compose owns the 0.25.1 engine and supervises state, http, and agentmemory.
+exec gosu node:node node /opt/agentmemory/deploy-runtime/state-bootstrap.mjs

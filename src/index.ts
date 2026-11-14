@@ -1,6 +1,10 @@
+import { withRegistrationDefaults } from "./runtime/registration.js";
+import {releaseSupersededVectorJobs,retryRetainedVectorRevisions,type RetainedVectorRevision} from "./state/vector-revision-release.js";
 import {isStorageWorkCompleted} from './ops/storage-completion.mjs';
-import {createEngineEpochEvidence} from "./ops/engine-epoch.mjs";
-import {acquireFileWriterLease,markFileWriterClean,ownsFileWriterLease} from "./ops/file-writer-lease.mjs";
+import {stateSealDiskProof,type StateSealReceipt} from "./ops/state-seal-shutdown.mjs";
+import {createStateBoundEvidence,pinStateClient,type StateBootIdentity} from "./ops/state-epoch.mjs";
+import {createEngineEpochEvidence,readEnginePid,waitForEngineEpoch} from "./ops/engine-epoch.mjs";
+import {acquireFileWriterLease,markFileWriterClean,markFileWriterSealedClean,ownsFileWriterLease} from "./ops/file-writer-lease.mjs";
 import { createBackgroundControl, installBackgroundControl, controlBackgroundFunctions, registerBackgroundControlApi, backgroundTask } from "./ops/background-control.mjs";
 import { createMemoryPressureGuard } from "./ops/memory-pressure.mjs";
 import { serializeLongSessionProvider } from "./ops/long-session.mjs";
@@ -84,7 +88,6 @@ import {
   setHybridRanker,
   setPendingVectorBackfillCount,
   setVectorBackfillState,
-  getPendingVectorBackfillCount,
 } from "./functions/search.js";
 import { registerContextFunction } from "./functions/context.js";
 import { registerSessionIndexMaintenanceFunction } from "./functions/session-index-maintenance.js";
@@ -222,6 +225,8 @@ function resolveWorkerSecret(): string {
 
 let fatalShutdown: (() => Promise<void>) | undefined;
 
+const unreleasedSupersededRevisions: RetainedVectorRevision[] = [];
+
 async function main() {
   // Fold ~/.agentmemory/.env into process.env before anything reads config
   // or raw process.env. Only-if-unset, so real process.env still wins.
@@ -262,7 +267,7 @@ async function main() {
     `REST API: http://localhost:${config.restPort}/agentmemory/*`,
   );
 
-  const sdk = withWriteScrubbing(registerWorker(config.engineUrl, {
+  const sdk = withWriteScrubbing(withRegistrationDefaults(registerWorker(config.engineUrl, {
     workerName: "agentmemory",
     invocationTimeoutMs: 180000,
     otel: {
@@ -282,7 +287,7 @@ async function main() {
       language: "node",
       framework: "iii-sdk",
     },
-  }));
+  })));
 
 
   let stateBackend: "file" | "redis" = "file";
@@ -302,10 +307,25 @@ async function main() {
   }
   if (!process.env["AGENTMEMORY_STATE_STORE_PATH"] && process.env["AGENTMEMORY_DATA_DIR"]) process.env["AGENTMEMORY_STATE_STORE_PATH"] = join(process.env["AGENTMEMORY_DATA_DIR"], "state_store.db");
   const writerStorePath=process.env["AGENTMEMORY_STATE_STORE_PATH"];
-  const engineEvidence=createEngineEpochEvidence({engineUrl:config.engineUrl,enginePidPath:runtimeMetadataPath("iii.pid"),peer:()=>{const socket=(sdk as unknown as {ws?:{_socket?:{remoteAddress?:string;remotePort?:number;localAddress?:string;localPort?:number}}}).ws?._socket;return socket?{remoteAddress:socket.remoteAddress,remotePort:socket.remotePort,localAddress:socket.localAddress,localPort:socket.localPort}:null;}});
-  if(stateBackend==="file"&&writerStorePath&&process.platform==="linux"){const until=Date.now()+3000;while(!engineEvidence.capture()&&Date.now()<until)await new Promise(resolve=>setTimeout(resolve,25));}
-  const writerLease=stateBackend==="file"&&writerStorePath&&process.platform==="linux"?acquireFileWriterLease(writerStorePath,{evidence:engineEvidence}):undefined;
-  const kv = new StateKV(sdk, { backend: stateBackend,writerLease, compactSummaryWrites: stateBackend === 'file' });
+  let engineEvidence=createEngineEpochEvidence({engineUrl:config.engineUrl,enginePidPath:runtimeMetadataPath("iii.pid"),engineStatePath:runtimeMetadataPath("engine-state.json"),peer:()=>{const socket=(sdk as unknown as {ws?:{_socket?:{remoteAddress?:string;remotePort?:number;localAddress?:string;localPort?:number}}}).ws?._socket;return socket?{remoteAddress:socket.remoteAddress,remotePort:socket.remotePort,localAddress:socket.localAddress,localPort:socket.localPort}:null;}});
+  if(stateBackend==="file"&&writerStorePath&&process.platform==="linux")await waitForEngineEpoch(engineEvidence);
+  let stateClient=sdk;let stateBinding:StateBootIdentity|undefined;
+  if(stateBackend==="file"&&writerStorePath&&process.platform==="linux"){
+    let metadata;try{metadata=JSON.parse(readFileSync(runtimeMetadataPath("engine-state.json"),"utf8"));}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+    if(metadata?.kind==="compose"){
+      const identity=await sdk.trigger<unknown,StateBootIdentity>({function_id:"state::boot_identity",payload:{}});
+      const prefix=`state::${identity.instanceId}::`;
+      const aliasIdentity=await sdk.trigger<unknown,StateBootIdentity>({function_id:prefix+"boot_identity",payload:{}});
+      if(JSON.stringify(identity)!==JSON.stringify(aliasIdentity))throw Error("STATE_WRITER_IDENTITY_CHANGED");
+      engineEvidence=createStateBoundEvidence({engineEvidence,identity,expectedExecutable:metadata.stateExecutable,storePath:writerStorePath});
+      stateBinding=identity;
+      const boundEpoch=engineEvidence.capture();
+      if(!boundEpoch)throw Error("STATE_WRITER_IDENTITY_UNVERIFIED");
+      stateClient=pinStateClient(sdk,prefix,()=>engineEvidence.current(boundEpoch),()=>engineEvidence.diagnostic?.()??null);
+    }
+  }
+  const writerLease=stateBackend==="file"&&writerStorePath&&process.platform==="linux"?acquireFileWriterLease(writerStorePath,{evidence:engineEvidence,requireVerifiedEpoch:true}):undefined;
+  const kv = new StateKV(stateClient, { backend: stateBackend,writerLease, compactSummaryWrites: stateBackend === 'file' });
   writeWorkerPidfile();
   const secret = resolveWorkerSecret();
   const ingress = createShutdownIngress();
@@ -328,7 +348,7 @@ async function main() {
       receiptDir: dirname(runtimeMetadataPath("shutdown-receipt.json")),
       engineAlive: () => {
         try {
-          const pid = Number(readFileSync(runtimeMetadataPath("iii.pid"), "utf8").trim());
+          const pid = readEnginePid({enginePidPath:runtimeMetadataPath("iii.pid"),engineStatePath:runtimeMetadataPath("engine-state.json"),engineUrl:config.engineUrl});
           if (!Number.isSafeInteger(pid) || pid < 1) return null;
           process.kill(pid, 0); return true;
         } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : null; }
@@ -353,11 +373,21 @@ async function main() {
           progress({ stage: "freeze" }); kv.durability.freeze();
           progress({ stage: kv.durability.completion==='sdk'?"final_sdk_completion":"final_disk_fence" }); disk = await kv.durability.wait(kv);
         }, progress);
+        // A failed release keeps ownership and prevents a clean shutdown receipt.
+        retryRetainedVectorRevisions(unreleasedSupersededRevisions);
+        if(stateBinding){
+          progress({stage:"final_disk_fence"});
+          const seal=await stateClient.trigger<unknown,StateSealReceipt>({function_id:"state::seal_flush",payload:{}});
+          disk=stateSealDiskProof(seal,stateBinding,kv.durability!.snapshot().mutationFailures);
+        }
         return disk;
       },
     });
     resources.viewer?.closeAllConnections();
     if (resources.viewer) await settleWithin(new Promise<void>(resolve => resources.viewer!.close(() => resolve())), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
+    if(writerLease&&stateBinding&&outcome.verified&&!bootFailed&&!kv.mutationOutcomeUncertain){
+      try{markFileWriterSealedClean(writerLease,(outcome.durability as {stateSeal?:StateSealReceipt})?.stateSeal);}catch(error){bootWarn("State disk seal verified but clean lease publication failed: "+String(error));}
+    }
     const sdkDrained=await settleWithin(sdk.shutdown(), SHUTDOWN_FLUSH_TIMEOUT_MS).catch(() => false);
     if(writerLease&&kv.recoveryMutationSafe&&outcome.verified&&!bootFailed&&sdkDrained&&!kv.mutationOutcomeUncertain){try{markFileWriterClean(writerLease);}catch{/* The dirty marker remains conservative on failure. */}}
     if (outcome.completed) clearWorkerPidfile();
@@ -694,7 +724,20 @@ async function main() {
   const rebuildAndScheduleVectorBackfill = async (vectorBackfillSince: string | null | undefined): Promise<boolean> => {
     const keywordStart = Date.now();
     try {
-    const keyword = await rebuildKeywordIndex(kv, vectorBackfillSince);
+    // This fork can retry on resume without a process restart. Do not rebuild
+    // over a superseded watch whose release failed during an earlier attempt.
+    retryRetainedVectorRevisions(unreleasedSupersededRevisions);
+    let keyword = await rebuildKeywordIndex(kv, vectorBackfillSince);
+    let supersededReleaseFailed = false;
+    if (typeof vectorBackfillSince === "string" && !indexPersistence.isRecoveryPaused() && keyword.historicalVectorGaps > 0) {
+      supersededReleaseFailed = !releaseSupersededVectorJobs(keyword.vectorJobs,unreleasedSupersededRevisions);
+      if(supersededReleaseFailed)bootWarn("Failed to release superseded vector revisions; recovery remains paused.");
+      keyword.vectorJobs = [];
+      if (!supersededReleaseFailed) {
+        vectorBackfillSince = await indexPersistence.prepareBackfill(loaded, true);
+        if (vectorBackfillSince === null) keyword = await rebuildKeywordIndex(kv, vectorBackfillSince);
+      }
+    }
     bootLog(
       `Rebuilt BM25 index from stored content (${keyword.documents} docs in ${Date.now() - keywordStart} ms)`,
     );
@@ -704,13 +747,13 @@ async function main() {
     const activeIds = new Set(keyword.vectorJobs.map((job) => job.id));
     const hasVector = (id: string) => Boolean(vectorIndex?.has(id));
     const countRemaining = () => bm25Index.countMissingDocuments(hasVector, vectorBackfillSince, activeIds);
-    setPendingVectorBackfillCount(indexPersistence.isRecoveryPaused() ? countRemaining() : pending);
-    if (indexPersistence.isRecoveryPaused()) {
+    setPendingVectorBackfillCount(indexPersistence.isRecoveryPaused() || supersededReleaseFailed ? countRemaining() : pending);
+    if (indexPersistence.isRecoveryPaused() || supersededReleaseFailed) {
       setVectorBackfillState("paused");
     } else if (vectorBackfillSince !== undefined) {
       setVectorBackfillState(keyword.fullBackfillPending > 0 && !optedIn ? "waiting-for-opt-in" : backlogScanComplete ? "idle" : "paused");
     }
-    if (!backlogScanComplete) {
+    if (!backlogScanComplete || supersededReleaseFailed) {
       setVectorBackfillState("paused");
       activeIds.clear();
       for (const job of keyword.vectorJobs) job.revision?.release();

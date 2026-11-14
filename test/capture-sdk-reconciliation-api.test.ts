@@ -181,3 +181,26 @@ it('keeps next offsets usable after more than ten thousand retained SDK original
  const last=await f.control.status({sdkProofPage:{offset:10016,limit:32,generation}} as never);expect(last.inbox?.sdkProofPage).toMatchObject({checked:17,nextOffset:null});
  const response=await f.sdk.fns.get('api::capture')!({headers:f.headers,query_params:{proofOffset:'10016',proofGeneration:generation}}) as any;expect(response.status_code).toBe(200);expect(response.body.capture.inbox.sdkProofPage.checked).toBe(17);
 });
+it('reconciliation releases only its own pending membership without rescanning preserved sources',async()=>{
+ vi.stubEnv('AGENTMEMORY_CAPTURE_INBOX_MAX','1');
+ try{
+  const f=await fixture(),list=vi.spyOn(f.kv,'list');
+  const capture=()=>f.sdk.trigger('mem::capture',{payload:{...payload,data:{tool_output:'new synthetic'}},eventId:'synthetic_capacity_after_review'});
+  expect(await capture()).toMatchObject({status:'rejected'});
+  expect((await f.call()).body).toMatchObject({completed:true,verified:false});
+  f.sdk.fns.set('mem::observe',async(p:any)=>({observationId:p.observationId}));
+  expect(await capture()).toMatchObject({status:'accepted',state:'sdk_completed'});
+  expect(list.mock.calls.filter(([scope])=>scope===KV.captureInbox)).toHaveLength(1);
+  expect(await f.kv.get(KV.captureInbox,key)).toMatchObject({storageCompletion:'sdk',payload});
+  expect(await f.kv.get(KV.captureReview,key)).toMatchObject({failures:[{code:'CAPTURE_STORE_TIMEOUT'}]});
+ }finally{vi.unstubAllEnvs();}
+});
+it('reconciliation waiting for a capture key never holds the admission lock in reverse order',async()=>{
+ const {withKeyedLock}=await import('../src/state/keyed-mutex.js');const f=await fixture();
+ let release!:()=>void,entered!:()=>void;const held=new Promise<void>(r=>entered=r),gate=new Promise<void>(r=>release=r);
+ const owner=withKeyedLock('capture:'+key,async()=>{entered();await gate;});await held;
+ const reconciliation=f.call();await new Promise(r=>setTimeout(r,20));
+ const admission=withKeyedLock('capture:inbox-admission',async()=>true);
+ try{expect(await Promise.race([admission,new Promise(r=>setTimeout(()=>r(false),100))])).toBe(true);}
+ finally{release();await owner;await reconciliation;await admission;}
+});

@@ -2,6 +2,9 @@ import {test,expect,afterEach,vi} from 'vitest';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+// Small budget exercises admission without allocating several production-size frames.
+vi.mock('../src/state/frame-guard.js',async(importOriginal)=>({...await importOriginal<typeof import('../src/state/frame-guard.js')>(),SAFE_PAYLOAD_BYTES:1024*1024}));
+import {SAFE_PAYLOAD_BYTES} from '../src/state/frame-guard.js';
 import {StateKV} from '../src/state/kv.js';
 import {createBackgroundControl} from '../src/ops/background-control.mjs';
 const dirs:string[]=[];
@@ -19,14 +22,14 @@ async function fixture(rows:Record<string,any>={}){
  return {kv:new StateKV({trigger} as never),map,calls,seed:(scope:string,key:string,value:any)=>scopeMap(scope).set(key,value),peek:(scope:string,key:string)=>scopeMap(scope).get(key),setHook:(fn:any)=>{hook=fn}};
 }
 test('oversized summary collection is refused before the shared SDK read, without poisoning mutation state',async()=>{
- const f=await fixture({big:{sessionId:'big',segments:['S'.repeat(16*1024*1024)]}});
+ const f=await fixture({big:{sessionId:'big',segments:['S'.repeat(SAFE_PAYLOAD_BYTES+1024)]}});
  const refused=await f.kv.list('mem:summaries').then(()=>({code:'unexpected_success'}),(e:any)=>({code:e.code}));
  expect(refused.code).toBe('SUMMARY_COLLECTION_TOO_LARGE');
  expect(f.calls).toEqual([]);expect(f.kv.mutationOutcomeUncertain).toBe(false);
  expect(f.kv.durability!.snapshot().mutationFailures).toBe(0);
 });
 test('pending replacement sizes replace old disk sizes instead of being double counted',async()=>{
- const f=await fixture({big:{sessionId:'big',segments:['S'.repeat(16*1024*1024)]}});
+ const f=await fixture({big:{sessionId:'big',segments:['S'.repeat(SAFE_PAYLOAD_BYTES+1024)]}});
  await f.kv.set('mem:summaries','big',{sessionId:'big',title:'small'});
  expect(await f.kv.list('mem:summaries')).toEqual([{sessionId:'big',title:'small'}]);
 });
@@ -65,7 +68,7 @@ test('queued list sees the uncertainty latch before the namespace gate releases'
 const controlScope='mem:background-control:v1';
 const recoveryRecord=()=>({version:2,paused:false,resumePending:true,holds:[],recovery:{attempts:0,nextAttemptAt:0}});
 test('guarded bulk-read refusal still permits the supported current-epoch recovery without rewriting old evidence',async()=>{
- const f=await fixture({big:{sessionId:'big',segments:['S'.repeat(16*1024*1024)]}});
+ const f=await fixture({big:{sessionId:'big',segments:['S'.repeat(SAFE_PAYLOAD_BYTES+1024)]}});
  const historical={status:'unknown',completed:false,verified:false,applicationFlushVerified:false};
  f.seed('synthetic:history','old',structuredClone(historical));f.seed(controlScope,'manual-pause',recoveryRecord());
  const refused=await f.kv.list('mem:summaries').then(()=>({code:'unexpected_success'}),(e:any)=>({code:e.code}));
@@ -99,7 +102,7 @@ test.each(['metadata','recent'])('the %s snapshot waits for an already active su
 });
 
 test('wire admission uses the actual SDK acknowledged value instead of a smaller caller-side guess',async()=>{
- const f=await fixture();const stored={sessionId:'a',segments:['S'.repeat(16*1024*1024)]};
+ const f=await fixture();const stored={sessionId:'a',segments:['S'.repeat(SAFE_PAYLOAD_BYTES+1024)]};
  f.setHook(async(req:any)=>{if(req.function_id==='state::set'){f.map.set('a',stored);return {handled:true,value:{old_value:null,new_value:stored}};}return null});
  await f.kv.set('mem:summaries','a',{sessionId:'a',title:'small caller snapshot'});
  const refused=await f.kv.list('mem:summaries').then(()=>({code:'unexpected_success'}),(e:any)=>({code:e.code}));

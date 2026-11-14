@@ -22,10 +22,43 @@
 
 ## [Unreleased]
 
+## [0.9.33-daniel.72] — 2026-11-13
+- Reobserve transient State/engine socket ownership snapshot gaps at most three times without replaying RPCs or accepting a changed epoch/foreign owner. Classify remaining proven local pre-dispatch admission failures without latching uncertain writes, and retain bounded first/latest failure diagnostics without payloads. Preserve previous uncertainty and source data; see the operating follow-up in the integration note.
+
+## [0.9.33-daniel.71] — 2026-11-13
+- Separate pending capture admission capacity from retained SDK source evidence. Preserve SDK originals, unresolved proof/review history and non-SDK admission limits; maintain an admission-only idempotent key Set to avoid double-counting and per-event metadata rescans. Source-only validation: 57 focused tests pass; not deployed by this change.
+
+## [0.9.33-daniel.70] — 2026-11-13
+## [0.9.33-daniel.69] — 2026-11-13
+### v0.9.33 integration reconciled with .68
+
+- Integrate upstream paging/60 MiB payload budget, consolidation provenance/version-head recovery/recurrence, bounded reflection, orphan-facet repair, eviction index cleanup and partial-vector recovery while preserving source/cursor/hold/history contracts.
+- Integrate session time filters, scoped native hook output and Cursor metadata, configurable summary deadline, machine-relative CPU metrics, pinned worker versions/provider forwarding, guarded Windows demo stop, and verified .25.1 installer hashes/retries. No operating deployment or hook installation.
+
+
+- Complete the official structured-object redaction call site in the failure hook, retain raw private capture paths, and regenerate shipped hooks. Synthetic regressions reproduce the missing behavior before the port.
+- Package the pinned patched State worker and migration tool; verify an explicit byte-preserving native-v3-to-State-v4 migration and a State-sealed, file/directory-synced clean shutdown in isolated data. No production deployment or automatic historical-marker conversion.
+
+- Bind isolated Compose file writers to selected State executable, immutable boot instance, process/socket and effective store identity; pin storage RPCs to instance-specific handlers and reject epoch changes before/after replies. Preserve native v3 leases; State-bound v4 does not silently promote prior v3 evidence.
+- Wait for verified engine metadata before creating a lease, fail without poisoning markers on timeout, and publish Compose metadata atomically. Native shutdown and metadata compatibility remain guarded. These are source-only candidates; registry/Docker deployment and v3-to-v4 operating migration are not approved or verified.
+
+- Upgrade the isolated candidate SDK/helpers to 0.25.1, retain strict bundled-dependency audits, and pin the verified OpenTelemetry/YAML/JSON5 dependencies for reproducible builds.
+- Size the synthetic SDK fixture memory preflight to its independent 1 GiB RSS budget plus 2 GiB host headroom rather than an unrelated 12 GiB reserve. Preserve the 512 MiB child heap, RSS/time/CPU caps and low-memory abort; the final SDK 0.25.1 boundary regression passes. No production memory or persistence guard changes.
+
+- Preserve the verified .68 and personal source lineage while preparing the existing selective v0.9.33 review. Regenerate hook/skills/docs assets and retain both histories.
+- Complete the missing official SessionEnd manifest timeout and add the upstream placeholder-key/plain-http doctor regression without overwriting custom tests. Engine compact ACK, source retention, Graph schema 3 and recovery contracts remain unchanged.
+- Source-only preparation; no customization removal, operating activation or durable memory update. See `docs/customizations/UPSTREAM-0.9.33-INTEGRATION.md` and the workspace validation report.
+
 ### .68 and personal integration
 
 - Preserve the .68 operating behavior and the personal capture proof pages and deployment checks. This source integration does not change the active deployment.
 - Integration verification (2026-11-13): build, Codex compatibility, docs and skills checks passed. The regression run passed 6,597 tests with 13 skips. The large SDK fixture stopped at its 12 GiB host-memory precondition on both the integration and .68 baseline, so the regression gate remains pending. Long-term memory review remains pending.
+### Official v0.9.33 source-only integration review (unverified)
+
+- Import 25 upstream implementation/regression file blobs only where personal is unchanged from official v0.9.32; preserve all modified personal files and the modified iii engine/SDK pin.
+- Candidate provider, retrieval, CLIP, MCP, Claude connector, core hook redaction and SessionEnd fixes require full tests, generated-client verification and manual parity review before merging or deploying.
+- No private customization has been removed, no service/host/data has been touched. See `docs/customizations/UPSTREAM-0.9.33-INTEGRATION.md`.
+
 
 ### Bounded capture proof pages
 
@@ -653,6 +686,10 @@ Wave release closing several breaking regressions reported against v0.9.26, plus
 - `/agentmemory:forget` skill still calls `memory_governance_delete` which only touches `KV.memories` and never observations ([#833](https://github.com/rohitg00/agentmemory/issues/833)). Skill rewrite + new `memory_forget` MCP tool tracked separately.
 - `crypto.randomUUID()` global-only on Node <19 ([#715](https://github.com/rohitg00/agentmemory/issues/715)). Drop-in import fix tracked.
 
+[0.9.33-daniel.72]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.71...v0.9.33-daniel.72
+[0.9.33-daniel.71]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.70...v0.9.33-daniel.71
+[0.9.33-daniel.70]: https://github.com/rohitg00/agentmemory/compare/v0.9.33-daniel.69...v0.9.33-daniel.70
+[0.9.33-daniel.69]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.68...v0.9.33-daniel.69
 [0.9.32-daniel.67]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.66...v0.9.32-daniel.67
 [0.9.32-daniel.66]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.65...v0.9.32-daniel.66
 [0.9.32-daniel.65]: https://github.com/rohitg00/agentmemory/compare/v0.9.32-daniel.64...v0.9.32-daniel.65

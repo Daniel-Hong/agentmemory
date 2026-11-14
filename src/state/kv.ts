@@ -1,3 +1,4 @@
+import {isStateDispatchRejected,localMutationRejected} from '../ops/state-dispatch-error.mjs'
 import { lstatSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import {bucketScope, reconcileCheckpoint, readRetention, receiptFor, RETAINED_SCOPE, type RetentionReceipt, type RecoverySelection} from './vector-checkpoint-reconciliation.js'
@@ -5,6 +6,7 @@ import {KV} from './schema.js'
 import {createRecordRecoveryGate, createRecoveryWriteGate} from './recovery-write-gate.js'
 import {ownsFileWriterLease,fileWriterReadCurrent,fileWriterRecoveryAdmitted,fileWriterRecoveryReason,type FileWriterLease} from '../ops/file-writer-lease.mjs'
 import { createCaptureReceiptPage } from '../capture/receipt-page.js'
+import {decodeCursor,encodeCursor} from './list-query.js'
 import type { IIIClient } from 'iii-sdk'
 import { withKeyedLock } from './keyed-mutex.js'
 import { getEnvVar } from '../config.js'
@@ -122,6 +124,14 @@ export function orderLikeInsertion<T>(values: T[]): T[] {
     .map((entry) => entry.value)
 }
 
+export async function collectAll<T = unknown>(kv: StateKV, scope: string): Promise<T[]> {
+  if (typeof kv.iterate !== 'function') return kv.list<T>(scope)
+  const out: T[] = []
+  for await (const page of kv.iterate<T>(scope)) out.push(...page)
+  if (kv.backend === 'redis') return orderLikeInsertion(out)
+  return out
+}
+
 export class StateKV {
   private readonly summaryNamespaceLock = `summary-namespace:${++summaryLockSequence}`
   private writerLease?:FileWriterLease
@@ -164,11 +174,11 @@ export class StateKV {
   }
 
   private guardedMutation<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
-    const operation=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(Error('WRITER_EPOCH_UNVERIFIED'));return fn()}
-    const serialized=async()=>{try{return await operation()}catch(error){this.markMutationUncertain(scope);throw error}}
+    const operation=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(localMutationRejected('FILE_WRITER_LOST'));if(this.recoveryWrite?.inExclusive()&&!this.recoveryMutationSafe)return Promise.reject(localMutationRejected('WRITER_EPOCH_UNVERIFIED'));return fn()}
+    const serialized=async()=>{try{return await operation()}catch(error){if(!isStateDispatchRejected(error))this.markMutationUncertain(scope);throw error}}
     // Keep queued mutations visible to the durability/shutdown fence. The gate
     // belongs inside the tracked operation, rather than before performMutation.
-    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(Error('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>scope==='mem:summaries'?withKeyedLock(this.summaryNamespaceLock,serialized):operation())}
+    const perform=()=>{if(this.writerLease&&!ownsFileWriterLease(this.writerLease,this.writerStorePath!))return Promise.reject(localMutationRejected('FILE_WRITER_LOST'));return this.performMutation(scope,key,()=>scope==='mem:summaries'?withKeyedLock(this.summaryNamespaceLock,serialized):operation())}
     if (!this.recoveryWrite) return perform()
     const vectorNamespace = scope===KV.vectorPendingLog || scope===RETAINED_SCOPE || scope.startsWith(KV.bm25Index+':vec:') ||
       (scope===KV.bm25Index && key==='vectors:meta')
@@ -227,11 +237,11 @@ export class StateKV {
     const finish = this.observationReader?.beginMutation?.(scope)
     try {
       return (this.durability ? this.durability.mutate(scope, key, fn) : fn()).catch(error => {
-        this.markMutationUncertain(scope)
+        if(!isStateDispatchRejected(error))this.markMutationUncertain(scope)
         throw error
       }).finally(() => finish?.())
     } catch (error) {
-      this.markMutationUncertain(scope)
+      if(!isStateDispatchRejected(error))this.markMutationUncertain(scope)
       finish?.()
       throw error
     }
@@ -412,6 +422,145 @@ export class StateKV {
       : await read()
     const ordered = this.backend === 'redis' && Array.isArray(values) ? orderLikeInsertion(values) : values
     return options?.project && Array.isArray(ordered) ? ordered.map(value => options.project!(value)) : ordered
+  }
+
+  async listKeys(scope: string): Promise<string[]> {
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    return this.rawListKeys(scope)
+  }
+
+  private async rawListKeys(scope: string): Promise<string[]> {
+    const result = await this.sdk.trigger<{ scope: string }, unknown>({
+      function_id: 'state::list_keys',
+      payload: { scope },
+    })
+    const keys = Array.isArray(result) ? result : (result as {keys?:unknown})?.keys
+    if(!Array.isArray(keys)||!keys.every(key=>typeof key==='string'))throw Error('state::list_keys returned an unexpected shape')
+    return keys
+  }
+
+  async getMany<T = unknown>(
+    scope: string,
+    keys: string[],
+    opts: { concurrency?: number } = {},
+  ): Promise<Array<T | null>> {
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    const concurrency = Math.min(64, Math.max(1, Math.floor(opts.concurrency ?? 16)))
+    return this.rawGetMany<T>(scope, keys, concurrency)
+  }
+
+  private async rawGetMany<T = unknown>(
+    scope: string,
+    keys: string[],
+    concurrency: number,
+  ): Promise<Array<T | null>> {
+    const out: Array<T | null> = new Array(keys.length).fill(null)
+    for (let start = 0; start < keys.length; start += concurrency) {
+      const slice = keys.slice(start, start + concurrency)
+      const values = await Promise.all(
+        slice.map((key) =>
+          this.sdk.trigger<{ scope: string; key: string }, T | null>({
+            function_id: 'state::get',
+            payload: { scope, key },
+          }),
+        ),
+      )
+      for (let i = 0; i < slice.length; i++) out[start + i] = values[i] ?? null
+    }
+    return out
+  }
+
+  private async withSummaryRead<T>(scope: string, read: () => Promise<T>): Promise<T> {
+    if (scope !== KV.summaries || !this.summaryCount) return read()
+    return withKeyedLock(this.summaryNamespaceLock, async () => {
+      const check = () => {
+        if (this.uncertainMutation) throw Error('summary_list_mutation_uncertain')
+        if (this.writerLease && !fileWriterReadCurrent(this.writerLease)) throw Error('FILE_WRITER_EPOCH_UNVERIFIED')
+      }
+      check()
+      const result = await read()
+      check()
+      return result
+    })
+  }
+
+  async *iterate<T = unknown>(
+    scope: string,
+    opts: { pageSize?: number } = {},
+  ): AsyncGenerator<T[]> {
+    const pageSize = Math.min(1000, Math.max(1, Math.floor(opts.pageSize ?? 200)))
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    // Keep custom opened-generation readers.
+    if(this.graphFileList?.accepts(scope)||(scope.startsWith('mem:obs:')&&this.observationReader)){
+      const rows=await this.list<T>(scope);
+      for(let start=0;start<rows.length;start+=pageSize)yield rows.slice(start,start+pageSize);
+      return;
+    }
+    if (scope === KV.summaries && this.summaryCount) {
+      // Preserve the whole-read namespace lock, but never request a full-list
+      // transport frame. Materialize before yielding so consumer code cannot
+      // retain the lock or deadlock by writing during an async iteration.
+      const rows = await this.withSummaryRead(scope, async () => {
+        const keys = await this.rawListKeys(scope)
+        const rows: T[] = []
+        for (let start = 0; start < keys.length; start += pageSize) {
+          const page = await this.rawGetMany<T>(scope, keys.slice(start, start + pageSize), 16)
+          rows.push(...page.filter((value): value is T => value !== null && value !== undefined))
+        }
+        return rows
+      })
+      for (let start = 0; start < rows.length; start += pageSize) yield rows.slice(start, start + pageSize)
+      return
+    }
+    const keys = await this.rawListKeys(scope)
+    for (let start = 0; start < keys.length; start += pageSize) {
+      const values = await this.rawGetMany<T>(scope, keys.slice(start, start + pageSize), 16)
+      let page = values.filter((value): value is T => value !== null && value !== undefined)
+      if (this.backend === 'redis') page = orderLikeInsertion(page)
+      if (page.length) yield page
+    }
+  }
+
+  async listPage<T = unknown>(
+    scope: string,
+    opts: { limit: number; cursor?: string; order?: 'desc' | 'asc' },
+  ): Promise<{ items: T[]; nextCursor?: string; total: number }> {
+    const limit = Math.max(1, Math.floor(opts.limit))
+    const direction = opts.order === 'asc' ? 1 : -1
+    scope = await resolveGraphScope(this, scope)
+    await ensureGraphConsistency(this, scope)
+    return this.withSummaryRead(scope, async () => {
+    const keys = await this.rawListKeys(scope)
+    const ranked = keys.map((key) => ({ key, at: generatedIdTime(key) }))
+    const rank = (entry: { key: string; at: number | null }) =>
+      entry.at === null ? Number.NEGATIVE_INFINITY : entry.at
+    const compare = (a: { key: string; at: number | null }, b: { key: string; at: number | null }) => {
+      if (rank(a) !== rank(b)) return (rank(a) - rank(b)) * direction
+      return (a.key < b.key ? -1 : a.key > b.key ? 1 : 0) * direction
+    }
+    ranked.sort(compare)
+    const position = decodeCursor(opts.cursor)
+    let start = 0
+    if (position?.key) {
+      const at = generatedIdTime(position.key)
+      start = ranked.findIndex((entry) => compare(entry, { key: position.key!, at }) > 0)
+      if (start < 0) start = ranked.length
+    }
+    const pageKeys = ranked.slice(start, start + limit).map((entry) => entry.key)
+    const values = await this.rawGetMany<T>(scope, pageKeys, 16)
+    const items = values.filter((value): value is T => value !== null && value !== undefined)
+    const hasMore = start + pageKeys.length < ranked.length
+    return {
+      items,
+      total: ranked.length,
+      ...(hasMore && pageKeys.length
+        ? { nextCursor: encodeCursor({ key: pageKeys[pageKeys.length - 1]! }) }
+        : {}),
+    }
+    })
   }
 
   async listGroups(): Promise<string[]> {

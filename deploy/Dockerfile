@@ -1,8 +1,20 @@
 # Shared build for local Compose and every deployment platform.
 # Update these four pins together when promoting the runtime.
-ARG III_VERSION=0.25.0
-ARG STATE_VERSION=0.22.20
-ARG HTTP_VERSION=0.22.7
+ARG III_VERSION=0.25.1
+ARG STATE_VERSION=0.22.22
+ARG HTTP_VERSION=0.22.8
+
+FROM node:24-bookworm-slim AS state-node
+FROM rust:1.93-bookworm AS state-build
+COPY --from=state-node /usr/local /usr/local
+RUN apt-get update && apt-get install -y --no-install-recommends python3 git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@10.32.1
+WORKDIR /build
+COPY deploy/state-worker ./deploy/state-worker
+COPY scripts/state-worker ./scripts/state-worker
+RUN git init /workers && git -C /workers remote add origin https://github.com/iii-hq/workers \
+ && git -C /workers fetch --depth=1 origin a8ed4889f54cb34cb9ffdb6e44190484d90ba950 \
+ && python3 scripts/state-worker/build.py --workers-source /workers --output /artifact --work-dir /state-build --online
 
 FROM node:24-slim AS agent-build
 ARG III_VERSION
@@ -27,7 +39,7 @@ RUN apt-get update \
  && find /var/lib/apt/lists -mindepth 1 -delete
 
 COPY --from=iii-engine /app/iii /usr/local/bin/iii
-RUN iii --version 2>&1 | grep -qF "${III_VERSION}" \
+RUN iii --version 2>&1 | tr -s " \t" "\n" | grep -qxF "${III_VERSION}" \
  || { echo "iiidev/iii:${III_VERSION} does not contain iii ${III_VERSION}" >&2; exit 1; }
 
 WORKDIR /opt/agentmemory
@@ -40,6 +52,9 @@ COPY --from=agent-build --chown=node:node /opt/agentmemory/dist ./dist
 COPY --chown=node:node --chmod=644 deploy/runtime/agentmemory.worker.yaml /opt/agentmemory/iii.worker.yaml
 COPY --chown=node:node --chmod=644 deploy/runtime/worker-compose.yaml /opt/agentmemory/worker-compose.yaml
 COPY --chmod=0755 deploy/runtime/entrypoint.sh /usr/local/bin/agentmemory-entrypoint
+COPY --from=state-build /artifact /opt/agentmemory-state
+COPY deploy/runtime/state-bootstrap.mjs /opt/agentmemory/deploy-runtime/state-bootstrap.mjs
+COPY deploy/state-worker/pin.json /opt/agentmemory/deploy-runtime/state-pin.json
 
 ENV III_VERSION=${III_VERSION} \
     STATE_VERSION=${STATE_VERSION} \

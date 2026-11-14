@@ -1,8 +1,6 @@
-// Retain the existing conservative application payload budget. It was chosen
-// under the older 16 MiB framing assumption; it is not the current SDK's
-// 64 MiB message limit. Refusals must not tear down the shared SDK connection.
-const FRAME_LIMIT_BYTES = 16 * 1024 * 1024;
-export const SAFE_PAYLOAD_BYTES = 15 * 1024 * 1024;
+// SDK 0.25.1 permits 64 MiB frames; leave room for invocation envelopes.
+const FRAME_LIMIT_BYTES = 64 * 1024 * 1024;
+export const SAFE_PAYLOAD_BYTES = 60 * 1024 * 1024;
 
 export type OversizedPayload = {
   success: false;
