@@ -3,6 +3,7 @@ declare module "ws" {
  import type { IncomingMessage } from "node:http";
  import type { Duplex } from "node:stream";
  export default class WebSocket extends EventEmitter {
+  constructor(address:string|URL,options?:{handshakeTimeout?:number});
   static readonly OPEN:number;
   readonly readyState:number;
   readonly bufferedAmount:number;

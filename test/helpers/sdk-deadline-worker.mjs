@@ -9,12 +9,13 @@ if(process.env.MODE==='holder'){
  const lock=spawnSync('/usr/bin/flock',['--exclusive','--nonblock','3'],{stdio:['ignore','ignore','ignore',fd]});
  if(lock.status!==0)throw Error('FIXTURE_LOCK_FAILED');
  process.send({ready:true});
- process.once('message',()=>setTimeout(()=>{closeSync(fd);process.disconnect();},350));
+ process.once('message',message=>setTimeout(()=>{closeSync(fd);process.disconnect();},message.holdMs));
 }else{
  const {deliverSdkCaptureV2}=await import(pathToFileURL(process.env.FIXTURE_MODULE));
  process.send({ready:true});
  process.once('message',async()=>{
-  const result=await deliverSdkCaptureV2(process.env.FIXTURE_TARGET,{eventId:'multiprocess-'+process.env.FIXTURE_INDEX},async body=>({status:201,body:{eventId:body.eventId,completion:'sdk',completed:true,durable:false}}),{dir:process.env.FIXTURE_DIR,deadline:performance.now()+3000});
-  process.send({result});process.disconnect();
+  const started=performance.now(),phases=[];let posts=0;process.send({started:true});
+  const result=await deliverSdkCaptureV2(process.env.FIXTURE_TARGET,{eventId:'multiprocess-'+process.env.FIXTURE_INDEX},async body=>{posts++;return {status:201,body:{eventId:body.eventId,completion:'sdk',completed:true,durable:false}};},{dir:process.env.FIXTURE_DIR,deadline:started+3000,storeOptions:{onPhase:phase=>phases.push({phase,elapsedMs:performance.now()-started})}});
+  process.send({result:{...result,posts,elapsedMs:performance.now()-started,phases}});process.disconnect();
  });
 }

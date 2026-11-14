@@ -22,6 +22,8 @@
 
 ## [Unreleased]
 
+- Make Ubuntu CI subprocess fixtures use the active Node executable. Validate finite capture deadlines under contention without weakening exact-once ACK/original preservation checks, and wait for real browser fixture completion instead of a fixed virtual-time DOM dump. Test-only changes; no operating service changes.
+
 ## [0.9.33-daniel.72] — 2026-11-13
 - Reobserve transient State/engine socket ownership snapshot gaps at most three times without replaying RPCs or accepting a changed epoch/foreign owner. Classify remaining proven local pre-dispatch admission failures without latching uncertain writes, and retain bounded first/latest failure diagnostics without payloads. Preserve previous uncertainty and source data; see the operating follow-up in the integration note.
 

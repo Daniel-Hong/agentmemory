@@ -90,7 +90,7 @@ it('bounded drain preserves a short shared deadline and the legacy unspecified d
  expect(result).toMatchObject({attempted:1,delivered:1,remaining:0});expect(posts).toBe(1);
 });
 
-for(const processes of [2,6])it(`${processes} real processes wait beyond legacy 150ms and complete against 6000 retained originals`,async()=>{
+for(const [processes,holdMs] of [[2,350],[6,350],[2,3200]])it(`${processes} real processes preserve deadline outcomes after ${holdMs}ms contention against 6000 retained originals`,async()=>{
  const home=root(),dir=join(home,'spool'),store=new SdkSpoolV2({dir});await store.usage();
  // Synthetic completed trees exercise the actual recursive quota scan. Nothing is read from the host spool.
  for(let index=0;index<6000;index++){
@@ -101,18 +101,54 @@ for(const processes of [2,6])it(`${processes} real processes wait beyond legacy 
  function child(mode:string,index=0){
   const worker=fork(resolve('test/helpers/sdk-deadline-worker.mjs'),[],{execArgv:['--import',resolve('node_modules/tsx/dist/loader.mjs')],env:{PATH:'/usr/bin:/bin',HOME:home,USERPROFILE:home,TMPDIR:home,MODE:mode,FIXTURE_DIR:dir,FIXTURE_TARGET:target,FIXTURE_INDEX:String(index),FIXTURE_MODULE:process.env.SDK_DEADLINE_FIXTURE_MODULE??resolve('src/capture/sdk-delivery-v2.ts')},stdio:['ignore','pipe','pipe','ipc']});
   children.push(worker);let result:any;
+  const started=new Promise<void>(done=>worker.on('message',(m:any)=>{if(m.started)done();}));
   const ready=new Promise<void>((done,reject)=>{worker.on('message',(m:any)=>{if(m.ready)done();if(m.result)result=m.result;});worker.once('error',reject);});
   const exited=new Promise<any>((done,reject)=>{worker.once('exit',code=>code===0?done(result):reject(Error('FIXTURE_CHILD_FAILED')));worker.once('error',reject);});
-  return {worker,ready,exited};
+  return {worker,ready,started,exited};
  }
  try{
   const holder=child('holder');await holder.ready;
   const senders=Array.from({length:processes},(_,i)=>child('sender',i));await Promise.all(senders.map(x=>x.ready));
-  for(const sender of senders)sender.worker.send('go');holder.worker.send('release-after-350ms');
+  for(const sender of senders)sender.worker.send('go');
+  await Promise.all(senders.map(x=>x.started));holder.worker.send({holdMs});
   const results=await Promise.all(senders.map(x=>x.exited));await holder.exited;
-  console.log(JSON.stringify({syntheticConcurrentCapture:true,processes,results}));
-  for(const result of results)expect(result).toMatchObject({outcome:'delivered',sourceAcknowledged:true,referenceAcknowledged:true,sdkReplyConfirmed:true});
+  console.log(JSON.stringify({syntheticConcurrentCapture:true,processes,holdMs,results}));
+  // A finite deadline guarantees conservative state, not CI filesystem throughput.
+  // The explicit overrun case makes STORE_BUSY reproducible without CPU stress.
+  let published=0;
+  for(const [index,result] of results.entries()){
+   const event='multiprocess-'+index,sourceExists=existsSync(join(dir,'originals',id(event),'manifest.json')),refExists=existsSync(join(dir,'queue',id(event)+'.ref'));
+   expect(result.elapsedMs).toBeGreaterThan(150);
+   if(sourceExists)published++;
+   expect(result.sourceAcknowledged).toBe(sourceExists);expect(result.referenceAcknowledged).toBe(refExists||result.outcome==='delivered');
+   if(result.outcome==='delivered'){
+    expect(result).toMatchObject({sourceAcknowledged:true,referenceAcknowledged:true,sdkReplyConfirmed:true,posts:1});
+    expect(manifest(dir,event).completed).toBe(true);expect(refExists).toBe(false);
+   }else{
+    expect(result.posts).toBe(0);expect(result.sdkReplyConfirmed).not.toBe(true);
+    if(result.outcome==='spooled')expect(result).toMatchObject({sourceAcknowledged:true,referenceAcknowledged:true});
+    else{expect(['held','dropped']).toContain(result.outcome);expect(result.code).toBe('STORE_BUSY');}
+    if(sourceExists)expect(manifest(dir,event).completed).toBe(false);
+    if(refExists)expect(ref(dir,event)).toMatchObject({state:'pending',attempts:0,nextAttemptAt:0});
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(result.outcome==='spooled'?2250:3000);
+   }
+  }
+  expect(readdirSync(join(dir,'originals'))).toHaveLength(6000+published);
+  if(holdMs>3000)for(const result of results)expect(result).toMatchObject({outcome:'dropped',code:'STORE_BUSY',posts:0,sourceAcknowledged:false,referenceAcknowledged:false});
+  // Only the branches above proved conclusively not-sent may retry. Contention is
+  // now gone; each gets its own original 3s bound, never a larger runtime limit.
+  // Unknown dispatch/sending or ACK failures fail above instead of being replayed.
+  for(const [index,result] of results.entries()){
+   if(result.outcome==='delivered')continue;
+   const retry=child('sender',index);await retry.ready;retry.worker.send('go');
+   const resolved=await retry.exited;
+   expect(resolved).toMatchObject({outcome:'delivered',sourceAcknowledged:true,referenceAcknowledged:true,sdkReplyConfirmed:true,posts:1});
+   expect(result.posts+resolved.posts).toBe(1);
+  }
   expect(readdirSync(join(dir,'originals'))).toHaveLength(6000+processes);
-  for(let i=0;i<processes;i++)expect(manifest(dir,'multiprocess-'+i).completed).toBe(true);
+  for(let i=0;i<processes;i++){
+   expect(manifest(dir,'multiprocess-'+i).completed).toBe(true);
+   expect(existsSync(join(dir,'queue',id('multiprocess-'+i)+'.ref'))).toBe(false);
+  }
  }finally{for(const worker of children)if(worker.exitCode===null)worker.kill();}
 },30000);

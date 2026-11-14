@@ -56,7 +56,7 @@ async function listen(handler:(req:IncomingMessage,res:ServerResponse)=>void){
 async function readBody(req:IncomingMessage){const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));return JSON.parse(Buffer.concat(chunks).toString()) as Record<string,any>;}
 async function runNative(url:string){
   const image='data:image/png;base64,'+'A'.repeat(300*1024);
-  const child=spawn('/usr/bin/node',['--max-old-space-size=256','--import',resolve('node_modules/tsx/dist/loader.mjs'),resolve('src/hooks/post-tool-use.ts'),'--agentmemory-sdk-capture-v2'],{
+  const child=spawn(process.execPath,['--max-old-space-size=256','--import',resolve('node_modules/tsx/dist/loader.mjs'),resolve('src/hooks/post-tool-use.ts'),'--agentmemory-sdk-capture-v2'],{
     cwd:root,env:{PATH:'/usr/bin:/bin',HOME:root,TMPDIR:root,AGENTMEMORY_URL:url,AGENTMEMORY_SECRET:'synthetic-only',AGENTMEMORY_SDK_CAPTURE_V2_DIR:join(root,'v2'),AGENTMEMORY_CAPTURE_SPOOL_DIR:join(root,'v1')},stdio:['pipe','pipe','pipe'],
   });
   let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);child.stdin.on('error',()=>{});

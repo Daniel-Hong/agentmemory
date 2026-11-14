@@ -19,7 +19,7 @@ describe('native file writer ownership',()=>{
  it('rejects another process and releases only when the owning process exits',async()=>{
   const m=await load(),d=dir();expect(typeof m.acquireFileWriterLease).toBe('function');
   const ready=join(d,'ready');
-  const child=spawn('/usr/bin/node',['--input-type=module','-e',`import {acquireFileWriterLease} from ${JSON.stringify('file://'+modulePath)};import {writeFileSync} from 'node:fs';const lease=acquireFileWriterLease(${JSON.stringify(d)});writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`],{stdio:'ignore',env:{PATH:'/usr/bin:/bin',HOME:d}});
+  const child=spawn(process.execPath,['--input-type=module','-e',`import {acquireFileWriterLease} from ${JSON.stringify('file://'+modulePath)};import {writeFileSync} from 'node:fs';const lease=acquireFileWriterLease(${JSON.stringify(d)});writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`],{stdio:'ignore',env:{PATH:'/usr/bin:/bin',HOME:d}});
   try{
    const until=Date.now()+1500;while(!existsSync(ready)&&child.exitCode===null&&Date.now()<until)await new Promise(r=>setTimeout(r,10));
    expect(existsSync(ready)).toBe(true);
